@@ -1,0 +1,24 @@
+[
+  {
+    "symbol": "EURUSD=X",
+    "spot": 1.14129,
+    "ann_vol": 0.0445,
+    "ann_drift": -0.1032,
+    "bias": "\ud83d\udd34 BEARISH",
+    "bias_short": "BEARISH",
+    "bias_note": "Sell rallies; avoid longs unless confirmed reversal",
+    "vol_level": "\ud83d\udd35 LOW",
+    "pos_adj": "normal size",
+    "range_90": [
+      1.1064,
+      1.15598
+    ],
+    "range_width_pct": 4.34,
+    "prob_down_2pct": "19.4%",
+    "prob_up_2pct": "1.6%",
+    "stop": 1.16223,
+    "target": 1.11338,
+    "pos_multiplier": 0.33,
+    "risk_rule": "Max 1.0% per trade"
+  }
+]
