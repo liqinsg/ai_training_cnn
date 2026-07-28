@@ -41,7 +41,8 @@ YAHOO_TO_OANDA = cfg("YAHOO_TO_OANDA", {
 
 BASE_DIR = Path(__file__).resolve().parent
 DAILY_VIEW = BASE_DIR / "fx_daily_view.py"
-RESULTS_DIR = Path.home() / "ai_training_cnn" / "daily_results"
+# RESULTS_DIR = Path.home() / "ai_training_cnn" / "daily_results"
+RESULTS_DIR = Path(__file__).parent / "daily_results"
 RESULTS_DIR.mkdir(exist_ok=True)
 
 # --------------------------
