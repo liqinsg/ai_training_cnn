@@ -21,6 +21,12 @@ import shlex
 import argparse
 from datetime import datetime, timezone
 from pathlib import Path
+from utils.oanda_execution import is_forex_market_open
+
+# Exit immediately if market is closed
+if not is_forex_market_open():
+    print("⏸️ Market is closed — skipping run")
+    raise SystemExit(0)
 
 sys.path.append(str(Path.home() / "ai_training_cnn"))
 

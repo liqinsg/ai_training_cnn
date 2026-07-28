@@ -10,6 +10,12 @@ import yfinance as yf
 from telegram_message import send_telegram_message
 from config import USE_OANDA_DATA
 from utils.oanda_execution import get_oanda_candles
+from utils.oanda_execution import is_forex_market_open
+
+# Exit immediately if market is closed
+if not is_forex_market_open():
+    print("⏸️ Market is closed — skipping run")
+    raise SystemExit(0)
 
 parser = argparse.ArgumentParser()
 parser.add_argument("pair", help="e.g. EURUSD=X")

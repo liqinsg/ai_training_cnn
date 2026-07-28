@@ -8,6 +8,12 @@ from lightgbm import LGBMClassifier
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score, roc_auc_score
 import pandas_ta as ta
+from utils.oanda_execution import is_forex_market_open
+
+# Exit immediately if market is closed
+if not is_forex_market_open():
+    print("⏸️ Market is closed — skipping run")
+    raise SystemExit(0)
 
 # --------------------------
 # Settings — match your workflow

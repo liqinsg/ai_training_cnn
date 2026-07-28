@@ -11,6 +11,7 @@ from oandapyV20.endpoints import orders, trades
 import oandapyV20
 import sys
 import os
+import datetime
 
 # Add project root to import path so config.py is found
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -370,6 +371,34 @@ def get_oanda_candles(instrument, timeframe, count=500):
         except Exception as e2:
             print(f"❌ Fallback also failed for {instrument}: {str(e2)}")
             return pd.DataFrame()
+
+
+# --------------------------
+# MARKET OPEN CHECK
+# --------------------------
+def is_forex_market_open():
+    """Check if Forex market is open (UTC time)
+    Open: Mon 00:00 → Sat 21:00 UTC
+    Closed: Sat 21:00 → Mon 00:00 UTC
+    """
+    now = datetime.datetime.utcnow()
+    weekday = now.weekday()  # 0=Mon, 4=Fri, 5=Sat, 6=Sun
+    hour = now.hour
+
+    # Weekend closed
+    if weekday == 6:  # Sunday all day
+        return False
+    if weekday == 5 and hour >= 21:  # Saturday after 21:00 UTC
+        return False
+    if weekday == 0 and hour < 0:  # Monday before 00:00 UTC
+        return False
+
+    return True
+
+# Exit immediately if market is closed
+if not is_forex_market_open():
+    print("⏸️ Market is closed — skipping run")
+    raise SystemExit(0)
 
 
 # --------------------------

@@ -1,4 +1,4 @@
-from utils.oanda_execution import api, open_oanda_order, has_open_position, get_oanda_candles
+from utils.oanda_execution import api, open_oanda_order, has_open_position, get_oanda_candles, is_forex_market_open
 from utils.calculate_currency_strength import calculate_currency_strength
 from utils.strategy_helpers import build_strength_matrix, format_strength_ranking
 from telegram_message import send_telegram_message
@@ -12,6 +12,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 import pandas_ta as ta
 import config
+
+# Exit immediately if market is closed
+if not is_forex_market_open():
+    print("⏸️ Market is closed — skipping run")
+    raise SystemExit(0)
 
 # --------------------------
 # 🧩 CONFIG — ONE SOURCE OF TRUTH
