@@ -1,4 +1,4 @@
-from config import OANDA_ACCOUNT_ID, OANDA_ENV, OANDA_API_TOKEN, DEMO_MODE
+from config import OANDA_ACCOUNT_ID_1, OANDA_ENV, OANDA_API_TOKEN, DEMO_MODE
 from typing import Dict, Optional, List
 from oandapyV20.exceptions import V20Error
 import oandapyV20.endpoints.positions as positions
@@ -37,7 +37,7 @@ def check_order_status(instrument: Optional[str] = None) -> Dict:
 
     # Open Trades
     try:
-        r = trades.TradesList(OANDA_ACCOUNT_ID, params={"state": "OPEN"})
+        r = trades.TradesList(OANDA_ACCOUNT_ID_1, params={"state": "OPEN"})
         resp = api.request(r)
         open_trades = resp.get("trades", [])
         if instrument:
@@ -49,7 +49,7 @@ def check_order_status(instrument: Optional[str] = None) -> Dict:
 
     # Recent Orders (last 10)
     try:
-        r = orders.OrderList(OANDA_ACCOUNT_ID, params={"count": 10})
+        r = orders.OrderList(OANDA_ACCOUNT_ID_1, params={"count": 10})
         resp = api.request(r)
         orders_list = resp.get("orders", [])
         if instrument:
@@ -65,7 +65,7 @@ def check_order_status(instrument: Optional[str] = None) -> Dict:
 def has_open_position(instrument: str) -> bool:
     """Return True if we already have an open trade for this pair."""
     try:
-        r = trades.TradesList(OANDA_ACCOUNT_ID, params={"state": "OPEN", "instrument": instrument})
+        r = trades.TradesList(OANDA_ACCOUNT_ID_1, params={"state": "OPEN", "instrument": instrument})
         resp = api.request(r)
         return len(resp.get("trades", [])) > 0
     except:
@@ -77,7 +77,7 @@ def _open_oanda_order(signal: Dict, units: Optional[float] = None, tag: str = "F
     Open a market order on OANDA — with custom tag/comment.
     Expected keys: pair, action, stop_loss, take_profit
     """
-    if not OANDA_ACCOUNT_ID or not OANDA_API_TOKEN:
+    if not OANDA_ACCOUNT_ID_1 or not OANDA_API_TOKEN:
         return {"status": "ERROR", "message": "Missing OANDA credentials"}
 
     pair_raw = signal.get("pair")
@@ -135,7 +135,7 @@ def _open_oanda_order(signal: Dict, units: Optional[float] = None, tag: str = "F
         print(f"\n[OANDA EXEC] [{tag}] Sending {action} order for {pair}...")
         print(f"  Units: {abs(int(position_units))} | SL: {sl:.5f} | TP: {tp:.5f}")
 
-        request = orders.OrderCreate(OANDA_ACCOUNT_ID, data=order_payload)
+        request = orders.OrderCreate(OANDA_ACCOUNT_ID_1, data=order_payload)
         response = api.request(request)
 
         fill = response["orderFillTransaction"]
@@ -161,7 +161,7 @@ def _open_oanda_order(signal: Dict, units: Optional[float] = None, tag: str = "F
     except Exception as e:
         print(f"[OANDA EXEC] ⚠️ Parsing error — checking if order filled anyway...")
         try:
-            trades_resp = api.request(trades.TradesList(OANDA_ACCOUNT_ID))
+            trades_resp = api.request(trades.TradesList(OANDA_ACCOUNT_ID_1))
             recent = [t for t in trades_resp.get("trades", []) if t["instrument"] == pair]
             if recent:
                 print(f"[OANDA EXEC] ✅ [{tag}] Found trade {recent[0]['id']}")
@@ -189,7 +189,7 @@ def open_oanda_order(signal: Dict, units: Optional[float] = None, tag: str = "FX
     Expected keys: pair, action, stop_loss, take_profit
     Automatically uses correct decimal precision for JPY vs non‑JPY pairs.
     """
-    if not OANDA_ACCOUNT_ID or not OANDA_API_TOKEN:
+    if not OANDA_ACCOUNT_ID_1 or not OANDA_API_TOKEN:
         return {"status": "ERROR", "message": "Missing OANDA credentials"}
 
     pair_raw = signal.get("pair")
@@ -251,7 +251,7 @@ def open_oanda_order(signal: Dict, units: Optional[float] = None, tag: str = "FX
         print(f"\n[OANDA EXEC] [{tag}] Sending {action} order for {pair}...")
         print(f"  Units: {abs(int(position_units))} | SL: {sl:.{decimals}f} | TP: {tp:.{decimals}f}")
 
-        request = orders.OrderCreate(OANDA_ACCOUNT_ID, data=order_payload)
+        request = orders.OrderCreate(OANDA_ACCOUNT_ID_1, data=order_payload)
         response = api.request(request)
 
         fill = response["orderFillTransaction"]
@@ -289,7 +289,7 @@ def open_oanda_order(signal: Dict, units: Optional[float] = None, tag: str = "FX
     except Exception as e:
         print(f"[OANDA EXEC] ⚠️ Parsing error — checking if order filled anyway...")
         try:
-            trades_resp = api.request(trades.TradesList(OANDA_ACCOUNT_ID))
+            trades_resp = api.request(trades.TradesList(OANDA_ACCOUNT_ID_1))
             recent = [t for t in trades_resp.get("trades", []) if t["instrument"] == pair]
             if recent:
                 print(f"[OANDA EXEC] ✅ [{tag}] Found trade {recent[0]['id']}")
@@ -315,14 +315,14 @@ def open_oanda_order(signal: Dict, units: Optional[float] = None, tag: str = "FX
 def close_all_trades() -> Dict:
     """Helper: Close all open trades on your account"""
     try:
-        request = trades.TradesList(OANDA_ACCOUNT_ID)
+        request = trades.TradesList(OANDA_ACCOUNT_ID_1)
         open_trades = api.request(request).get("trades", [])
         if not open_trades:
             return {"status": "INFO", "message": "No open trades found"}
 
         results = []
         for trade in open_trades:
-            req = trades.TradeClose(OANDA_ACCOUNT_ID, tradeID=trade["id"])
+            req = trades.TradeClose(OANDA_ACCOUNT_ID_1, tradeID=trade["id"])
             api.request(req)
             results.append({"trade_id": trade["id"], "closed": True})
             print(f"[CLEANUP] Closed trade ID: {trade['id']}")

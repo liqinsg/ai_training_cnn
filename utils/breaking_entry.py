@@ -12,7 +12,7 @@ On GBP/JPY ~215, that is ~107 pips — a tight but realistic consolidation box.
 """
 import importlib
 from oandapyV20 import API
-from config import OANDA_ACCOUNT_ID, OANDA_ENV, OANDA_API_TOKEN
+from config import OANDA_ACCOUNT_ID_1, OANDA_ENV, OANDA_API_TOKEN
 
 try:
     orders            = importlib.import_module("oandapyV20.endpoints.orders")
@@ -38,7 +38,7 @@ def get_open_units(instrument: str) -> tuple[float, float]:
     """Returns (long_units, short_units) for an instrument, (0, 0) if flat or error."""
     try:
         positions_module = importlib.import_module("oandapyV20.endpoints.positions")
-        req = positions_module.OpenPositions(accountID=OANDA_ACCOUNT_ID)
+        req = positions_module.OpenPositions(accountID=OANDA_ACCOUNT_ID_1)
         oanda_client.request(req)
         for pos in req.response.get("positions", []):
             if pos.get("instrument") == instrument:
@@ -175,7 +175,7 @@ def place_breakout_stop_orders(
     print(f"  BUY  STOP: entry={buy_entry}  SL={buy_sl}  TP={buy_tp}")
     print(f"  SELL STOP: entry={sell_entry} SL={sell_sl} TP={sell_tp}")
 
-    account_id = OANDA_ACCOUNT_ID
+    account_id = OANDA_ACCOUNT_ID_1
     order_ids  = []
 
     for direction, entry, sl, tp, order_units in [

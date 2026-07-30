@@ -7,6 +7,7 @@ import yfinance as yf
 
 np.random.seed(42)
 
+
 def _sanitize(obj):
     if isinstance(obj, dict):
         return {k: _sanitize(v) for k, v in obj.items()}
@@ -22,6 +23,7 @@ def _sanitize(obj):
     if hasattr(obj, "isoformat"):
         return obj.isoformat()
     return obj
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="FX Monte Carlo — Normal / Fat‑Tails / Jump Risk")
@@ -42,6 +44,7 @@ def parse_args() -> argparse.Namespace:
                         help="Jump volatility (default 0.3% daily)")
     return parser.parse_args()
 
+
 def run_montecarlo(ticker, period, interval, n_sim, t_days,
                    fat_tails, df, jumps, jump_prob, jump_vol):
     try:
@@ -58,9 +61,9 @@ def run_montecarlo(ticker, period, interval, n_sim, t_days,
         dt = 1 / 252
 
         scenarios = {
-            "Base Case":        {"vol_mult": 1.0, "drift_add": 0.00},
-            "High Volatility":  {"vol_mult": 1.5, "drift_add": 0.00},
-            "Strong USD":       {"vol_mult": 1.0, "drift_add": -0.02},
+            "Base Case": {"vol_mult": 1.0, "drift_add": 0.00},
+            "High Volatility": {"vol_mult": 1.5, "drift_add": 0.00},
+            "Strong USD": {"vol_mult": 1.0, "drift_add": -0.02},
         }
 
         results = []
@@ -94,8 +97,8 @@ def run_montecarlo(ticker, period, interval, n_sim, t_days,
                 "median": round(float(np.median(ST)), 5),
                 "p5": round(float(np.percentile(ST, 5)), 5),
                 "p95": round(float(np.percentile(ST, 95)), 5),
-                "prob_below_2pct": f"{np.mean(ST < S0*0.98):.1%}",
-                "prob_above_2pct": f"{np.mean(ST > S0*1.02):.1%}",
+                "prob_below_2pct": f"{np.mean(ST < S0 * 0.98):.1%}",
+                "prob_above_2pct": f"{np.mean(ST > S0 * 1.02):.1%}",
             })
 
         return {
@@ -112,6 +115,7 @@ def run_montecarlo(ticker, period, interval, n_sim, t_days,
 
     except Exception as e:
         return {"symbol": ticker, "error": str(e)}
+
 
 if __name__ == "__main__":
     args = parse_args()

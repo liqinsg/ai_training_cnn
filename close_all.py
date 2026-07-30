@@ -17,7 +17,7 @@ import oandapyV20.endpoints.positions as positions
 import oandapyV20.endpoints.orders as orders
 
 from config import (
-    OANDA_ENV, OANDA_API_TOKEN, OANDA_ACCOUNT_ID
+    OANDA_ENV, OANDA_API_TOKEN, OANDA_ACCOUNT_ID_1
 )
 oanda_env = OANDA_ENV
 oanda_client = API(

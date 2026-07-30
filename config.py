@@ -11,10 +11,12 @@ load_dotenv()
 # ==========================================
 # OANDA connection
 # ==========================================
-OANDA_ENV = os.getenv("OANDA_ENV", "practice")
+# OANDA_ENV = os.getenv("OANDA_ENV", "practice")
+OANDA_ENV = "practice"
 OANDA_API_TOKEN = os.getenv("OANDA_API_TOKEN", "")
-OANDA_ACCOUNT_ID = os.getenv("OANDA_ACCOUNT_ID", "")
-
+OANDA_ACCOUNT_ID_1 = os.getenv("OANDA_ACCOUNT_ID", "")
+OANDA_ACCOUNT_ID_1 = os.getenv("OANDA_ACCOUNT_ID_1", "")
+OANDA_TOKEN = OANDA_API_TOKEN
 # ==========================================
 # Scheduler
 # ==========================================
@@ -122,6 +124,8 @@ EXPIRE_AFTER = 1440  # minutes (1 day)
 MIN_QUALIFYING_PAIRS = 1  # or 2-3
 
 # Candidate currencies / pairs universe
+INSTRUMENT = 'EUR_USD'
+
 CURRENCIES = ["USD", "EUR", "GBP", "AUD", "NZD", "JPY", "CHF"]
 STRENGTH_PAIRS = [
     "EUR_USD",
@@ -251,7 +255,7 @@ MIN_PROB = 0.50  # 0.52
 TREND_THRESHOLD = 20  # 25
 DEFAULT_PAIRS = [
     "EURUSD=X", "GBPUSD=X", "EURJPY=X", "GBPJPY=X",
-    "AUDUSD=X", "USDJPY=X", "GBPAUD=X","USDCHF=X"]
+    "AUDUSD=X", "USDJPY=X", "GBPAUD=X", "USDCHF=X"]
 YAHOO_TO_OANDA = {
     "EURUSD=X": "EUR_USD", "GBPUSD=X": "GBP_USD", "EURJPY=X": "EUR_JPY",
     "GBPJPY=X": "GBP_JPY", "AUDUSD=X": "AUD_USD", "USDJPY=X": "USD_JPY",
@@ -289,3 +293,27 @@ PIVOT_BIAS_CHECK = True        # Require price below P for SELL / above P for BU
 
 USE_YFINANCE_DATA = False
 USE_OANDA_DATA = True
+
+# forex xgbboost playbook params
+DIRECTION = 'auto'
+# Regime detection parameters (used when DIRECTION='auto')
+REGIME_FAST_EMA = 20
+REGIME_SLOW_EMA = 30
+
+# Risk Parameters
+RISK_MULTIPLE = 1.0
+REWARD_MULTIPLE = 2.0
+MAX_BARS = 20
+ATR_PERIOD = 14
+
+# Model Parameters
+TRAIN_WINDOW = 3000
+TEST_WINDOW = 500
+STEP_SIZE = 500
+THRESHOLD = 0.6
+
+# Feature Lookbacks
+LOOKBACKS = [5, 10, 20, 50]
+
+TEST_MODE = True
+MOCK_SIGNAL = 'BUY'  # or SELL

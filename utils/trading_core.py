@@ -11,13 +11,13 @@ from google import genai
 from google.genai import types
 import oandapyV20.endpoints.instruments as instruments
 import oandapyV20.endpoints.pricing as pricing
-from config import OANDA_ACCOUNT_ID
+from config import OANDA_ACCOUNT_ID_1
 
 
 from config import (
     OANDA_ENV,
     OANDA_API_TOKEN,
-    OANDA_ACCOUNT_ID,
+    OANDA_ACCOUNT_ID_1,
     GEMINI_API_KEY,
     GEMINI_NEWS_MODEL,
     USE_GEMINI_AI,
@@ -47,7 +47,7 @@ def format_price_for_instrument(price, instrument: str) -> str:
 
 def get_open_position(instrument: str):
     positions_module = importlib.import_module("oandapyV20.endpoints.positions")
-    req = positions_module.OpenPositions(accountID=OANDA_ACCOUNT_ID)
+    req = positions_module.OpenPositions(accountID=OANDA_ACCOUNT_ID_1)
     oanda_client.request(req)
     return next(
         (
@@ -84,7 +84,7 @@ def attach_sl_tp_to_open_trade(signal, instrument: str | None = None) -> bool:
     }
     try:
         oanda_client.request(
-            trades_mod.TradeCRCDO(OANDA_ACCOUNT_ID, trade_id, data=payload)
+            trades_mod.TradeCRCDO(OANDA_ACCOUNT_ID_1, trade_id, data=payload)
         )
         print(f"[EXEC] SL/TP attached to {instrument}")
         return True
@@ -97,7 +97,7 @@ def verify_sl_tp_on_trade(trade_id: str, instrument: str) -> None:
     trades_mod = importlib.import_module("oandapyV20.endpoints.trades")
     try:
         resp = oanda_client.request(
-            trades_mod.TradeDetails(OANDA_ACCOUNT_ID, trade_id)
+            trades_mod.TradeDetails(OANDA_ACCOUNT_ID_1, trade_id)
         ).response
         sl = resp["trade"].get("stopLossOrder", {})
         tp = resp["trade"].get("takeProfitOrder", {})
@@ -145,7 +145,7 @@ def execute_market_trade(signal, units_override=None):
     try:
         resp = oanda_client.request(
             pricing_mod.PricingInfo(
-                OANDA_ACCOUNT_ID, {"instruments": signal.pair_to_trade}
+                OANDA_ACCOUNT_ID_1, {"instruments": signal.pair_to_trade}
             )
         )
         ask = float(resp["prices"][0]["asks"][0]["price"])
@@ -194,7 +194,7 @@ def execute_market_trade(signal, units_override=None):
         }
     }
     try:
-        resp = oanda_client.request(orders_mod.OrderCreate(OANDA_ACCOUNT_ID, payload))
+        resp = oanda_client.request(orders_mod.OrderCreate(OANDA_ACCOUNT_ID_1, payload))
         if "orderFillTransaction" in resp:
             fill = resp["orderFillTransaction"]
             print(
@@ -355,7 +355,7 @@ def get_latest_price(instrument: str) -> float | None:
     """Get latest mid price from OANDA"""
     try:
         req = pricing.PricingInfo(
-            accountID=OANDA_ACCOUNT_ID, params={"instruments": instrument}
+            accountID=OANDA_ACCOUNT_ID_1, params={"instruments": instrument}
         )
         resp = oanda_client.request(req)
         prices = resp.get("prices", [])
@@ -373,7 +373,7 @@ def close_position(instrument: str) -> bool:
     positions_mod = importlib.import_module("oandapyV20.endpoints.positions")
 
     try:
-        pos_req = positions_mod.OpenPositions(accountID=OANDA_ACCOUNT_ID)
+        pos_req = positions_mod.OpenPositions(accountID=OANDA_ACCOUNT_ID_1)
         oanda_client.request(pos_req)
 
         position = next(
@@ -402,7 +402,7 @@ def close_position(instrument: str) -> bool:
             payload["shortUnits"] = str(abs(short_units))
 
         req = positions_mod.PositionClose(
-            accountID=OANDA_ACCOUNT_ID,
+            accountID=OANDA_ACCOUNT_ID_1,
             instrument=instrument,
             data=payload,
         )

@@ -5,7 +5,7 @@ import oandapyV20.endpoints.instruments as instruments
 from utils import oanda_client
 from typing import Optional
 from config import (
-    OANDA_ENV, OANDA_API_TOKEN, OANDA_ACCOUNT_ID,
+    OANDA_ENV, OANDA_API_TOKEN, OANDA_ACCOUNT_ID_1,
     TRADE_PAIRS, SIGNAL_TIMEFRAMES, SL_BUFFER_PIPS, SPREAD_PIPS, STRENGTH_PAIRS, CURRENCIES
 )
 
@@ -151,7 +151,7 @@ def get_ma5_position(instrument: str, granularity: str) -> str | None:
 def get_live_prices(instrument: str) -> dict | None:
     try:
         pricing_module = __import__("oandapyV20.endpoints.pricing", fromlist=["PricingInfo"])
-        req = pricing_module.PricingInfo(accountID=OANDA_ACCOUNT_ID, params={"instruments": instrument})
+        req = pricing_module.PricingInfo(accountID=OANDA_ACCOUNT_ID_1, params={"instruments": instrument})
         oanda_client.request(req)
         prices = req.response["prices"][0]
         return {
