@@ -1,0 +1,11 @@
+{
+  "ann_drift": -9.74,
+  "ann_vol": 5.88,
+  "range_90": [
+    1.83974,
+    1.94355
+  ],
+  "pair": "GBPAUD=X",
+  "oanda_pair": "GBP_AUD",
+  "generated_utc": "2026-07-29T00:02:39.945301+00:00"
+}

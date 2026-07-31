@@ -1,0 +1,11 @@
+{
+  "ann_drift": 9.46,
+  "ann_vol": 8.22,
+  "range_90": [
+    0.6762,
+    0.73012
+  ],
+  "pair": "AUDUSD=X",
+  "oanda_pair": "AUD_USD",
+  "generated_utc": "2026-07-29T00:02:08.084748+00:00"
+}

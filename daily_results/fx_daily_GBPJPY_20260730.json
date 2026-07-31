@@ -1,0 +1,11 @@
+{
+  "ann_drift": 9.37,
+  "ann_vol": 6.44,
+  "range_90": [
+    213.33747,
+    226.55458
+  ],
+  "pair": "GBPJPY=X",
+  "oanda_pair": "GBP_JPY",
+  "generated_utc": "2026-07-30T00:02:28.017530+00:00"
+}

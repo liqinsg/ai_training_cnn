@@ -1,0 +1,11 @@
+{
+  "ann_drift": 5.34,
+  "ann_vol": 6.25,
+  "range_90": [
+    180.10918,
+    190.93967
+  ],
+  "pair": "EURJPY=X",
+  "oanda_pair": "EUR_JPY",
+  "generated_utc": "2026-07-31T00:01:59.164021+00:00"
+}

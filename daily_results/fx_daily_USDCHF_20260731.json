@@ -1,0 +1,11 @@
+{
+  "ann_drift": 1.98,
+  "ann_vol": 7.38,
+  "range_90": [
+    0.78004,
+    0.83566
+  ],
+  "pair": "USDCHF=X",
+  "oanda_pair": "USD_CHF",
+  "generated_utc": "2026-07-31T00:03:15.199016+00:00"
+}

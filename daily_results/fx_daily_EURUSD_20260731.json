@@ -1,0 +1,11 @@
+{
+  "ann_drift": -0.88,
+  "ann_vol": 5.58,
+  "range_90": [
+    1.12205,
+    1.1821
+  ],
+  "pair": "EURUSD=X",
+  "oanda_pair": "EUR_USD",
+  "generated_utc": "2026-07-31T00:01:25.030702+00:00"
+}
