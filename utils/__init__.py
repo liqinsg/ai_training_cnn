@@ -32,11 +32,12 @@ from .breaking_entry import *
 from .currency_strength import *
 from .quota_guard import *
 from .ml_confirmation import *
-
-
+# 
 __all__ = [
+    "get_support_resistance",
     "TradeSignal",
-    "oanda_client",
+    "is_forex_market_open",
+    # "oanda_client",
     "gemini_client",
     "format_price_for_instrument",
     "get_open_position",

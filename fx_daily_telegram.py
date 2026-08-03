@@ -10,12 +10,13 @@ import json
 import sys
 from pathlib import Path
 from datetime import datetime, timezone
+# Add this at the top of fx_daily_telegram.py
+from telegram_message import send_telegram_message
 
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent))
 
-from fx_monte_carlo_advanced import run_monte_carlo, build_telegram_report
-from telegram_message import send_telegram_message
+from carlo_advanced import run_monte_carlo, build_telegram_report
 import config
 
 # --------------------------
@@ -54,9 +55,11 @@ print(f"🔬 ADVANCED MC RUN — {datetime.now(timezone.utc).strftime('%Y-%m-%d 
 print(f"🔹 Period: {args.period} | Simulations: {args.sim} | Pairs: {len(args.pairs)}")
 
 for pair in args.pairs:
+# for pair in DEFAULT_PAIRS:
     try:
         print(f"🔬 Processing: {pair}")
         res = run_monte_carlo(pair, period=args.period, sims=args.sim)
+        res["pair"] = pair
         all_results.append(res)
         
         # Save JSON for trading bot

@@ -2,12 +2,10 @@ import os
 import importlib
 from oandapyV20 import API
 import oandapyV20.endpoints.instruments as instruments
-from utils import oanda_client
 from typing import Optional
 from config import (
     OANDA_ENV, OANDA_API_TOKEN, OANDA_ACCOUNT_ID,
     TRADE_PAIRS, SIGNAL_TIMEFRAMES, SL_BUFFER_PIPS, SPREAD_PIPS
-    # TP_PIPS, 
 )
 
 oanda_client = API(access_token=OANDA_API_TOKEN, environment=OANDA_ENV)

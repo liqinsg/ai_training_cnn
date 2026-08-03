@@ -93,7 +93,30 @@ def run_monte_carlo(symbol: str, period: str = DEFAULT_PERIOD, sims: int = DEFAU
     # Probability metrics (fixed 0–100% percentile)
     sorted_prices = np.sort(all_prices)
     pos = np.searchsorted(sorted_prices, last_price)
-    percentile_rank = float((pos / len(sorted_prices)) * 100)
+
+    # percentile_rank = float((pos / len(sorted_prices)) * 100)
+
+
+    current_price = float(latest_close)
+    range_90_low = float(range_90[0])
+    range_90_high = float(range_90[1])
+
+    percentile_rank = round(
+        ((current_price - range_90_low) / (range_90_high - range_90_low)) * 100,
+        1
+    )
+    # Hard guarantee — never goes outside 0–100%
+    percentile_rank = max(0.0, min(100.0, percentile_rank))
+
+    # ✅ CORRECT — always outputs 0.0–100.0%
+    percentile_rank = round(
+        ((current_price - range_90_low) / (range_90_high - range_90_low)) * 100,
+        1
+    )
+    # Safety clamp — guarantees no out‑of‑range values ever
+    percentile_rank = max(0.0, min(100.0, percentile_rank))
+
+
     p_up = float(np.mean(final_prices > last_price) * 100)
     p_down = float(np.mean(final_prices < last_price) * 100)
     touch_lower = float(np.mean(np.any(paths <= lower_90, axis=1)) * 100)
