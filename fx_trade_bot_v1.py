@@ -301,12 +301,17 @@ def main():
             save_closed_state(last_closed)
 
     # 2. NEW ENTRIES
+    # ==========================================
+    # 2. NEW ENTRIES — NOW FULLY SCOPE‑SAFE
+    # ==========================================
     candidates = []
     for pair in DEFAULT_PAIRS:
-        mc_pass = True  # ✅ FIX: reset per pair — no scope leak
+        mc_pass = True
+        pivot_ok = True       # ✅ PRE‑INIT: no crash if ENABLE_PIVOTS=False
+        entry_ok = True       # ✅ PRE‑INIT: always defined
         lo = hi = band_width = None
 
-        # Cooldown
+        # Cooldown logic — unchanged
         if pair in last_closed:
             dir_closed, runs_left = last_closed[pair]
             if runs_left > 0:
@@ -321,7 +326,7 @@ def main():
             print(f"⏭️ {pair}: open — skip"); continue
 
         df = build_features(get_data(pair, oanda, 200)).dropna()
-        if len(df) < 50:  # ✅ FIX: enough bars for all indicators
+        if len(df) < 50:
             print(f"⚠️ {pair}: insufficient data — skip"); continue
 
         latest = df.iloc[-1]
@@ -357,12 +362,11 @@ def main():
 
         target_sl = target_tp = None
         if ENABLE_PIVOTS:
+            entry_ok = (MODE == "LEVEL10")  # Only override if pivots ON
             daily = resample_ohlc(df, PIVOT_TIMEFRAME).dropna()
             if len(daily)>=2:
                 pivots = calculate_pivots(daily.iloc[-2]["High"], daily.iloc[-2]["Low"], daily.iloc[-2]["Close"], PIVOT_METHOD)
                 curr = latest["Close"]
-                pivot_ok = True
-                entry_ok = (MODE=="LEVEL10")
                 if MODE != "LEVEL10":
                     if PIVOT_BIAS_CHECK:
                         if best_dir=="SELL" and curr>pivots["P"]: pivot_ok=False
@@ -375,7 +379,7 @@ def main():
                     spread_pips = abs(float(tick["ask"]["c"])-float(tick["bid"]["c"])) / (0.01 if "JPY" in pair else 0.0001)
                 except: spread_pips = 1.0
                 buffer = spread_pips + 30
-                pip_size = 0.01 if "JPY" in pair else 0.0001
+                pip_size = 0.01 if "JPY" in pair else 0.0001  # ✅ Extend if adding XAU/HKD etc.
                 decimals = 3 if "JPY" in pair else 5
                 if best_dir=="SELL":
                     target_sl = round(max(pivots["R1"],pivots["P"]) + buffer*pip_size, decimals)
@@ -388,7 +392,7 @@ def main():
                     if best_dir=="BUY": target_tp = min(target_tp, hi - (band_width*(1-MC_TP_MAX_BAND_PCT)))
                     target_tp = round(target_tp, decimals)
 
-        # ✅ FIX: ATR fallback if pivots fail
+        # ATR fallback — always active
         if target_sl is None or target_tp is None:
             decimals = 3 if "JPY" in pair else 5
             atr = latest["atr14"]
