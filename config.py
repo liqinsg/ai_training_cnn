@@ -334,3 +334,5 @@ LOOKBACKS = [5, 10, 20, 50]
 
 TEST_MODE = True
 MOCK_SIGNAL = 'BUY'  # or SELL
+
+MC_TP_MAX_BAND_PCT = 0.7  # 0.7 = use up to 70% of range; 0.8 = more aggressive; 0.6 = more conservative
