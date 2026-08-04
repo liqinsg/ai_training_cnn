@@ -63,6 +63,8 @@ NORMAL_MIN_PROB = cfg("MIN_PROB", 51.0)
 RELAXED_MIN_PROB = 50.0  # ✅ FORCED 50.0% FOR LEVEL10
 STRENGTH_GAP_THRESHOLD = cfg("STRENGTH_GAP_THRESHOLD", 10)
 
+MC_TP_MAX_BAND_PCT = cfg("MC_TP_MAX_BAND_PCT", 0.7)  # 0.7 = use up to 70% of range; 0.8 = more aggressive; 0.6 = more conservative
+
 # Trading pairs & mappings
 DEFAULT_PAIRS = cfg(
     "DEFAULT_PAIRS",
@@ -119,7 +121,7 @@ TODAY_STR = datetime.now(timezone.utc).strftime("%Y%m%d")
 
 
 CLOSE_THRESHOLD = 55.0  # Need 55%+ flipped prob to close
-REOPEN_DELAY_RUNS = 2  # Wait 2 runs before re-opening same pair
+REOPEN_DELAY_RUNS = 2  # Wait 2 runs before re‑opening same pair
 last_closed = {}  # Track: {pair: (direction, run_count)}
 
 
@@ -458,9 +460,6 @@ with open(BASE_DIR / "features_list.json") as f:
 # --------------------------
 # 🚀 MAIN LOGIC
 # --------------------------
-# --------------------------
-# 🚀 MAIN LOGIC
-# --------------------------
 def main():
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     print(
@@ -541,13 +540,22 @@ def main():
         adx = latest["ADX_14"]
         best_p = max(p_up, p_down)
         best_dir = "BUY" if p_up > p_down else "SELL"
+
         # --------------------------
         # 🧠 DAILY + H4 MC INTEGRATION
         # --------------------------
         daily_mc, h4_mc = load_both_mc(pair)
         mc_pass = True
         MIN_EDGE = RELAXED_MIN_PROB if MODE == "LEVEL10" else NORMAL_MIN_PROB
-        if daily_mc or h4_mc:
+        lo = hi = band_width = safe_limit = None
+
+        if daily_mc or h4_mc:            
+            # Get the tighter range if both exist
+            lo = max(daily_mc["range_90"][0], h4_mc["range_90"][0]) if (daily_mc and h4_mc) else (daily_mc["range_90"][0] if daily_mc else h4_mc["range_90"][0])
+            hi = min(daily_mc["range_90"][1], h4_mc["range_90"][1]) if (daily_mc and h4_mc) else (daily_mc["range_90"][1] if daily_mc else h4_mc["range_90"][1])
+            band_width = hi - lo
+            safe_limit = band_width * MC_TP_MAX_BAND_PCT
+
             if daily_mc:
                 print(
                     f"📊 DAILY MC: {pair} | P={daily_mc['percentile_rank']:.1f}% | UP={daily_mc['p_up']:.1f}% | DOWN={daily_mc['p_down']:.1f}% | {daily_mc['regime']}"
@@ -624,9 +632,9 @@ def main():
                         or abs(curr - pivots["P"]) / curr < 0.0015
                     ):
                         entry_ok = True
+
                 try:
                     from oandapyV20.endpoints.instruments import InstrumentsCandles
-
                     tick = api.request(
                         InstrumentsCandles(
                             instrument=oanda,
@@ -639,11 +647,11 @@ def main():
                 except:
                     spread_pips = 1.0
 
-                buffer = spread_pips + 30  # was +25
-
+                buffer = spread_pips + 30
                 pip_size = 0.01 if "JPY" in pair else 0.0001
                 decimals = 3 if "JPY" in pair else 5
-                # Ensure TP distance ≥ SL distance (OANDA requirement)
+
+                # Step 1: Base SL/TP from pivots
                 if best_dir == "SELL":
                     target_sl = round(
                         max(pivots["R1"], pivots["P"]) + buffer * pip_size, decimals
@@ -658,6 +666,14 @@ def main():
                     target_tp = round(
                         max(pivots["R1"], pivots["P"]) + buffer * pip_size, decimals
                     )
+
+                # Step 2: Apply MC TP SAFETY — avoid hitting extreme edges
+                if daily_mc and h4_mc and lo and hi and band_width:
+                    if best_dir == "SELL":
+                        target_tp = max(target_tp, lo + (band_width * (1 - MC_TP_MAX_BAND_PCT)))
+                    if best_dir == "BUY":
+                        target_tp = min(target_tp, hi - (band_width * (1 - MC_TP_MAX_BAND_PCT)))
+                    target_tp = round(target_tp, decimals)
 
         adx_ok = adx >= TREND_THRESHOLD if MODE != "LEVEL10" else True
         if best_p >= MIN_PROB and adx_ok and mc_pass and pivot_ok and entry_ok:
