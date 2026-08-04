@@ -34,7 +34,59 @@ def forex_market_closed():
     return weekday == 6 or (weekday == 5 and now.hour >= 21)
 
 
-def open_oanda_order(signal: Dict, units: Optional[float] = None) -> Dict:
+def open_oanda_order(signal: dict, units: float | None = None) -> dict:
+    """
+    Open a market order on OANDA — correctly wrapped for API.
+    Expected keys: pair, action, stop_loss, take_profit
+    """
+    if not OANDA_ACCOUNT_ID or not OANDA_API_TOKEN:
+        return {"status": "ERROR", "message": "Missing OANDA credentials"}
+
+    pair_raw = signal.get("pair")
+    if not pair_raw:
+        return {"status": "ERROR", "message": "Signal missing 'pair'"}
+
+    pair = pair_raw.replace("_", "/")
+    action = signal.get("action")
+    if action not in {"BUY", "SELL"}:
+        return {"status": "ERROR", "message": f"Invalid action: {action}"}
+
+    # Default units if not provided
+    if units is None:
+        units = 10000  # Hardcode default lot — no dependency needed
+
+    # if units is None:
+    #     units = cfg("DEFAULT_LOT_SIZE", 10000)
+    units = int(units) if action == "BUY" else -int(units)
+
+    # ✅ OANDA REQUIRES EVERYTHING INSIDE "order" KEY
+    order_payload = {
+        "order": {
+            "type": "MARKET",
+            "instrument": pair_raw,
+            "units": str(units),
+            "timeInForce": "FOK",
+            "positionFill": "DEFAULT",
+            "stopLoss": {
+                "price": str(round(signal["stop_loss"], 5 if "JPY" not in pair_raw else 3)),
+                "timeInForce": "GTC"
+            },
+            "takeProfit": {
+                "price": str(round(signal["take_profit"], 5 if "JPY" not in pair_raw else 3)),
+                "timeInForce": "GTC"
+            }
+        }
+    }
+
+    try:
+        from oandapyV20.endpoints.orders import OrderCreate
+        resp = api.request(OrderCreate(accountID=OANDA_ACCOUNT_ID, data=order_payload))
+        return {"status": "OK", "response": resp}
+    except Exception as e:
+        return {"status": "ERROR", "message": f"OANDA API Error: {e}"}
+    
+
+def _open_oanda_order(signal: dict, units: float | None = None, tag: str = "FX_BOT") -> dict:
     """
     Open a market order on OANDA from your strategy signal dict.
     Expected keys: pair, action, stop_loss, take_profit
@@ -73,22 +125,30 @@ def open_oanda_order(signal: Dict, units: Optional[float] = None) -> Dict:
     if action == "SELL":
         position_units = -abs(position_units)
 
-    order_payload = {
-        "order": {
-            "type": "MARKET",
-            "instrument": pair,
-            "units": str(int(position_units)),  # OANDA expects integer units as string
-            "timeInForce": "FOK",
-            "positionFill": "DEFAULT",
-            "stopLossOnFill": {
-                "price": str(round(sl, 3)),
-                "timeInForce": "GTC",
-            },
-            "takeProfitOnFill": {
-                "price": str(round(tp, 3)),
-                "timeInForce": "GTC",
-            },
-        }
+    # order_payload = {
+    #     "order": {
+    #         "type": "MARKET",
+    #         "instrument": pair,
+    #         "units": str(int(position_units)),  # OANDA expects integer units as string
+    #         "timeInForce": "FOK",
+    #         "positionFill": "DEFAULT",
+    #         "stopLossOnFill": {
+    #             "price": str(round(sl, 3)),
+    #             "timeInForce": "GTC",
+    #         },
+    #         "takeProfitOnFill": {
+    #             "price": str(round(tp, 3)),
+    #             "timeInForce": "GTC",
+    #         },
+    #     }
+    # }
+        order_payload = {
+        "type": "MARKET",
+        "instrument": pair,
+        "units": str(units),
+        "stopLoss": {"price": str(signal["stop_loss"]), "timeInForce": "GTC"},
+        "takeProfit": {"price": str(signal["take_profit"]), "timeInForce": "GTC"},
+        "clientExtensions": {"comment": tag}  # ✅ Add tag here
     }
 
     try:

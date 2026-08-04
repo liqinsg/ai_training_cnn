@@ -16,15 +16,15 @@ from oandapyV20 import API
 import oandapyV20.endpoints.positions as positions
 import oandapyV20.endpoints.orders as orders
 
-from config import (
+from config_oanda import (
     OANDA_ENV, OANDA_API_TOKEN, OANDA_ACCOUNT_ID
 )
 oanda_env = OANDA_ENV
 oanda_client = API(
-    access_token=os.getenv("OANDA_API_TOKEN"),
+    access_token=OANDA_API_TOKEN,
     environment=oanda_env,
 )
-account_id = os.getenv("OANDA_ACCOUNT_ID")
+account_id = OANDA_ACCOUNT_ID
 
 
 def cancel_pending_orders(instrument: str | None = None):

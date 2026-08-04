@@ -250,9 +250,11 @@ MACRO_PROTECTION_PIPS = 10
 ENABLE_MACRO_PROTECTION = False
 
 TIMEFRAME = "1h"  # "15m"
+
 MC_MAX_AGE_HOURS = 24
 MIN_PROB = 0.50  # 0.52
 TREND_THRESHOLD = 20  # 25
+
 DEFAULT_PAIRS = [
     "EURUSD=X", "GBPUSD=X", "EURJPY=X", "GBPJPY=X",
     "AUDUSD=X", "USDJPY=X", "GBPAUD=X", "USDCHF=X"]
@@ -265,23 +267,38 @@ YAHOO_TO_OANDA = {
 # ==========================================
 # MODE SELECTOR — ONE FLIP TO SWITCH
 # ==========================================
-MODE = "TESTING"   # ✅ Change to "LIVE" when going live
+# ==========================================
+# MODE SELECTOR — ONE FLIP TO SWITCH
+# ==========================================
+MODE = "LEVEL10"   # ✅ Change to "LIVE" / "LEVEL1–9" anytime
 
-# Auto‑set parameters based on mode
-if MODE == "TESTING":
-    # More aggressive — see more setups during testing
-    MIN_PROB = 0.50
+# Base defaults (used if no mode override)
+MIN_PROB = 0.52
+TREND_THRESHOLD = 25
+MAX_TOTAL_TRADES = 2
+MAX_PER_USD_GROUP = 2
+MAX_PER_JPY_GROUP = 2
+DEFAULT_LOT_SIZE = 10000
+# Mode overrides
+if MODE == "LEVEL10":
+    MIN_PROB = 0.50          # 0.50
     TREND_THRESHOLD = 20
     MAX_TOTAL_TRADES = 3
     MAX_PER_USD_GROUP = 3
     MAX_PER_JPY_GROUP = 3
-else:
-    # Conservative — protect capital for live trading
+    # Strength‑aware thresholds
+    RELAXED_MIN_PROB = 50.0
+    STRENGTH_GAP_THRESHOLD = 10
+
+elif MODE == "LIVE":
     MIN_PROB = 0.52
     TREND_THRESHOLD = 25
     MAX_TOTAL_TRADES = 2
     MAX_PER_USD_GROUP = 2
     MAX_PER_JPY_GROUP = 2
+    RELAXED_MIN_PROB = 51.0
+    STRENGTH_GAP_THRESHOLD = 10
+    DEFAULT_LOT_SIZE = 1
 
 # ==========================================
 # PIVOT / SUPPORT-RESISTANCE

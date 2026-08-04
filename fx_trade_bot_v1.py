@@ -8,6 +8,7 @@ class Direction(Enum):
     LONG = "LONG"
     SHORT = "SHORT"
 
+
 # --------------------------
 # 🧩 CONSOLIDATED PATH SETUP
 # --------------------------
@@ -120,6 +121,61 @@ TODAY_STR = datetime.now(timezone.utc).strftime("%Y%m%d")
 CLOSE_THRESHOLD = 55.0  # Need 55%+ flipped prob to close
 REOPEN_DELAY_RUNS = 2  # Wait 2 runs before re-opening same pair
 last_closed = {}  # Track: {pair: (direction, run_count)}
+
+
+# --------------------------
+# 🧩 LOAD BOTH DAILY + H4 MC
+# --------------------------
+def load_both_mc(pair):
+    """Return (daily_data, h4_data) — latest valid for each"""
+    safe = pair.replace("=X", "").replace("=", "_")
+    today = datetime.now(timezone.utc).strftime("%Y%m%d")
+
+    # Daily MC
+    daily_path = RESULTS_DIR / f"fx_daily_{safe}_{today}.json"
+    daily_data = None
+    if daily_path.exists():
+        with open(daily_path) as f:
+            daily_data = json.load(f)
+
+    # Latest H4 MC (find newest file for this pair)
+    h4_files = sorted(RESULTS_DIR.glob(f"h4_mc_{safe}_*.json"), reverse=True)
+    h4_data = None
+    if h4_files:
+        with open(h4_files[0]) as f:
+            h4_data = json.load(f)
+
+    return daily_data, h4_data
+
+
+# --------------------------
+# 🧩 COMBINED EDGE CHECK
+# --------------------------
+def combined_edge_ok(daily, h4, best_dir, MIN_EDGE, MODE):
+    """Require agreement unless LEVEL10 — reduces false signals"""
+    if not daily and not h4:
+        return True, "NO_MC"
+    scores = []
+    regimes = []
+    if daily:
+        scores.append(daily["p_up" if best_dir == "BUY" else "p_down"])
+        regimes.append(daily["regime"])
+    if h4:
+        scores.append(h4["p_up_pct" if best_dir == "BUY" else "p_down_pct"])
+        regimes.append(h4["regime"])
+
+    avg_score = sum(scores) / len(scores)
+    passes = (
+        all(s >= MIN_EDGE for s in scores)
+        if MODE != "LEVEL10"
+        else avg_score >= MIN_EDGE
+    )
+    label = (
+        f"DAILY+H4 AVG: {avg_score:.1f}%"
+        if len(scores) == 2
+        else ("DAILY ONLY" if daily else "H4 ONLY")
+    )
+    return passes, label
 
 
 # --------------------------
@@ -333,23 +389,6 @@ def build_features(df):
     return df
 
 
-def load_mc(pair):
-    safe = pair.replace("=X", "").replace("=", "_")
-    f = RESULTS_DIR / f"fx_daily_{safe}_{TODAY_STR}.json"
-    if not f.exists():
-        print(f"⚠️ MC missing: {pair}")
-        return None, False
-    age = (
-        datetime.now(timezone.utc)
-        - datetime.fromtimestamp(f.stat().st_mtime, timezone.utc)
-    ).total_seconds() / 3600
-    if age > MC_MAX_AGE_HOURS:
-        print(f"⚠️ MC stale: {pair}")
-        return None, False
-    with open(f) as j:
-        return json.load(j), True
-
-
 def open_oanda_order(signal: dict, units: float | None = None) -> dict:
     """
     Open a market order with Stop Loss & Take Profit — OANDA verified working format.
@@ -424,17 +463,21 @@ with open(BASE_DIR / "features_list.json") as f:
 # --------------------------
 def main():
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    print(f"\n🤖 MULTI‑PAIR RUN — {now} | MODE={MODE} | DATA={'OANDA' if USE_OANDA_DATA else 'YFINANCE'} | {DEFAULT_PAIRS}")
+    print(
+        f"\n🤖 MULTI‑PAIR RUN — {now} | MODE={MODE} | DATA={'OANDA' if USE_OANDA_DATA else 'YFINANCE'} | {DEFAULT_PAIRS}"
+    )
 
     def get_data(pair, oanda_sym, count=200):
         if USE_OANDA_DATA:
             print(f"📥 OANDA: {oanda_sym}")
-            return normalize_ohlc_data(get_oanda_candles(oanda_sym, OANDA_GRANULARITY, count))
+            return normalize_ohlc_data(
+                get_oanda_candles(oanda_sym, OANDA_GRANULARITY, count)
+            )
         else:
             print(f"📥 YFINANCE: {pair}")
             df = yf.download(pair, period="5d", interval=TIMEFRAME, progress=False)
             df.columns = [c[0] for c in df.columns]
-            return df[["Open","High","Low","Close","Volume"]]
+            return df[["Open", "High", "Low", "Close", "Volume"]]
 
     strength_scores = build_strength_matrix()
     sorted_str = sorted(strength_scores.values(), reverse=True)
@@ -454,7 +497,7 @@ def main():
         if len(df) < 5:
             continue
         latest = df.iloc[-1]
-        p_up = model.predict_proba(pd.DataFrame([latest[features]]))[0,1]
+        p_up = model.predict_proba(pd.DataFrame([latest[features]]))[0, 1]
         p_down = 1 - p_up
 
         # ✅ ONLY close on REAL reversal ≥ CLOSE_THRESHOLD
@@ -493,38 +536,57 @@ def main():
         if len(df) < 20:
             continue
         latest = df.iloc[-1]
-        p_up = model.predict_proba(pd.DataFrame([latest[features]]))[0,1]
+        p_up = model.predict_proba(pd.DataFrame([latest[features]]))[0, 1]
         p_down = 1 - p_up
         adx = latest["ADX_14"]
         best_p = max(p_up, p_down)
         best_dir = "BUY" if p_up > p_down else "SELL"
-
-        mc_data, mc_ok = load_mc(pair)
+        # --------------------------
+        # 🧠 DAILY + H4 MC INTEGRATION
+        # --------------------------
+        daily_mc, h4_mc = load_both_mc(pair)
         mc_pass = True
         MIN_EDGE = RELAXED_MIN_PROB if MODE == "LEVEL10" else NORMAL_MIN_PROB
-        if mc_ok:
-            print(f"📊 MC: {pair} | P={mc_data['percentile_rank']:.1f}% | UP={mc_data['p_up']:.1f}% | DOWN={mc_data['p_down']:.1f}% | {mc_data['regime']}")
-            if not (1 <= mc_data["percentile_rank"] <= 99):
-                print(f"⏸️ {pair} extreme percentile — skip")
-                mc_pass = False
+        if daily_mc or h4_mc:
+            if daily_mc:
+                print(
+                    f"📊 DAILY MC: {pair} | P={daily_mc['percentile_rank']:.1f}% | UP={daily_mc['p_up']:.1f}% | DOWN={daily_mc['p_down']:.1f}% | {daily_mc['regime']}"
+                )
+            if h4_mc:
+                print(
+                    f"📊 H4 MC:   {pair} | P={h4_mc['percentile_rank']:.1f}% | UP={h4_mc['p_up_pct']:.1f}% | DOWN={h4_mc['p_down_pct']:.1f}% | {h4_mc['regime']}"
+                )
+
             if score_gap >= STRENGTH_GAP_THRESHOLD:
                 MIN_EDGE = min(MIN_EDGE, RELAXED_MIN_PROB)
                 print(f"⚡ Strong gap → threshold {MIN_EDGE}%")
-            if mc_data["p_up"] < MIN_EDGE and mc_data["p_down"] < MIN_EDGE:
-                print(f"⏸️ {pair} low edge — skip")
+
+            mc_pass, mc_label = combined_edge_ok(
+                daily_mc, h4_mc, best_dir, MIN_EDGE, MODE
+            )
+            if not mc_pass:
+                print(f"⏸️ {pair} failed {mc_label} edge check — skip")
                 continue
+
+            # Regime alignment (strict unless LEVEL10)
             if MODE != "LEVEL10":
-                if "Uptrend" in mc_data["regime"] and best_dir == "SELL":
-                    print(f"⏸️ {pair} UPTREND → no SELL — skip")
-                    mc_pass = False
-                if "Downtrend" in mc_data["regime"] and best_dir == "BUY":
-                    print(f"⏸️ {pair} DOWNTREND → no BUY — skip")
-                    mc_pass = False
+                for mc in [daily_mc, h4_mc]:
+                    if not mc:
+                        continue
+                    if "Uptrend" in mc["regime"] and best_dir == "SELL":
+                        print(f"⏸️ {pair} UPTREND vs SELL — skip")
+                        mc_pass = False
+                    if "Downtrend" in mc["regime"] and best_dir == "BUY":
+                        print(f"⏸️ {pair} DOWNTREND vs BUY — skip")
+                        mc_pass = False
             else:
-                if "Uptrend" in mc_data["regime"] and best_dir == "SELL":
-                    print(f"⚠️ {pair} UPTREND vs SELL — PROCEEDING (LEVEL10)")
-                if "Downtrend" in mc_data["regime"] and best_dir == "BUY":
-                    print(f"⚠️ {pair} DOWNTREND vs BUY — PROCEEDING (LEVEL10)")
+                for mc in [daily_mc, h4_mc]:
+                    if not mc:
+                        continue
+                    if "Uptrend" in mc["regime"] and best_dir == "SELL":
+                        print(f"⚠️ {pair} UPTREND vs SELL — PROCEEDING (LEVEL10)")
+                    if "Downtrend" in mc["regime"] and best_dir == "BUY":
+                        print(f"⚠️ {pair} DOWNTREND vs BUY — PROCEEDING (LEVEL10)")
 
         if not mc_pass:
             continue
@@ -534,7 +596,12 @@ def main():
         if ENABLE_PIVOTS:
             daily = resample_ohlc(df, PIVOT_TIMEFRAME).dropna()
             if len(daily) >= 2:
-                pivots = calculate_pivots(daily.iloc[-2]["High"], daily.iloc[-2]["Low"], daily.iloc[-2]["Close"], PIVOT_METHOD)
+                pivots = calculate_pivots(
+                    daily.iloc[-2]["High"],
+                    daily.iloc[-2]["Low"],
+                    daily.iloc[-2]["Close"],
+                    PIVOT_METHOD,
+                )
                 curr = latest["Close"]
 
                 if MODE == "LEVEL10":
@@ -543,37 +610,67 @@ def main():
                 else:
                     pivot_ok = True
                     if PIVOT_BIAS_CHECK:
-                        if best_dir == "SELL" and curr > pivots["P"]: pivot_ok = False
-                        if best_dir == "BUY" and curr < pivots["P"]: pivot_ok = False
-                    if best_dir == "SELL" and (abs(curr-pivots["R1"])/curr < 0.0015 or abs(curr-pivots["P"])/curr < 0.0015):
+                        if best_dir == "SELL" and curr > pivots["P"]:
+                            pivot_ok = False
+                        if best_dir == "BUY" and curr < pivots["P"]:
+                            pivot_ok = False
+                    if best_dir == "SELL" and (
+                        abs(curr - pivots["R1"]) / curr < 0.0015
+                        or abs(curr - pivots["P"]) / curr < 0.0015
+                    ):
                         entry_ok = True
-                    if best_dir == "BUY" and (abs(curr-pivots["S1"])/curr < 0.0015 or abs(curr-pivots["P"])/curr < 0.0015):
+                    if best_dir == "BUY" and (
+                        abs(curr - pivots["S1"]) / curr < 0.0015
+                        or abs(curr - pivots["P"]) / curr < 0.0015
+                    ):
                         entry_ok = True
                 try:
                     from oandapyV20.endpoints.instruments import InstrumentsCandles
-                    tick = api.request(InstrumentsCandles(instrument=oanda, params={"count":1,"granularity":"M1","price":"BA"}))["candles"][0]
-                    spread_pips = abs(float(tick["ask"]["c"]) - float(tick["bid"]["c"])) / (0.01 if "JPY" in pair else 0.0001)
+
+                    tick = api.request(
+                        InstrumentsCandles(
+                            instrument=oanda,
+                            params={"count": 1, "granularity": "M1", "price": "BA"},
+                        )
+                    )["candles"][0]
+                    spread_pips = abs(
+                        float(tick["ask"]["c"]) - float(tick["bid"]["c"])
+                    ) / (0.01 if "JPY" in pair else 0.0001)
                 except:
                     spread_pips = 1.0
 
-                # buffer = spread_pips + 25 
                 buffer = spread_pips + 30  # was +25
 
                 pip_size = 0.01 if "JPY" in pair else 0.0001
                 decimals = 3 if "JPY" in pair else 5
+                # Ensure TP distance ≥ SL distance (OANDA requirement)
                 if best_dir == "SELL":
-                    target_sl = round(max(pivots["R1"], pivots["P"]) + buffer*pip_size, decimals)
-                    target_tp = round(pivots["S1"], decimals)
+                    target_sl = round(
+                        max(pivots["R1"], pivots["P"]) + buffer * pip_size, decimals
+                    )
+                    target_tp = round(
+                        min(pivots["S1"], pivots["P"]) - buffer * pip_size, decimals
+                    )
                 if best_dir == "BUY":
-                    target_sl = round(min(pivots["S1"], pivots["P"]) - buffer*pip_size, decimals)
-                    target_tp = round(pivots["R1"], decimals)
+                    target_sl = round(
+                        min(pivots["S1"], pivots["P"]) - buffer * pip_size, decimals
+                    )
+                    target_tp = round(
+                        max(pivots["R1"], pivots["P"]) + buffer * pip_size, decimals
+                    )
 
         adx_ok = adx >= TREND_THRESHOLD if MODE != "LEVEL10" else True
         if best_p >= MIN_PROB and adx_ok and mc_pass and pivot_ok and entry_ok:
-            candidates.append({
-                "pair": pair, "oanda": oanda, "dir": best_dir,
-                "prob": best_p, "sl": target_sl, "tp": target_tp
-            })
+            candidates.append(
+                {
+                    "pair": pair,
+                    "oanda": oanda,
+                    "dir": best_dir,
+                    "prob": best_p,
+                    "sl": target_sl,
+                    "tp": target_tp,
+                }
+            )
 
     # ==========================================
     # 3. SELECT & EXECUTE BEST SIGNALS
@@ -604,16 +701,19 @@ def main():
                     "pair": w["oanda"],
                     "action": w["dir"],
                     "stop_loss": w["sl"],
-                    "take_profit": w["tp"]
+                    "take_profit": w["tp"],
                 }
             )
             print(f"📤 Order: {res}")
-            lines.append(f"✅ {w['pair']} | {w['dir']} | {w['prob']:.1%} | SL={w['sl']} | TP={w['tp']}")
+            lines.append(
+                f"✅ {w['pair']} | {w['dir']} | {w['prob']:.1%} | SL={w['sl']} | TP={w['tp']}"
+            )
 
     msg = "\n".join(lines)
     print(msg)
     send_telegram_message(msg)
     print("✅ Run complete")
+
 
 if __name__ == "__main__":
     print("[STRATEGY] Step 1 — Currency Strength...")
