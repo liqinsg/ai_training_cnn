@@ -7,6 +7,7 @@ import json
 import numpy as np
 import pandas as pd
 import pandas_ta as ta
+from utils.calculate_pivots import calculate_pivots
 
 class Direction(Enum):
     LONG = "LONG"
@@ -45,6 +46,7 @@ MAX_PER_USD_GROUP = cfg("MAX_PER_USD_GROUP", 3)
 MAX_PER_JPY_GROUP = cfg("MAX_PER_JPY_GROUP", 3)
 DEFAULT_LOT_SIZE = cfg("DEFAULT_LOT_SIZE", 10000)
 ENABLE_PIVOTS = cfg("ENABLE_PIVOTS", False)
+PIVOT_BIAS_CHECK = cfg("PIVOT_BIAS_CHECK", True)
 PIVOT_METHOD = cfg("PIVOT_METHOD", "Classic")
 DEFAULT_PAIRS = cfg("DEFAULT_PAIRS", [])
 YAHOO_TO_OANDA = cfg("YAHOO_TO_OANDA", {})
@@ -97,13 +99,6 @@ def load_mc_data(pair):
     print(f"⚠️ No MC data found for {pair}")
     return None
 
-def calculate_pivots(df):
-    last = df.iloc[-1]
-    h, l, c = last["High"], last["Low"], last["Close"]
-    rng = h - l
-    if PIVOT_METHOD == "Classic":
-        return {"P":(h+l+c)/3, "R1":2*(h+l+c)/3-l, "S1":2*(h+l+c)/3-h, "R2":(h+l+c)/3+rng, "S2":(h+l+c)/3-rng}
-    return {"P":(h+l+c)/3}
 
 # --------------------------
 # MAIN LOGIC
@@ -210,10 +205,25 @@ def main():
             df = pd.DataFrame(rows)
             atr = ta.atr(df["High"], df["Low"], df["Close"], 14).iloc[-1]
 
-            # ✅ PIVOT LOGIC READY
+            # ✅ PIVOT LOGIC READY            
             if ENABLE_PIVOTS:
-                pivots = calculate_pivots(df)
-
+                # Get previous period HLC based on PIVOT_TIMEFRAME
+                prev_high = df.iloc[-2]["High"]
+                prev_low = df.iloc[-2]["Low"]
+                prev_close = df.iloc[-2]["Close"]
+                pivots = calculate_pivots(prev_high, prev_low, prev_close, PIVOT_METHOD)
+                
+                # 🎯 PIVOT BIAS CHECK — EXAMPLE LOGIC
+                current_price = df.iloc[-1]["Close"]
+                if PIVOT_BIAS_CHECK:
+                    if buy_cond and current_price > pivots["P"]:
+                        print(f"✅ PIVOT BIAS: Price above Pivot — LONG confirmed")
+                    elif sell_cond and current_price < pivots["P"]:
+                        print(f"✅ PIVOT BIAS: Price below Pivot — SHORT confirmed")
+                    else:
+                        print(f"⏸️ PIVOT BIAS MISMATCH — skip")
+                        buy_cond = sell_cond = False
+            
             decimals = 3 if "JPY" in oanda_sym else 5
             if buy_cond:
                 sl = round(current_price - (atr*1.8 + spread), decimals)
