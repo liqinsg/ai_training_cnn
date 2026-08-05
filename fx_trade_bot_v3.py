@@ -310,7 +310,31 @@ def main():
         else:
             print(f"❌ Order failed: {res.get('message', 'unknown error')}")
 
-    send_telegram_message(f"🤖 BOT RUN COMPLETE — {total} ORDERS EXECUTED | MODE={MODE}")
+    # ──────────────────────────────────────────────────────────
+    # 📤 BUILD FULL REPORT — SEND ONCE ONLY
+    # ──────────────────────────────────────────────────────────
+    msg_lines = []
+    msg_lines.append(f"🤖 FX TRADE BOT — RUN COMPLETE")
+    msg_lines.append(f"🔹 Mode: {MODE} | New orders: {total}")
+    msg_lines.append(f"🔹 Time: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
+    msg_lines.append("")
+
+
+    # === APPEND POSITION SUMMARY (REUSE YOUR MODULE) ===
+    from check_positions import get_position_summary
+    msg_lines.append(get_position_summary())
+
+    # === SEND ALL IN ONE GO ===
+    send_telegram_message("\n".join(msg_lines))
+    # send_telegram_message(f"🤖 BOT RUN COMPLETE — {total} ORDERS EXECUTED | MODE={MODE}")
+    
+    # from check_positions import get_position_summary
+    
+    # msg_lines = []
+    # msg_lines.append(get_position_summary())
+
+    # # Then send as before:
+    # send_telegram_message("\n".join(msg_lines))
 
 if __name__ == "__main__":
     print("[STRATEGY] Step 1 — Building currency strength matrix...")
