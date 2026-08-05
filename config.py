@@ -250,3 +250,16 @@ elif PRESET == "LEVEL10":
     REOPEN_DELAY_RUNS = 2
     ALLOW_TOP_N = 3
     ALLOW_BOTTOM_N = 3
+    
+# ==========================================
+# 📏 DYNAMIC TP & MARKET REGIME SETTINGS
+# ==========================================
+VOL_LOW_THRESHOLD = 4.0        # % — below = sideways/low vol
+VOL_HIGH_THRESHOLD = 7.0       # % — above = strong trend
+RANGE_LOW_PCT = 0.20           # Price position in MC range = sideways
+RANGE_HIGH_PCT = 0.50          # Price position = trending
+TP_MULT_SIDEWAYS = 1.5         # Quick take-profit
+TP_MULT_NORMAL = 2.0           # Standard trend
+TP_MULT_STRONG = 2.5           # Let profits run
+MIN_TREND_STRENGTH = 0.05      # % price change required to confirm trend
+

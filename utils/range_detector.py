@@ -1,3 +1,4 @@
+# utils/range_detector.py
 from utils.strategy_helpers import get_candles, _atr_from_candles, _ema
 from typing import Tuple
 import sys

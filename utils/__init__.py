@@ -18,8 +18,7 @@ from .trading_core import (
     get_latest_news_sentiment,
     validate_signal_with_fundamentals,
     get_news_risk_bias,
-    get_ensemble_consensus,
-    run_trading_cycle
+    get_ensemble_consensus
 )
 
 # Strategy helpers

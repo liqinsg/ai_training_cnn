@@ -557,15 +557,15 @@ def main():
                     spread_pips = 1.0
 
                 # buffer = spread_pips + 25 
-                buffer = spread_pips + 30  # was +25
-
+                buffer = spread_pips + 30  # Spread + 30 pips buffer — always safe
                 pip_size = 0.01 if "JPY" in pair else 0.0001
                 decimals = 3 if "JPY" in pair else 5
+
                 if best_dir == "SELL":
-                    target_sl = round(max(pivots["R1"], pivots["P"]) + buffer*pip_size, decimals)
+                    target_sl = round(max(pivots["R1"], pivots["P"]) + buffer * pip_size, decimals)
                     target_tp = round(pivots["S1"], decimals)
                 if best_dir == "BUY":
-                    target_sl = round(min(pivots["S1"], pivots["P"]) - buffer*pip_size, decimals)
+                    target_sl = round(min(pivots["S1"], pivots["P"]) - buffer * pip_size, decimals)
                     target_tp = round(pivots["R1"], decimals)
 
         adx_ok = adx >= TREND_THRESHOLD if MODE != "LEVEL10" else True

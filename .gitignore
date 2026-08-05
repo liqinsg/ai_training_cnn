@@ -219,3 +219,4 @@ __marimo__/
 daily_results/
 logs/
 .vscode*
+tmp/
