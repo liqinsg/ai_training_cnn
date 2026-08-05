@@ -220,3 +220,5 @@ daily_results/
 logs/
 .vscode*
 tmp/
+utils/trading_core_OLD*.py
+tmp/
