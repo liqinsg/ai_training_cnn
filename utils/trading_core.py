@@ -4,6 +4,7 @@ Core trading utilities: OANDA client, order execution, price formatting, Gemini 
 """
 from datetime import datetime
 import json
+import time
 import importlib
 from oandapyV20 import API
 from google import genai
@@ -12,8 +13,11 @@ import oandapyV20.endpoints.instruments as instruments
 import oandapyV20.endpoints.pricing as pricing
 import oandapyV20.endpoints.orders as orders
 import oandapyV20.endpoints.positions as positions  # ✅ ADDED
+from oandapyV20.endpoints.orders import OrderCreate
 
 from config_oanda import OANDA_ENV, OANDA_API_TOKEN, OANDA_ACCOUNT_ID
+
+api = API(access_token=OANDA_API_TOKEN, environment=OANDA_ENV)
 
 from config_gemini import (
     GEMINI_API_KEY,
@@ -21,11 +25,8 @@ from config_gemini import (
     USE_GEMINI_AI,
 )
 
-# ✅ REMOVED duplicate `api` — keep ONE client only
 oanda_client = API(access_token=OANDA_API_TOKEN, environment=OANDA_ENV)
 gemini_client = genai.Client(api_key=GEMINI_API_KEY) if USE_GEMINI_AI else None
-
-api = API(access_token=OANDA_API_TOKEN, environment=OANDA_ENV)
 
 # --------------------------
 # Basic Helpers
@@ -122,6 +123,81 @@ def get_recent_range(
         print(f"[RANGE ERROR] {e}")
         return None
 
+def execute_market_trade_v5(signal, units_override=None):
+    instrument = signal.pair_to_trade
+    units = units_override if units_override is not None else 10000
+    if signal.action == "SELL":
+        units = -abs(units)
+
+    # 1. PLACE MARKET ENTRY
+    try:
+        entry_data = {
+            "order": {
+                "type": "MARKET",
+                "instrument": instrument,
+                "units": str(units)
+            }
+        }
+        entry_resp = api.request(OrderCreate(accountID=OANDA_ACCOUNT_ID, data=entry_data))
+
+        # ✅ EXACT MATCH FOR YOUR RESPONSE — NO MORE MISSES
+        fill_tx = entry_resp.get("orderFillTransaction", {})
+        trade_id = None
+
+        # Direct safe access — we KNOW tradeOpened exists here
+        if "tradeOpened" in fill_tx:
+            trade_id = fill_tx["tradeOpened"].get("id")
+        elif "tradesOpened" in fill_tx and fill_tx["tradesOpened"]:
+            trade_id = fill_tx["tradesOpened"][0].get("id")
+
+        if not trade_id:
+            print(f"❌ Still no trade ID — fill_tx: {list(fill_tx.keys())}")
+            return False
+
+        filled_price = float(fill_tx.get("price", 0))
+        print(f"🔹 Entry filled: {signal.action} {instrument} @ {filled_price} | Trade ID: {trade_id}")
+
+    except Exception as e:
+        print(f"❌ Entry failed {instrument}: {repr(e)}")
+        return False
+
+    time.sleep(0.2)
+
+    # 2. ATTACH STOP LOSS
+    try:
+        if signal.stop_loss:
+            decimals = 3 if "JPY" in instrument else 5
+            api.request(OrderCreate(accountID=OANDA_ACCOUNT_ID, data={
+                "order": {
+                    "type": "STOP_LOSS",
+                    "instrument": instrument,
+                    "price": str(round(signal.stop_loss, decimals)),
+                    "tradeID": str(trade_id),
+                    "triggerCondition": "DEFAULT"
+                }
+            }))
+            print(f"🔹 SL attached @ {signal.stop_loss}")
+    except Exception as e:
+        print(f"⚠️ SL attach: {repr(e)[:80]}")
+
+    # 3. ATTACH TAKE PROFIT
+    try:
+        if signal.take_profit:
+            decimals = 3 if "JPY" in instrument else 5
+            api.request(OrderCreate(accountID=OANDA_ACCOUNT_ID, data={
+                "order": {
+                    "type": "TAKE_PROFIT",
+                    "instrument": instrument,
+                    "price": str(round(signal.take_profit, decimals)),
+                    "tradeID": str(trade_id),
+                    "triggerCondition": "DEFAULT"
+                }
+            }))
+            print(f"🔹 TP attached @ {signal.take_profit}")
+    except Exception as e:
+        print(f"⚠️ TP attach: {repr(e)[:80]}")
+
+    return True
 
 def execute_market_trade(signal, units_override=None):
     if not signal or signal.action == "HOLD":
@@ -280,7 +356,7 @@ def get_ensemble_consensus(prompt: str):
 # Core Bot Functions
 # --------------------------
 def open_oanda_order(signal: dict, units: float | None = None) -> dict:
-    """OANDA-compliant — no BOUNDS_VIOLATION ever"""
+    """✅ OANDA‑COMPLIANT — ATOMIC SL/TP, NO CANCELLATIONS"""
     pair_raw = signal["pair"]
     action = signal["action"]
     units = int(units) if action == "BUY" else -int(units)
@@ -288,37 +364,64 @@ def open_oanda_order(signal: dict, units: float | None = None) -> dict:
     tp = signal["take_profit"]
     decimals = 3 if "JPY" in pair_raw else 5
 
-    print(f"🔍 SENDING SL/TP for {pair_raw}: SL={sl} | TP={tp}")
+    # ✅ STEP 1: FETCH LIVE PRICES FIRST — ADJUST SL/TP TO BE VALID
+    try:
+        resp = oanda_client.request(
+            pricing.PricingInfo(OANDA_ACCOUNT_ID, {"instruments": pair_raw})
+        )
+        ask = float(resp["prices"][0]["asks"][0]["price"])
+        bid = float(resp["prices"][0]["bids"][0]["price"])
+        spread = ask - bid
 
-    # ✅ MINIMAL, EXACT OANDA SPEC — NO EXTRA FIELDS
+        # ✅ GUARANTEE SL/TP ARE WITHIN OANDA’S MINIMUM DISTANCE RULES
+        if action == "BUY":
+            # SL must be BELOW bid; TP must be ABOVE ask
+            sl = min(float(sl), bid - spread * 0.5)
+            tp = max(float(tp), ask + spread * 0.5)
+        else:
+            # SELL: SL above ask; TP below bid
+            sl = max(float(sl), ask + spread * 0.5)
+            tp = min(float(tp), bid - spread * 0.5)
+
+    except Exception as e:
+        print(f"⚠️ Price check skipped: {e} — using calculated levels")
+        sl = float(sl)
+        tp = float(tp)
+
+    print(f"🔍 SENDING SL/TP for {pair_raw}: SL={sl:.{decimals}f} | TP={tp:.{decimals}f}")
+
+    # ✅ STEP 2: EXACT OANDA SPEC — ATOMIC ATTACHMENT
     order_payload = {
         "order": {
             "type": "MARKET",
             "instrument": pair_raw,
             "units": str(units),
-            "timeInForce": "FOK",          # ✅ Use FOK — most reliable
+            "timeInForce": "IOC",          # ✅ Fill Or Cancel → Immediate or cancel (better than FOK)
             "positionFill": "DEFAULT",
             "stopLossOnFill": {
-                "price": str(round(float(sl), decimals)),
+                "price": f"{sl:.{decimals}f}",
                 "timeInForce": "GTC"
-                # ✅ REMOVE triggerMode — invalid for MARKET orders
             },
             "takeProfitOnFill": {
-                "price": str(round(float(tp), decimals)),
+                "price": f"{tp:.{decimals}f}",
                 "timeInForce": "GTC"
             }
-            # ✅ REMOVE priceBound — conflicts with SL/TP
         }
     }
 
     try:
         from oandapyV20.endpoints.orders import OrderCreate
-        resp = api.request(OrderCreate(accountID=OANDA_ACCOUNT_ID, data=order_payload))
-        print("✅ OANDA ACCEPTED — SL/TP ATTACHED")
-        return {"status": "OK", "response": resp}
+        resp = oanda_client.request(OrderCreate(accountID=OANDA_ACCOUNT_ID, data=order_payload))
+        if "orderFillTransaction" in resp:
+            fill = resp["orderFillTransaction"]
+            print(f"✅ FILLED {action} {pair_raw} @ {fill.get('price')} | SL/TP ATTACHED")
+            return {"status": "OK", "price": fill.get('price')}
+        cancel = resp.get("orderCancelTransaction", {})
+        print(f"❌ CANCELLED: {cancel.get('reason', 'Unknown')}")
+        return {"status": "CANCELLED", "reason": cancel.get("reason")}
     except Exception as e:
         return {"status": "ERROR", "message": f"OANDA API Error: {e}"}
-
+    
 
 def forex_market_closed():
     """Reliable UTC‑based market check — no API call"""

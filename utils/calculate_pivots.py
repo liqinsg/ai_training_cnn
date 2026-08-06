@@ -1,30 +1,8 @@
-#!/usr/bin/env python3
+#utils/calculate_pivots.py
 """
 Test script: calculate & verify all pivot types
 Matches TradingView / OANDA standard formulas
 """
-
-import pandas as pd
-
-
-def resample_ohlc(df: pd.DataFrame, rule: str = "D") -> pd.DataFrame:
-    """
-    Resample OHLCV data to higher timeframe (e.g. 15m → D / H4 / W)
-    
-    Args:
-        df: DataFrame with columns ['Open','High','Low','Close','Volume'] & datetime index
-        rule: Resample rule — "D"=Daily, "H4"=4‑Hour, "W"=Weekly, etc.
-    
-    Returns:
-        Resampled DataFrame with standard OHLC columns
-    """
-    return df.resample(rule).agg({
-        "Open": "first",
-        "High": "max",
-        "Low": "min",
-        "Close": "last",
-        "Volume": "sum"
-    })
 
 
 def calculate_pivots(prev_high: float, prev_low: float, prev_close: float, pivot_type: str = "Classic") -> dict:

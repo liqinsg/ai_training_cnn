@@ -4,6 +4,7 @@ Central import hub — all utilities available from here
 """
 from .data_provider import get_candles, get_latest_price
 from .schemas import TradeSignal
+from .calculate_pivots import calculate_pivots
 
 # Core trading & AI
 from .trading_core import (

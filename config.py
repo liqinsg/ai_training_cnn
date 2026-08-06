@@ -206,24 +206,11 @@ MC_TP_MAX_BAND_PCT = 0.7
 # PRESET = "CONSERVATIVE"
 # PRESET = "BALANCED"
 PRESET = "LEVEL10"
-
+NO_SIDE_WAYS_TRADE = True
 # ──────────────────────────────────────────
 # AUTO‑APPLY PRESET (OVERRIDES BASE DEFAULTS)
 # ──────────────────────────────────────────
-if PRESET == "CONSERVATIVE":
-    MODE = "NORMAL"
-    MIN_PROB = 0.55
-    NORMAL_MIN_PROB = 53.0
-    RELAXED_MIN_PROB = 51.0
-    STRENGTH_GAP_THRESHOLD = 12
-    MC_TP_MAX_BAND_PCT = 0.6
-    MAX_TOTAL_TRADES = 1
-    MAX_PER_USD_GROUP = 1
-    MAX_PER_JPY_GROUP = 1
-    TREND_THRESHOLD = 30
-    REOPEN_DELAY_RUNS = 3
-
-elif PRESET == "BALANCED":
+if PRESET == "BALANCED":
     MODE = "NORMAL"
     MIN_PROB = 0.52
     NORMAL_MIN_PROB = 51.0
@@ -235,22 +222,54 @@ elif PRESET == "BALANCED":
     MAX_PER_JPY_GROUP = 2
     TREND_THRESHOLD = 25
     REOPEN_DELAY_RUNS = 2
-
+elif PRESET == "CONSERVATIVE":
+    MODE = "NORMAL"
+    MIN_PROB = 0.55
+    NORMAL_MIN_PROB = 53.0
+    RELAXED_MIN_PROB = 51.0
+    STRENGTH_GAP_THRESHOLD = 12
+    MC_TP_MAX_BAND_PCT = 0.6
+    MAX_TOTAL_TRADES = 1
+    MAX_PER_USD_GROUP = 1
+    MAX_PER_JPY_GROUP = 1
+    TREND_THRESHOLD = 30
+    REOPEN_DELAY_RUNS = 3
+elif PRESET == "LEVEL9":
+    MODE = "LEVEL9"
+    MIN_PROB = 0.45
+    NORMAL_MIN_PROB = 45.0
+    RELAXED_MIN_PROB = 45.0
+    # === TESTING: LOOPS ENTRY FILTERS ===
+    STRENGTH_GAP_THRESHOLD = 1.0    # Was 7 → catch smaller gaps
+    MIN_TREND_STRENGTH = 0.001       # Lower → detect mild moves
+    ALLOW_TOP_N = 4                 # More candidates
+    ALLOW_BOTTOM_N = 4
+    # === KEEP RISK & TP LOGIC UNCHANGED ===
+    MC_TP_MAX_BAND_PCT = 0.7
+    MAX_TOTAL_TRADES = 4            # More pairs for testing
+    MAX_PER_USD_GROUP = 3
+    MAX_PER_JPY_GROUP = 3
+    TREND_THRESHOLD = 20
+    REOPEN_DELAY_RUNS = 2
+    NO_SIDE_WAYS_TRADE = False
 elif PRESET == "LEVEL10":
     MODE = "LEVEL10"
     MIN_PROB = 0.45
     NORMAL_MIN_PROB = 45.0
     RELAXED_MIN_PROB = 45.0
-    STRENGTH_GAP_THRESHOLD = 7
+    STRENGTH_GAP_THRESHOLD = 1.0
+    MIN_TREND_STRENGTH = 0.01
+    NO_SIDE_WAYS_TRADE = False
+    ALLOW_TOP_N = 5          # ✅ More candidates
+    ALLOW_BOTTOM_N = 5       # ✅ More candidates
+    # === RISK LIMITS — UP TO 5 TOTAL ===
+    MAX_TOTAL_TRADES = 5     # ✅ Allow up to 5 open positions
+    MAX_PER_USD_GROUP = 3    # ✅ Max 3 USD pairs
+    MAX_PER_JPY_GROUP = 3    # ✅ Max 3 JPY pairs
     MC_TP_MAX_BAND_PCT = 0.7
-    MAX_TOTAL_TRADES = 3
-    MAX_PER_USD_GROUP = 3
-    MAX_PER_JPY_GROUP = 3
     TREND_THRESHOLD = 20
     REOPEN_DELAY_RUNS = 2
-    ALLOW_TOP_N = 3
-    ALLOW_BOTTOM_N = 3
-    
+
 # ==========================================
 # 📏 DYNAMIC TP & MARKET REGIME SETTINGS
 # ==========================================
