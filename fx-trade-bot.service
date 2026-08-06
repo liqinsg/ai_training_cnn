@@ -1,0 +1,13 @@
+[Unit]
+Description=FX Trade Bot v6
+After=network.target
+
+[Service]
+User=nie
+WorkingDirectory=/home/nie/projects/ai_training_cnn
+ExecStart=/home/nie/miniforge3/envs/ai-sprint/bin/python fx_trade_bot_v6.py
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target

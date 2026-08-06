@@ -1,0 +1,16 @@
+version: "3.8"
+
+services:
+  fx-bot:
+    build:
+      context: .
+      dockerfile: fx_trade_bot.Dockerfile
+    container_name: fx-trade-bot
+    restart: unless-stopped
+    volumes:
+      - ./daily_results:/app/daily_results
+      - ./logs:/app/logs
+    env_file:
+      - .env
+    # If running cron inside container:
+    # command: ["cron", "-f"]

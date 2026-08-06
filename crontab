@@ -1,0 +1,2 @@
+# Every 15 mins — pulls latest code, rebuilds, runs once
+*/15 * * * * cd /home/nie/projects/ai_training_cnn && /usr/bin/docker-compose run --rm fx-bot
