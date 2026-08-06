@@ -1,4 +1,4 @@
-# fx_trade_bot_v4.py — PRODUCTION FINAL
+# fx_trade_bot_v6.py — PRODUCTION FINAL
 # ✅ Dual Daily + H4 MC | ✅ Atomic SL/TP | ✅ No carry‑over | ✅ Pivot filter | ✅ Risk limits
 import sys
 from pathlib import Path
@@ -9,6 +9,8 @@ import numpy as np
 import pandas as pd
 import pandas_ta as ta
 from utils.calculate_pivots import calculate_pivots
+from utils.get_last_trade_info import check_recent_closed_no_open
+from utils.calculate_risk_reward import is_trade_acceptable_with_min_rr,  is_trade_acceptable
 
 class Direction(Enum):
     LONG = "LONG"
@@ -74,6 +76,9 @@ MIN_TREND_STRENGTH = cfg("MIN_TREND_STRENGTH", 0.05)
 
 GRANULARITY_MAP = {"15m": "M15", "1h": "H1", "4h": "H4", "D": "D"}
 OANDA_GRAN = GRANULARITY_MAP.get(TIMEFRAME, "H1")
+MIN_REWARD_RISK = cfg("MIN_REWARD_RISK", 1.2)
+REENTRY_COOLDOWN_MINUTES = cfg("REENTRY_COOLDOWN_MINUTES", 60)
+
 
 # --------------------------
 # MARKET CHECK
@@ -87,13 +92,7 @@ if forex_market_closed():
 # --------------------------
 RESULTS_DIR = BASE_DIR / "daily_results"
 RESULTS_DIR.mkdir(exist_ok=True)
-CLOSED_PAIRS_FILE = RESULTS_DIR / "closed_pairs.json"
 
-def load_closed_pairs():
-    if CLOSED_PAIRS_FILE.exists():
-        with open(CLOSED_PAIRS_FILE) as f:
-            return json.load(f)
-    return {}
 
 def load_mc_data(pair):
     """✅ Loads H4 first, falls back to Daily — dual timeframe support"""
@@ -130,7 +129,6 @@ def main():
     active_positions = set(get_open_instruments())
     print(f"🔍 Open positions: {', '.join(active_positions) if active_positions else 'None'}")
 
-    closed_tracker = load_closed_pairs()
     today_str = datetime.now(timezone.utc).strftime("%Y%m%d")
     candidates = []
     target_prob_pct = MIN_PROB * 100 if MIN_PROB <= 1.0 else MIN_PROB
@@ -143,14 +141,14 @@ def main():
         mc_data = p_up = p_down = ann_vol = range_90 = current_price = None
 
         oanda_sym = YAHOO_TO_OANDA.get(pair, pair)
+        
+        
+        
         base_cur, quote_cur = oanda_sym.split("_")
 
         # ✅ Skip duplicates & cooldown BEFORE any work
         if oanda_sym in active_positions:
             print(f"⏭️ {oanda_sym}: already open — skip duplicate")
-            continue
-        if closed_tracker.get(pair) == today_str:
-            print(f"⏳ {oanda_sym}: cooldown — skip")
             continue
 
         # Load MC (H4 → Daily)
@@ -243,8 +241,7 @@ def main():
 
             if not (buy_cond or sell_cond):
                 continue
-
-
+        
             # ==================================================
             # ✅ OANDA‑PROVEN SAFE — 15 PIPS MINIMUM DISTANCE
             # Eliminates BOUNDS_VIOLATION permanently
@@ -269,6 +266,8 @@ def main():
                 tp = min(tp, current_price - min_safe_distance)
 
 
+
+
             # ✅ PRINT + ADD TO LIST — ONLY ONCE PER PAIR
             print(f"📤 {direction} {oanda_sym} | SL={sl} TP={tp}")
             candidates.append({
@@ -289,28 +288,70 @@ def main():
         if "USD" in sig["pair"] and usd_count >= MAX_PER_USD_GROUP: continue
         if "JPY" in sig["pair"] and jpy_count >= MAX_PER_JPY_GROUP: continue
 
+        # class MockSignal:
+        #     def __init__(self, p, a, s, t, r=""):
+        #         self.pair_to_trade = p
+        #         self.action = a
+        #         self.stop_loss = s
+        #         self.take_profit = t
+        #         self.reasoning = r
+
+        # mock_sig = MockSignal(
+        #     sig["pair"], sig["dir"], sig["sl"], sig["tp"],
+        #     f"MODE={MODE} | Prob={sig['prob']:.1f}%"
+        # )
+        
         class MockSignal:
-            def __init__(self, p, a, s, t, r=""):
+            def __init__(self, p, a, e, s, t, r=""):
                 self.pair_to_trade = p
                 self.action = a
+                self.entry_price = e
                 self.stop_loss = s
                 self.take_profit = t
                 self.reasoning = r
 
         mock_sig = MockSignal(
-            sig["pair"], sig["dir"], sig["sl"], sig["tp"],
+            sig["pair"], sig["dir"], current_price, sig["sl"], sig["tp"],  # ✅ PASS current_price
             f"MODE={MODE} | Prob={sig['prob']:.1f}%"
         )
+
         if get_open_position(mock_sig.pair_to_trade):
             print(f"double confirmation — skip execution for {mock_sig.pair_to_trade}")
             continue
+
+        # ==========================================
+        # 🛡️ DUPLICATE + COOLDOWN + R/R GUARD — FINAL
+        # ==========================================
+        has_no_open, in_cooldown, mins_ago, last_exit_dir = check_recent_closed_no_open(mock_sig.pair_to_trade, cooldown_mins=REENTRY_COOLDOWN_MINUTES)
+
+        # 1️⃣ ALREADY HOLDING → SKIP
+        if not has_no_open:
+            print(f"⏭️ {mock_sig.pair_to_trade}: position open — skip duplicate")
+            continue
+
+        # 2️⃣ NO OPEN + RECENTLY CLOSED → COOLDOWN
+        if in_cooldown:
+            print(f"⏭️ {mock_sig.pair_to_trade}: last exit {mins_ago:.0f}min ago — cooldown active")
+            continue
+        # 3️⃣ RISK/REWARD CHECK → SKIP IF POOR
+        if not is_trade_acceptable_with_min_rr(
+            entry_price=mock_sig.entry_price,
+            sl_price=mock_sig.stop_loss,
+            tp_price=mock_sig.take_profit,
+            min_rr_ratio=MIN_REWARD_RISK
+        ):
+            continue
+        # ✅ ALL CHECKS PASSED → PROCEED
+        print(f"✅ {mock_sig.pair_to_trade}: all checks passed")
+        print(f"📤 {mock_sig.action} {mock_sig.pair_to_trade} | SL={mock_sig.stop_loss} TP={mock_sig.take_profit}")
+
         if execute_market_trade_v5(mock_sig, units_override=DEFAULT_LOT_SIZE):
             total += 1
-            active_positions.add(sig["pair"])
-            if "USD" in sig["pair"]: usd_count += 1
-            if "JPY" in sig["pair"]: jpy_count += 1
+            active_positions.add(mock_sig.pair_to_trade)
+            if "USD" in mock_sig.pair_to_trade: usd_count += 1
+            if "JPY" in mock_sig.pair_to_trade: jpy_count += 1
         else:
-            print(f"❌ Failed execution for {sig['pair']}")
+            print(f"❌ Failed execution for {mock_sig.pair_to_trade}")
 
     # --- Consolidated Telegram Report ---
     msg_lines = [

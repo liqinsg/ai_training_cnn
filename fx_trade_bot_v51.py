@@ -1,5 +1,6 @@
-# fx_trade_bot_v4.py — PRODUCTION FINAL
+# fx_trade_bot_v6.py — ORIGINAL v4/v5 + ONLY CONFIG LOAD UPDATED
 # ✅ Dual Daily + H4 MC | ✅ Atomic SL/TP | ✅ No carry‑over | ✅ Pivot filter | ✅ Risk limits
+# ✅ ONLY CHANGE: Removed cfg() helper → load directly from config
 import sys
 from pathlib import Path
 from datetime import datetime, timezone
@@ -15,13 +16,13 @@ class Direction(Enum):
     SHORT = "SHORT"
 
 # --------------------------
-# PATH SETUP
+# PATH SETUP — UNCHANGED
 # --------------------------
 BASE_DIR = Path(__file__).resolve().parent
 sys.path.extend([str(BASE_DIR), str(BASE_DIR / "utils")])
 
 # --------------------------
-# IMPORTS
+# IMPORTS — UNCHANGED
 # --------------------------
 from utils.trading_core import (
     get_candles as get_oanda_candles,
@@ -34,56 +35,50 @@ from utils.calculate_currency_strength import calculate_currency_strength
 from utils.strategy_helpers import build_strength_matrix, format_strength_ranking
 from telegram_message import send_telegram_message
 from check_positions import get_position_summary
-import config
+import config  # ✅ SAME config.py file you already use
 
 # --------------------------
-# CONFIG HELPER
+# ✅ ONLY CHANGED PART: LOAD DIRECTLY — NO cfg() HELPER
 # --------------------------
-def cfg(name, default):
-    return getattr(config, name, default)
+MODE = getattr(config, "MODE", "LEVEL10")
+MIN_PROB = getattr(config, "MIN_PROB", 0.45)
+STRENGTH_GAP_THRESHOLD = getattr(config, "STRENGTH_GAP_THRESHOLD", 7)
+MAX_TOTAL_TRADES = getattr(config, "MAX_TOTAL_TRADES", 3)
+MAX_PER_USD_GROUP = getattr(config, "MAX_PER_USD_GROUP", 3)
+MAX_PER_JPY_GROUP = getattr(config, "MAX_PER_JPY_GROUP", 3)
+DEFAULT_LOT_SIZE = getattr(config, "DEFAULT_LOT_SIZE", 10000)
+ENABLE_PIVOTS = getattr(config, "ENABLE_PIVOTS", False)
+PIVOT_BIAS_CHECK = getattr(config, "PIVOT_BIAS_CHECK", True)
+PIVOT_METHOD = getattr(config, "PIVOT_METHOD", "Classic")
+DEFAULT_PAIRS = getattr(config, "DEFAULT_PAIRS", [])
+YAHOO_TO_OANDA = getattr(config, "YAHOO_TO_OANDA", {})
+TIMEFRAME = getattr(config, "TIMEFRAME", "15m")
+ALLOW_TOP_N = getattr(config, "ALLOW_TOP_N", 3)
+ALLOW_BOTTOM_N = getattr(config, "ALLOW_BOTTOM_N", 3)
+DEBUG_EDGE_REASON = getattr(config, "DEBUG_EDGE_REASON", True)
+NO_SIDE_WAYS_TRADE = getattr(config, "NO_SIDE_WAYS_TRADE", True)
 
-# --------------------------
-# LOAD PARAMETERS
-# --------------------------
-MODE = cfg("MODE", "LEVEL10")
-MIN_PROB = cfg("MIN_PROB", 0.45)
-STRENGTH_GAP_THRESHOLD = cfg("STRENGTH_GAP_THRESHOLD", 7)
-MAX_TOTAL_TRADES = cfg("MAX_TOTAL_TRADES", 3)
-MAX_PER_USD_GROUP = cfg("MAX_PER_USD_GROUP", 3)
-MAX_PER_JPY_GROUP = cfg("MAX_PER_JPY_GROUP", 3)
-DEFAULT_LOT_SIZE = cfg("DEFAULT_LOT_SIZE", 10000)
-ENABLE_PIVOTS = cfg("ENABLE_PIVOTS", False)
-PIVOT_BIAS_CHECK = cfg("PIVOT_BIAS_CHECK", True)
-PIVOT_METHOD = cfg("PIVOT_METHOD", "Classic")
-DEFAULT_PAIRS = cfg("DEFAULT_PAIRS", [])
-YAHOO_TO_OANDA = cfg("YAHOO_TO_OANDA", {})
-TIMEFRAME = cfg("TIMEFRAME", "15m")
-ALLOW_TOP_N = cfg("ALLOW_TOP_N", 3)
-ALLOW_BOTTOM_N = cfg("ALLOW_BOTTOM_N", 3)
-DEBUG_EDGE_REASON = cfg("DEBUG_EDGE_REASON", True)
-NO_SIDE_WAYS_TRADE = cfg("NO_SIDE_WAYS_TRADE", True)
-
-VOL_LOW_THRESHOLD = cfg("VOL_LOW_THRESHOLD", 4.0)
-VOL_HIGH_THRESHOLD = cfg("VOL_HIGH_THRESHOLD", 7.0)
-RANGE_LOW_PCT = cfg("RANGE_LOW_PCT", 0.20)
-RANGE_HIGH_PCT = cfg("RANGE_HIGH_PCT", 0.50)
-TP_MULT_SIDEWAYS = cfg("TP_MULT_SIDEWAYS", 1.5)
-TP_MULT_NORMAL = cfg("TP_MULT_NORMAL", 2.0)
-TP_MULT_STRONG = cfg("TP_MULT_STRONG", 2.5)
-MIN_TREND_STRENGTH = cfg("MIN_TREND_STRENGTH", 0.05)
+VOL_LOW_THRESHOLD = getattr(config, "VOL_LOW_THRESHOLD", 4.0)
+VOL_HIGH_THRESHOLD = getattr(config, "VOL_HIGH_THRESHOLD", 7.0)
+RANGE_LOW_PCT = getattr(config, "RANGE_LOW_PCT", 0.20)
+RANGE_HIGH_PCT = getattr(config, "RANGE_HIGH_PCT", 0.50)
+TP_MULT_SIDEWAYS = getattr(config, "TP_MULT_SIDEWAYS", 1.5)
+TP_MULT_NORMAL = getattr(config, "TP_MULT_NORMAL", 2.0)
+TP_MULT_STRONG = getattr(config, "TP_MULT_STRONG", 2.5)
+MIN_TREND_STRENGTH = getattr(config, "MIN_TREND_STRENGTH", 0.05)
 
 GRANULARITY_MAP = {"15m": "M15", "1h": "H1", "4h": "H4", "D": "D"}
 OANDA_GRAN = GRANULARITY_MAP.get(TIMEFRAME, "H1")
 
 # --------------------------
-# MARKET CHECK
+# MARKET CHECK — 100% UNCHANGED
 # --------------------------
 if forex_market_closed():
     print("⏸️ Market is closed — skipping run")
     raise SystemExit(0)
 
 # --------------------------
-# FILE PATHS & MC LOADER
+# FILE PATHS & MC LOADER — 100% UNCHANGED
 # --------------------------
 RESULTS_DIR = BASE_DIR / "daily_results"
 RESULTS_DIR.mkdir(exist_ok=True)
@@ -109,13 +104,13 @@ def load_mc_data(pair):
     return None
 
 # --------------------------
-# MAIN LOGIC
+# MAIN LOGIC — EVERY LINE IDENTICAL TO YOUR ORIGINAL
 # --------------------------
 def main():
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     print(f"\n🤖 FX TRADE BOT — {now} | MODE={MODE}")
 
-    # --- Currency Strength ---
+    # --- Currency Strength — UNCHANGED ---
     strength_scores = build_strength_matrix()
     ranked = sorted(strength_scores.items(), key=lambda x:x[1], reverse=True)
     top_val, bot_val = ranked[0][1], ranked[-1][1]
@@ -135,9 +130,8 @@ def main():
     candidates = []
     target_prob_pct = MIN_PROB * 100 if MIN_PROB <= 1.0 else MIN_PROB
 
-    # --- Pair Processing Loop ---
+    # --- Pair Processing Loop — EXACTLY YOUR CODE ---
     for pair in DEFAULT_PAIRS:
-        # ✅ FULL VARIABLE RESET PER PAIR — ZERO CARRY‑OVER
         buy_cond = sell_cond = False
         sl = tp = direction = None
         mc_data = p_up = p_down = ann_vol = range_90 = current_price = None
@@ -145,7 +139,7 @@ def main():
         oanda_sym = YAHOO_TO_OANDA.get(pair, pair)
         base_cur, quote_cur = oanda_sym.split("_")
 
-        # ✅ Skip duplicates & cooldown BEFORE any work
+        # ✅ YOUR ORIGINAL CHECKS — NO ADDITIONS
         if oanda_sym in active_positions:
             print(f"⏭️ {oanda_sym}: already open — skip duplicate")
             continue
@@ -153,7 +147,7 @@ def main():
             print(f"⏳ {oanda_sym}: cooldown — skip")
             continue
 
-        # Load MC (H4 → Daily)
+        # Load MC — UNCHANGED
         mc_data = load_mc_data(pair)
         if not mc_data:
             continue
@@ -164,7 +158,7 @@ def main():
         range_90 = mc_data.get("range_90", [1.0, 1.0])
         current_price = mc_data.get("current_price", (range_90[0]+range_90[1])/2)
 
-        # Trend & sideways filter
+        # Trend & sideways — UNCHANGED
         price_range = range_90[1] - range_90[0]
         price_pos_pct = (current_price - range_90[0]) / price_range if price_range > 0 else 0.5
         uptrend = price_pos_pct > (0.5 + MIN_TREND_STRENGTH)
@@ -174,7 +168,7 @@ def main():
             print(f"⏸️ {oanda_sym}: sideways — skip")
             continue
 
-        # Strength + Probability conditions
+        # Strength + Probability — UNCHANGED
         base_top = base_cur in top_n
         base_bot = base_cur in bottom_n
         quote_top = quote_cur in top_n
@@ -185,7 +179,7 @@ def main():
         buy_cond = base_top and quote_bot and prob_ok_buy and (not NO_SIDE_WAYS_TRADE or uptrend)
         sell_cond = base_bot and quote_top and prob_ok_sell and (not NO_SIDE_WAYS_TRADE or downtrend)
 
-        # Debug output
+        # Debug — EXACTLY YOUR FORMAT
         if DEBUG_EDGE_REASON:
             if buy_cond or sell_cond:
                 dir_txt = "BUY" if buy_cond else "SELL"
@@ -203,7 +197,7 @@ def main():
         if not (buy_cond or sell_cond):
             continue
 
-        # Regime → TP multiplier
+        # Regime → TP — UNCHANGED
         if price_pos_pct < RANGE_LOW_PCT or ann_vol < VOL_LOW_THRESHOLD:
             tp_mult, label = TP_MULT_SIDEWAYS, "SIDEWAYS → TP TIGHT"
         elif price_pos_pct < RANGE_HIGH_PCT or ann_vol < VOL_HIGH_THRESHOLD:
@@ -212,7 +206,7 @@ def main():
             tp_mult, label = TP_MULT_STRONG, "STRONG → TP WIDE"
         print(f"📊 {oanda_sym}: {label}")
 
-        # Calculate ATR + SL/TP
+        # ATR + SL/TP — 100% YOUR CODE
         pip_size = 0.01 if "JPY" in oanda_sym else 0.0001
         spread = 2 * pip_size
         try:
@@ -222,11 +216,9 @@ def main():
             if not rows: raise ValueError("No candles")
             df = pd.DataFrame(rows)
             atr = ta.atr(df["High"], df["Low"], df["Close"], 14).iloc[-1]
-
-            # ✅ USE LIVE CANDLE PRICE — NOT MC SIMULATED
             current_price = df.iloc[-1]["Close"]
 
-            # Pivot check
+            # Pivot — UNCHANGED
             if ENABLE_PIVOTS:
                 prev_high = df.iloc[-2]["High"]
                 prev_low = df.iloc[-2]["Low"]
@@ -244,15 +236,9 @@ def main():
             if not (buy_cond or sell_cond):
                 continue
 
-
-            # ==================================================
-            # ✅ OANDA‑PROVEN SAFE — 15 PIPS MINIMUM DISTANCE
-            # Eliminates BOUNDS_VIOLATION permanently
-            # ==================================================
             decimals = 3 if "JPY" in oanda_sym else 5
             pip_size = 0.01 if "JPY" in oanda_sym else 0.0001
             spread = 2 * pip_size
-            # ✅ 15 PIPS — exceeds OANDA’s strictest limits
             min_safe_distance = 5 * pip_size
 
             if buy_cond:
@@ -268,8 +254,6 @@ def main():
                 tp = max(tp, range_90[0])
                 tp = min(tp, current_price - min_safe_distance)
 
-
-            # ✅ PRINT + ADD TO LIST — ONLY ONCE PER PAIR
             print(f"📤 {direction} {oanda_sym} | SL={sl} TP={tp}")
             candidates.append({
                 "pair": oanda_sym, "dir": direction,
@@ -280,7 +264,7 @@ def main():
             print(f"❌ {oanda_sym}: SL/TP skipped — {e}")
             continue
 
-    # --- Execute filtered signals ---
+    # --- Execute — EXACTLY YOUR CODE ---
     candidates.sort(key=lambda x:x["prob"], reverse=True)
     usd_count = jpy_count = total = 0
 
@@ -312,7 +296,7 @@ def main():
         else:
             print(f"❌ Failed execution for {sig['pair']}")
 
-    # --- Consolidated Telegram Report ---
+    # --- Telegram — UNCHANGED ---
     msg_lines = [
         "🤖 FX TRADE BOT — RUN COMPLETE",
         f"🔹 Mode: {MODE} | New orders: {total}",

@@ -207,6 +207,7 @@ MC_TP_MAX_BAND_PCT = 0.7
 # PRESET = "BALANCED"
 PRESET = "LEVEL10"
 NO_SIDE_WAYS_TRADE = True
+MIN_REWARD_RISK = 1.2
 # ──────────────────────────────────────────
 # AUTO‑APPLY PRESET (OVERRIDES BASE DEFAULTS)
 # ──────────────────────────────────────────
@@ -254,7 +255,7 @@ elif PRESET == "LEVEL9":
     NO_SIDE_WAYS_TRADE = False
 elif PRESET == "LEVEL10":
     MODE = "LEVEL10"
-    MIN_PROB = 0.45
+    MIN_PROB = 0.35
     NORMAL_MIN_PROB = 45.0
     RELAXED_MIN_PROB = 45.0
     STRENGTH_GAP_THRESHOLD = 1.0
@@ -269,6 +270,8 @@ elif PRESET == "LEVEL10":
     MC_TP_MAX_BAND_PCT = 0.7
     TREND_THRESHOLD = 20
     REOPEN_DELAY_RUNS = 2
+    MIN_REWARD_RISK = 1.001
+
 
 # ==========================================
 # 📏 DYNAMIC TP & MARKET REGIME SETTINGS
@@ -281,4 +284,15 @@ TP_MULT_SIDEWAYS = 1.5         # Quick take-profit
 TP_MULT_NORMAL = 2.0           # Standard trend
 TP_MULT_STRONG = 2.5           # Let profits run
 MIN_TREND_STRENGTH = 0.05      # % price change required to confirm trend
+
+# ==========================================
+# RE-ENTRY CONTROL — PREVENT OVERTRADING
+# ==========================================
+# After TP: wait for price to pull back before re-entering same direction
+REENTRY_COOLDOWN_MINUTES = 0.001 #60     # Also wait 60min minimum after TP/SL
+REENTRY_MIN_PULLBACK_PIPS = 8.0   # Wait 8+ pips retracement before re-entry
+REENTRY_STRENGTH_CONFIRM = True  # Require currency strength still aligned
+# Only enter when price is near MC range boundary
+ENTRY_PERCENTILE_LOW = 15    # LONG only if price in bottom 15% of range
+ENTRY_PERCENTILE_HIGH = 85   # SHORT only if price in top 15% of range
 

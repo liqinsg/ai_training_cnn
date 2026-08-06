@@ -5,7 +5,8 @@ Central import hub — all utilities available from here
 from .data_provider import get_candles, get_latest_price
 from .schemas import TradeSignal
 from .calculate_pivots import calculate_pivots
-
+from .calculate_risk_reward import calculate_risk_reward, get_rr_ratio, is_trade_acceptable, is_trade_acceptable_with_min_rr
+from .get_last_trade_info import check_recent_closed_no_open
 # Core trading & AI
 from .trading_core import (
     oanda_client,
