@@ -6,14 +6,19 @@ from datetime import datetime
 import json
 import time
 import importlib
-from oandapyV20 import API
 from google import genai
 from google.genai import types
+from utils import format_oanda_time
 import oandapyV20.endpoints.instruments as instruments
 import oandapyV20.endpoints.pricing as pricing
 import oandapyV20.endpoints.orders as orders
 import oandapyV20.endpoints.positions as positions  # ✅ ADDED
 from oandapyV20.endpoints.orders import OrderCreate
+from oandapyV20 import API
+from oandapyV20.endpoints.trades import OpenTrades
+from oandapyV20.endpoints.positions import OpenPositions
+from collections import defaultdict
+
 
 from config_oanda import OANDA_ENV, OANDA_API_TOKEN, OANDA_ACCOUNT_ID
 
@@ -353,7 +358,290 @@ def forex_market_closed():
     wd = now.weekday()
     return wd == 6 or (wd == 5 and now.hour >= 21)
 
+# def get_open_positions_formatted():
+#     """
+#     Return a list of dicts describing open positions with UTC open time.
+#     Example item:
+#     {'instrument': 'EUR_JPY', 'direction': 'long', 'units': 123, 'open_time_utc': '2026-08-07T12:34:56.789Z'}
+#     """
+#     try:
+#         resp = oanda_client.request(
+#             positions.OpenPositions(accountID=OANDA_ACCOUNT_ID)
+#         )
 
+#         out = []
+#         for pos in resp.get("positions", []):
+#             instrument = pos.get("instrument")
+#             if not instrument:
+#                 continue
+
+#             long_block = pos.get("long") or {}
+#             short_block = pos.get("short") or {}
+
+#             long_units = float(long_block.get("units", 0) or 0)
+#             short_units = float(short_block.get("units", 0) or 0)
+
+#             # Helper: OANDA usually returns ISO-8601 strings already in UTC with trailing 'Z'
+#             long_open_time = long_block.get("openTime") or pos.get("openTime")
+#             short_open_time = short_block.get("openTime") or pos.get("openTime")
+
+#             if long_units != 0:
+#                 out.append({
+#                     "instrument": instrument,
+#                     "direction": "long",
+#                     "units": long_units,
+#                     "open_time_utc": long_open_time,  # expected ISO-8601 UTC, e.g. "...Z"
+#                 })
+
+#             if short_units != 0:
+#                 out.append({
+#                     "instrument": instrument,
+#                     "direction": "short",
+#                     "units": short_units,
+#                     "open_time_utc": short_open_time,
+#                 })
+
+#         return out
+
+#     except Exception as e:
+#         print(f"⚠️ Position check skipped: {e}")
+#         return []
+
+from datetime import datetime, timezone
+
+def _to_utc_iso_z(value):
+    """Convert common datetime formats to ISO-8601 UTC string with trailing Z."""
+    if value is None:
+        return None
+
+    # If already ISO string
+    if isinstance(value, str):
+        try:
+            dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            return dt.astimezone(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        except Exception:
+            return value  # fallback: return raw string
+
+    # If numeric epoch (seconds or milliseconds)
+    if isinstance(value, (int, float)):
+        ts = float(value)
+        if ts > 1e12:  # likely milliseconds
+            ts /= 1000.0
+        dt = datetime.fromtimestamp(ts, tz=timezone.utc)
+        return dt.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+    return None
+
+
+def _get_open_positions_formatted(debug_open_time=False):
+    """
+    Return list of dicts:
+    [{'instrument': 'USD_JPY', 'direction': 'long', 'units': 1000.0, 'open_time_utc': '...Z'}, ...]
+    """
+    try:
+        resp = oanda_client.request(
+            positions.OpenPositions(accountID=OANDA_ACCOUNT_ID)
+        )
+
+        out = []
+        positions_list = resp.get("positions", [])
+
+        for pos in positions_list:
+            instrument = pos.get("instrument")
+            if not instrument:
+                continue
+
+            long_block = pos.get("long") or {}
+            short_block = pos.get("short") or {}
+
+            long_units = float(long_block.get("units", 0) or 0)
+            short_units = float(short_block.get("units", 0) or 0)
+
+            # Try multiple likely field names/locations in ONE response
+            def extract_time(direction: str):
+                block = long_block if direction == "long" else short_block
+
+                candidates = [
+                    block.get("openTime"),
+                    pos.get("openTime"),
+                    block.get("open_time_utc"),
+                    pos.get("open_time_utc"),
+                    block.get("open_time"),
+                    pos.get("open_time"),
+                    block.get("openTimestamp"),
+                    pos.get("openTimestamp"),
+                    # sometimes people have it under a generic "time" key:
+                    block.get("time"),
+                    pos.get("time"),
+                ]
+
+                if debug_open_time:
+                    print("DEBUG time candidates for", instrument, direction, "=>", candidates)
+
+                for c in candidates:
+                    iso = _to_utc_iso_z(c)
+                    if iso is not None:
+                        return iso
+                return None
+
+            if long_units != 0:
+                out.append({
+                    "instrument": instrument,
+                    "direction": "long",
+                    "units": long_units,
+                    "open_time_utc": extract_time("long"),
+                })
+
+            if short_units != 0:
+                out.append({
+                    "instrument": instrument,
+                    "direction": "short",
+                    "units": short_units,
+                    "open_time_utc": extract_time("short"),
+                })
+
+        return out
+
+    except Exception as e:
+        print(f"⚠️ Position check skipped: {e}")
+        return []
+
+def get_open_positions_formatted(account_id=OANDA_ACCOUNT_ID, use_trades_endpoint=True):
+    """
+    统一获取 OANDA 活跃持仓函数（整合 Trades 与 Positions 信息）：
+    返回列表字典:
+    [
+        {
+            'id': '3242', 
+            'instrument': 'EUR_USD', 
+            'direction': 'LONG',  # 'LONG' 或 'SHORT'
+            'units': 10000.0, 
+            'open_time_utc': '2026-08-07T01:41:00Z'
+        }, ...
+    ]
+    """
+    # 方案 A：通过 OpenTrades Endpoint 获取（推荐：包含精确 openTime 与单号 id）
+    if use_trades_endpoint:
+        try:
+            req = OpenTrades(accountID=account_id)
+            resp = api.request(req)
+            trades = resp.get("trades", [])
+
+            for trade in trades:
+                units = float(trade.get("currentUnits", 0))
+                if units == 0:
+                    continue
+
+                direction = "LONG" if units > 0 else "SHORT"
+                raw_time = trade.get("openTime")
+
+                out.append({
+                    "id": trade.get("id"),
+                    "instrument": trade.get("instrument"),
+                    "direction": direction,
+                    "units": abs(units),
+                    "raw_units": units,
+                    "open_time_utc": _to_utc_iso_z(raw_time) if "_to_utc_iso_z" in globals() else raw_time
+                })
+            return out
+        except Exception as e:
+            print(f"⚠️ OpenTrades 获取失败，降级回退至 OpenPositions: {e}")
+            
+    out = []
+    # 方案 B：通过 OpenPositions 汇总 Endpoint 备用获取
+    try:
+        req = OpenPositions(accountID=account_id)
+        resp = api.request(req)
+        positions_list = resp.get("positions", [])
+
+        for pos in positions_list:
+            instrument = pos.get("instrument")
+            if not instrument:
+                continue
+
+            long_block = pos.get("long") or {}
+            short_block = pos.get("short") or {}
+
+            long_units = float(long_block.get("units", 0) or 0)
+            short_units = float(short_block.get("units", 0) or 0)
+
+            if long_units > 0:
+                out.append({
+                    "id": None,
+                    "instrument": instrument,
+                    "direction": "LONG",
+                    "units": abs(long_units),
+                    "raw_units": long_units,
+                    "open_time_utc": None  # OpenPositions 汇总接口不提供单一开仓时间
+                })
+
+            if short_units < 0:
+                out.append({
+                    "id": None,
+                    "instrument": instrument,
+                    "direction": "SHORT",
+                    "units": abs(short_units),
+                    "raw_units": short_units,
+                    "open_time_utc": None
+                })
+
+        return out
+
+    except Exception as e:
+        print(f"⚠️ Position check failed: {e}")
+        return []
+
+
+def get_open_positions_formatted():
+    try:
+        pos_resp = oanda_client.request(
+            OpenPositions(accountID=OANDA_ACCOUNT_ID)
+        )
+
+        trade_resp = oanda_client.request(
+            OpenTrades(accountID=OANDA_ACCOUNT_ID)
+        )
+
+        trade_times = defaultdict(list)
+
+        for trade in trade_resp.get("trades", []):
+            trade_times[(trade["instrument"],
+                         "long" if float(trade["currentUnits"]) > 0 else "short")].append(
+                trade.get("openTime")
+            )
+
+        out = []
+
+        for pos in pos_resp.get("positions", []):
+            instrument = pos["instrument"]
+
+            long_units = float(pos["long"]["units"])
+            short_units = float(pos["short"]["units"])
+
+            if long_units != 0:
+                times = trade_times.get((instrument, "long"), [])
+                out.append({
+                    "instrument": instrument,
+                    "direction": "long",
+                    "units": long_units,
+                    "open_time_utc": min(times) if times else None
+                })
+
+            if short_units != 0:
+                times = trade_times.get((instrument, "short"), [])
+                out.append({
+                    "instrument": instrument,
+                    "direction": "short",
+                    "units": abs(short_units),
+                    "open_time_utc": min(times) if times else None
+                })
+
+        return out
+
+    except Exception as e:
+        print(f"⚠️ Position check skipped: {e}")
+        return []
+    
 def get_open_instruments():
     """Return set of all instruments with open positions"""
     try:
@@ -438,3 +726,49 @@ def close_position(instrument: str) -> bool:
     except Exception as e:
         print(f"[CLOSE ERROR] {e}")
         return False
+
+def get_positions():
+    resp = api.request(OpenTrades(OANDA_ACCOUNT_ID))
+    return [{"id": trade["id"], "instrument": trade["instrument"], "units": trade["currentUnits"], "open_time": format_oanda_time(trade["openTime"])} for trade in resp["trades"]]
+
+from oandapyV20.endpoints.trades import OpenTrades
+
+def get_open_positions():
+    """
+    Return:
+    [
+        {
+            "trade_id": "12345",
+            "instrument": "USD_JPY",
+            "direction": "long",
+            "units": 1000,
+            "open_time_utc": "2026-08-07T01:23:45Z"
+        }
+    ]
+    """
+    try:
+        resp = oanda_client.request(
+            OpenTrades(accountID=OANDA_ACCOUNT_ID)
+        )
+
+        out = []
+
+        for trade in resp.get("trades", []):
+            units = float(trade.get("currentUnits", 0))
+
+            if units == 0:
+                continue
+
+            out.append({
+                "trade_id": trade["id"],
+                "instrument": trade["instrument"],
+                "direction": "long" if units > 0 else "short",
+                "units": abs(units),
+                "open_time_utc": _to_utc_iso_z(trade.get("openTime")),
+            })
+
+        return out
+
+    except Exception as e:
+        print(f"⚠️ Position check skipped: {e}")
+        return []

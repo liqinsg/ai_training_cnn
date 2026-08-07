@@ -2,6 +2,7 @@
 """
 Central import hub — all utilities available from here
 """
+from .utils import *
 from .data_provider import get_candles, get_latest_price
 from .schemas import TradeSignal
 from .calculate_pivots import calculate_pivots
@@ -20,7 +21,8 @@ from .trading_core import (
     get_latest_news_sentiment,
     validate_signal_with_fundamentals,
     get_news_risk_bias,
-    get_ensemble_consensus
+    get_ensemble_consensus,
+    get_open_positions_formatted
 )
 
 # Strategy helpers

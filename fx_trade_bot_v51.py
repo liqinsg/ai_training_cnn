@@ -11,6 +11,8 @@ import pandas as pd
 import pandas_ta as ta
 from utils.calculate_pivots import calculate_pivots
 
+from monte_carlo.position_monitor import position_monitor
+
 class Direction(Enum):
     LONG = "LONG"
     SHORT = "SHORT"
@@ -107,6 +109,9 @@ def load_mc_data(pair):
 # MAIN LOGIC — EVERY LINE IDENTICAL TO YOUR ORIGINAL
 # --------------------------
 def main():
+    # 1. Run MC position monitor first to handle probability decay & exits
+    position_monitor()
+    
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     print(f"\n🤖 FX TRADE BOT — {now} | MODE={MODE}")
 
