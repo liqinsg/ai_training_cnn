@@ -1,21 +1,18 @@
 """
-data_pipeline.py
-Data ingestion, feature engineering, and model training layer.
-ATR-aware, XGBoost-first, minimal traditional indicators.
+data_pipeline.py — v3.0 Defensive
+ATR-aware, XGBoost-first, bulletproof feature engineering.
 """
 import json
 import pickle
 import logging
 from pathlib import Path
 from typing import Optional, List, Dict, Tuple
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
 import numpy as np
 import pandas as pd
-import pandas_ta as ta
 
-# Optional: XGBoost
 xgboost_available = False
 try:
     import xgboost as xgb
@@ -23,7 +20,6 @@ try:
 except ImportError:
     pass
 
-# Optional: sklearn fallback
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import TimeSeriesSplit
 from sklearn.preprocessing import StandardScaler
@@ -31,256 +27,254 @@ from sklearn.preprocessing import StandardScaler
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# 1. CONFIG
-# ---------------------------------------------------------------------------
-
 @dataclass
 class FeatureConfig:
-    """Control which features are generated. Toggle OFF anything you don't want."""
-
-    # --- ATR (volatility) ---
     use_atr: bool = True
     atr_period: int = 14
-    atr_sl_mult: float = 2.0       # SL = entry ± ATR * mult
-    atr_tp_mult: float = 3.0       # TP = entry ± ATR * mult (1.5:1 R/R)
+    atr_sl_mult: float = 2.0
+    atr_tp_mult: float = 3.0
     atr_position_sizing: bool = True
-    risk_per_trade_pct: float = 0.01  # 1% of equity per trade
+    risk_per_trade_pct: float = 0.01
 
-    # --- Price action / momentum (lightweight, non-lagging) ---
     use_returns: bool = True
     use_volatility: bool = True
     use_body_features: bool = True
 
-    # --- Minimal traditional (can disable) ---
     use_rsi: bool = True
     rsi_period: int = 14
-    use_macd: bool = False         # off by default — laggy
-    use_adx: bool = True           # trend strength, not direction
+    use_macd: bool = False
+    use_adx: bool = True
     adx_period: int = 14
 
-    # --- ML model ---
-    model_type: str = "xgboost"    # "xgboost" | "sklearn_rf"
-    target_horizon: int = 6        # bars ahead to predict (6 * 15m = 1.5h)
+    model_type: str = "xgboost"
+    target_horizon: int = 6
     train_lookback_bars: int = 5000
     retrain_every_n_days: int = 7
+    required_bars: int = 20  # absolute minimum
 
-    # --- Data ---
-    required_bars: int = 200
-
-
-# ---------------------------------------------------------------------------
-# 2. ATR MODULE (extracted from your PDFs)
-# ---------------------------------------------------------------------------
 
 class ATRModule:
-    """
-    ATR is NOT a trend indicator. It measures volatility.
-    - High ATR → wide stops, reduce size
-    - Low ATR → tight stops, normal size
-    - ATR expansion → potential breakout / regime change
-    - ATR contraction → consolidation, beware false breaks
-    """
-
     def __init__(self, period: int = 14):
         self.period = period
 
     def compute(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Add ATR columns to df."""
         df = df.copy()
+        n = len(df)
+        if n < 2:
+            df["atr"] = np.nan
+            df["atr_pct"] = np.nan
+            df["atr_percentile"] = 0.5
+            df["atr_ma"] = np.nan
+            df["atr_expanding"] = 0
+            df["atr_ratio"] = 1.0
+            df["vol_regime"] = "normal"
+            return df
 
-        # Standard ATR
-        df["atr"] = ta.atr(df["High"], df["Low"], df["Close"], length=self.period)
+        try:
+            import pandas_ta as ta
+            atr_series = ta.atr(df["High"], df["Low"], df["Close"], length=self.period)
+            if atr_series is None or atr_series.empty:
+                raise ValueError("ta.atr returned None/empty")
+            df["atr"] = atr_series
+        except Exception as e:
+            logger.warning(f"ta.atr failed ({e}), using manual TR")
+            df["tr1"] = df["High"] - df["Low"]
+            df["tr2"] = (df["High"] - df["Close"].shift(1)).abs()
+            df["tr3"] = (df["Low"] - df["Close"].shift(1)).abs()
+            df["tr"] = df[["tr1", "tr2", "tr3"]].max(axis=1)
+            df["atr"] = df["tr"].rolling(window=self.period, min_periods=1).mean()
+            df = df.drop(columns=["tr1", "tr2", "tr3", "tr"], errors="ignore")
 
-        # ATR as % of price (normalized across pairs)
         df["atr_pct"] = df["atr"] / df["Close"]
 
-        # ATR percentile (where does current ATR sit vs last 20 days?)
-        df["atr_percentile"] = df["atr"].rolling(20 * 96).apply(  # 20 days of 15m
-            lambda x: pd.Series(x).rank(pct=True).iloc[-1] if len(x) > 1 else 0.5,
-            raw=False
-        )
+        # ATR percentile — safe rolling min/max method
+        lookback = min(n, max(self.period * 2, 50))
+        atr_min = df["atr"].rolling(window=lookback, min_periods=1).min()
+        atr_max = df["atr"].rolling(window=lookback, min_periods=1).max()
+        atr_range = (atr_max - atr_min).replace(0, np.nan)
+        df["atr_percentile"] = ((df["atr"] - atr_min) / atr_range).fillna(0.5).clip(0, 1)
 
-        # ATR trend: expanding or contracting?
-        df["atr_ma"] = df["atr"].rolling(self.period).mean()
-        df["atr_expanding"] = (df["atr"] > df["atr_ma"]).astype(int)
+        df["atr_ma"] = df["atr"].rolling(window=self.period, min_periods=1).mean()
+        df["atr_expanding"] = (df["atr"] > df["atr_ma"]).fillna(0).astype(int)
 
-        # ATR ratio vs recent history (spike detection)
-        df["atr_ratio"] = df["atr"] / df["atr"].rolling(self.period * 2).mean()
+        hist_window = min(n, self.period * 2)
+        atr_hist_mean = df["atr"].rolling(window=hist_window, min_periods=1).mean().replace(0, np.nan)
+        df["atr_ratio"] = (df["atr"] / atr_hist_mean).fillna(1.0)
 
-        # Volatility regime
-        df["vol_regime"] = pd.cut(
-            df["atr_percentile"],
-            bins=[0, 0.25, 0.75, 1.0],
-            labels=["low", "normal", "high"]
-        ).astype(str)
+        # Vol regime
+        df["vol_regime"] = "normal"
+        df.loc[df["atr_percentile"] < 0.25, "vol_regime"] = "low"
+        df.loc[df["atr_percentile"] > 0.75, "vol_regime"] = "high"
 
         return df
 
     def sl_tp_from_atr(self, entry: float, direction: str,
                        atr_value: float, is_jpy: bool,
                        sl_mult: float = 2.0, tp_mult: float = 3.0
-                       ) -> Tuple[float, float]:
-        """
-        Build SL/TP purely from ATR.
-        SELL: SL above entry, TP below entry
-        BUY:  SL below entry, TP above entry
-        """
+                       ) -> Tuple[Optional[float], Optional[float]]:
+        if not atr_value or np.isnan(atr_value) or atr_value <= 0:
+            return None, None
         pip = 0.01 if is_jpy else 0.0001
         decimals = 3 if is_jpy else 5
-
-        sl_distance = atr_value * sl_mult
-        tp_distance = atr_value * tp_mult
-
+        sl_dist = atr_value * sl_mult
+        tp_dist = atr_value * tp_mult
         if direction == "SELL":
-            sl = round(entry + sl_distance, decimals)
-            tp = round(entry - tp_distance, decimals)
+            sl = round(entry + sl_dist, decimals)
+            tp = round(entry - tp_dist, decimals)
         else:
-            sl = round(entry - sl_distance, decimals)
-            tp = round(entry + tp_distance, decimals)
-
+            sl = round(entry - sl_dist, decimals)
+            tp = round(entry + tp_dist, decimals)
+        if direction == "SELL" and not (sl > entry > tp):
+            return None, None
+        if direction == "BUY" and not (tp > entry > sl):
+            return None, None
         return sl, tp
 
     def position_size(self, equity: float, risk_pct: float,
                       entry: float, sl: float,
                       pair: str, atr_value: float) -> int:
-        """
-        Risk-based position sizing using ATR.
-        Units = (Equity * Risk%) / |entry - SL|
-        """
         risk_amount = equity * risk_pct
         sl_distance = abs(entry - sl)
         if sl_distance == 0:
             return 0
-
         units = int(risk_amount / sl_distance)
-
-        # Cap by ATR: if ATR is huge (volatile), reduce size further
-        atr_pct = atr_value / entry
-        if atr_pct > 0.002:  # > 0.2% ATR = very volatile
+        atr_pct = (atr_value / entry) if entry and atr_value else 0
+        if atr_pct > 0.002:
             units = int(units * 0.5)
             logger.info(f"High volatility ({atr_pct:.4f}), halving size")
+        return max(units, 1000)
 
-        return max(units, 1000)  # minimum 1k units
-
-
-# ---------------------------------------------------------------------------
-# 3. FEATURE ENGINE
-# ---------------------------------------------------------------------------
 
 class FeatureEngine:
-    """
-    Build ML-ready features. Avoids heavy traditional indicators.
-    Focus: price action, volatility, microstructure.
-    """
-
     def __init__(self, cfg: FeatureConfig):
         self.cfg = cfg
         self.atr_mod = ATRModule(period=cfg.atr_period)
 
     def build(self, df: pd.DataFrame) -> pd.DataFrame:
-        """
-        Main pipeline. Input: raw OHLCV DataFrame.
-        Output: DataFrame with features + target (if historical).
-        """
-        if len(df) < self.cfg.required_bars:
-            raise ValueError(f"Need {self.cfg.required_bars} bars, got {len(df)}")
-
+        if df.empty:
+            raise ValueError("Empty DataFrame passed to FeatureEngine")
+        n = len(df)
+        if n < self.cfg.required_bars:
+            logger.warning(f"Only {n} bars, minimum {self.cfg.required_bars} recommended")
         df = df.copy()
 
-        # --- 1. Returns (momentum, not lagging) ---
+        # 1. Returns
         if self.cfg.use_returns:
             for p in [1, 3, 6, 12]:
-                df[f"ret_{p}h"] = df["Close"].pct_change(p)
-            df["ret_log"] = np.log(df["Close"] / df["Close"].shift(1))
+                if n > p:
+                    df[f"ret_{p}h"] = df["Close"].pct_change(p)
+            if n > 1:
+                df["ret_log"] = np.log(df["Close"] / df["Close"].shift(1))
 
-        # --- 2. Volatility (realized, not implied) ---
+        # 2. Realized volatility
         if self.cfg.use_volatility:
-            for p in [12, 24, 48]:  # 3h, 6h, 12h of 15m bars
-                df[f"vol_{p}h"] = df["Close"].pct_change().rolling(p).std() * np.sqrt(p * 4)
+            for p in [12, 24, 48]:
+                if n > p:
+                    df[f"vol_{p}h"] = df["Close"].pct_change().rolling(p, min_periods=1).std() * np.sqrt(p * 4)
 
-        # --- 3. Candle body / wick features (price action) ---
-        if self.cfg.use_body_features:
+        # 3. Candle microstructure
+        if self.cfg.use_body_features and n > 1:
             df["body"] = (df["Close"] - df["Open"]).abs() / df["Open"]
             df["upper_wick"] = (df["High"] - df[["Close", "Open"]].max(axis=1)) / df["Open"]
             df["lower_wick"] = (df[["Close", "Open"]].min(axis=1) - df["Low"]) / df["Open"]
             df["range"] = (df["High"] - df["Low"]) / df["Open"]
             df["direction"] = np.where(df["Close"] > df["Open"], 1, -1)
 
-        # --- 4. ATR (volatility backbone) ---
+        # 4. ATR
         if self.cfg.use_atr:
-            df = self.atr_mod.compute(df)
+            try:
+                df = self.atr_mod.compute(df)
+            except Exception as e:
+                logger.error(f"ATR computation failed: {e}")
 
-        # --- 5. RSI (minimal, for regime context) ---
-        if self.cfg.use_rsi:
-            df["rsi"] = ta.rsi(df["Close"], length=self.cfg.rsi_period)
-            # RSI slope (momentum of momentum)
-            df["rsi_slope"] = df["rsi"].diff(3)
+        # 5. RSI
+        if self.cfg.use_rsi and n > self.cfg.rsi_period:
+            try:
+                import pandas_ta as ta
+                df["rsi"] = ta.rsi(df["Close"], length=self.cfg.rsi_period)
+                if n > self.cfg.rsi_period + 3:
+                    df["rsi_slope"] = df["rsi"].diff(3)
+            except Exception as e:
+                logger.warning(f"RSI failed: {e}")
 
-        # --- 6. ADX (trend strength only, not direction) ---
-        if self.cfg.use_adx:
-            adx_df = ta.adx(df["High"], df["Low"], df["Close"], length=self.cfg.adx_period)
-            df = pd.concat([df, adx_df], axis=1)
-            # Rename collision if needed
-            if "ADXR_14" in df.columns and "ADXR_14_2" not in df.columns:
-                df = df.rename(columns={"ADXR_14": "ADXR_14_2"})
+        # 6. ADX
+        if self.cfg.use_adx and n > self.cfg.adx_period:
+            try:
+                import pandas_ta as ta
+                adx_df = ta.adx(df["High"], df["Low"], df["Close"], length=self.cfg.adx_period)
+                if adx_df is not None and not adx_df.empty:
+                    df = pd.concat([df, adx_df], axis=1)
+                    if "ADXR_14" in df.columns and "ADXR_14_2" not in df.columns:
+                        df = df.rename(columns={"ADXR_14": "ADXR_14_2"})
+            except Exception as e:
+                logger.warning(f"ADX failed: {e}")
 
-        # --- 7. MACD (disabled by default) ---
-        if self.cfg.use_macd:
-            macd = ta.macd(df["Close"])
-            df = pd.concat([df, macd], axis=1)
+        # 7. MACD
+        if self.cfg.use_macd and n > 26:
+            try:
+                import pandas_ta as ta
+                macd = ta.macd(df["Close"])
+                if macd is not None and not macd.empty:
+                    df = pd.concat([df, macd], axis=1)
+            except Exception as e:
+                logger.warning(f"MACD failed: {e}")
 
-        # --- 8. Distance from recent highs/lows (mean reversion / breakout) ---
-        for p in [24, 48, 96]:  # 6h, 12h, 24h
-            df[f"dist_high_{p}"] = (df["Close"] - df["High"].rolling(p).max()) / df["Close"]
-            df[f"dist_low_{p}"] = (df["Close"] - df["Low"].rolling(p).min()) / df["Close"]
+        # 8. Distance from extremes
+        for p in [24, 48, 96]:
+            if n > p:
+                df[f"dist_high_{p}"] = (df["Close"] - df["High"].rolling(p, min_periods=1).max()) / df["Close"]
+                df[f"dist_low_{p}"] = (df["Close"] - df["Low"].rolling(p, min_periods=1).min()) / df["Close"]
 
-        # --- 9. Volume features (if available) ---
-        if "Volume" in df.columns and df["Volume"].sum() > 0:
-            df["vol_sma_ratio"] = df["Volume"] / df["Volume"].rolling(24).mean()
+        # 9. Volume
+        if "Volume" in df.columns and df["Volume"].sum() > 0 and n > 24:
+            df["vol_sma_ratio"] = df["Volume"] / df["Volume"].rolling(24, min_periods=1).mean()
             df["vol_trend"] = np.where(df["Volume"] > df["Volume"].shift(1), 1, -1)
 
-        # --- 10. Time features (seasonality) ---
-        df["hour"] = df.index.hour
-        df["day_of_week"] = df.index.dayofweek
-        df["is_london"] = ((df["hour"] >= 8) & (df["hour"] <= 16)).astype(int)
-        df["is_ny"] = ((df["hour"] >= 13) & (df["hour"] <= 21)).astype(int)
+        # 10. Time features
+        if isinstance(df.index, pd.DatetimeIndex):
+            df["hour"] = df.index.hour
+            df["day_of_week"] = df.index.dayofweek
+            df["is_london"] = ((df["hour"] >= 8) & (df["hour"] <= 16)).astype(int)
+            df["is_ny"] = ((df["hour"] >= 13) & (df["hour"] <= 21)).astype(int)
+        else:
+            df["hour"] = 0
+            df["day_of_week"] = 0
+            df["is_london"] = 0
+            df["is_ny"] = 0
 
         return df
 
     def build_target(self, df: pd.DataFrame, horizon: int = 6) -> pd.DataFrame:
-        """
-        Binary target: will price be higher in `horizon` bars?
-        This is what the model learns to predict.
-        """
-        future_return = df["Close"].shift(-horizon) / df["Close"] - 1
-        df["target"] = (future_return > 0).astype(int)
-        df["future_return"] = future_return  # for analysis, not training
+        df = df.copy()
+        if len(df) > horizon:
+            future_return = df["Close"].shift(-horizon) / df["Close"] - 1
+            df["target"] = (future_return > 0).astype(int)
+            df["future_return"] = future_return
+        else:
+            df["target"] = np.nan
+            df["future_return"] = np.nan
         return df
 
     def get_feature_columns(self, df: pd.DataFrame) -> List[str]:
-        """Return list of feature column names (exclude target, metadata)."""
         exclude = {"target", "future_return", "Open", "High", "Low", "Close", "Volume",
-                   "time", "date"}
-        return [c for c in df.columns if c not in exclude and df[c].dtype in (np.float64, np.float32, np.int64)]
+                   "time", "date", "vol_regime"}
+        cols = []
+        for c in df.columns:
+            if c in exclude:
+                continue
+            dtype = df[c].dtype
+            if np.issubdtype(dtype, np.number):
+                cols.append(c)
+        return cols
 
-
-# ---------------------------------------------------------------------------
-# 4. MODEL WRAPPER (XGBoost + sklearn fallback)
-# ---------------------------------------------------------------------------
 
 class ModelWrapper:
-    """
-    Unified interface for XGBoost or sklearn models.
-    Handles training, prediction, feature importance, and persistence.
-    """
-
     def __init__(self, cfg: FeatureConfig, model_path: Optional[Path] = None):
         self.cfg = cfg
         self.model = None
         self.scaler = StandardScaler()
         self.feature_names: List[str] = []
-        self.model_path = model_path or Path("trade_model.pkl")
+        self.model_path = model_path or Path("trade_model_xgb.pkl")
         self.is_xgb = cfg.model_type == "xgboost" and xgboost_available
 
     def _create_model(self):
@@ -293,88 +287,70 @@ class ModelWrapper:
                 colsample_bytree=0.8,
                 objective="binary:logistic",
                 eval_metric="logloss",
-                use_label_encoder=False,
                 random_state=42,
                 n_jobs=-1,
             )
         else:
             logger.warning("XGBoost not available, falling back to RandomForest")
             return RandomForestClassifier(
-                n_estimators=200,
-                max_depth=8,
-                min_samples_leaf=50,
-                random_state=42,
-                n_jobs=-1,
+                n_estimators=200, max_depth=8, min_samples_leaf=50,
+                random_state=42, n_jobs=-1,
             )
 
     def fit(self, df: pd.DataFrame, feature_cols: List[str]) -> dict:
-        """
-        Train on historical data.
-        Returns metrics dict.
-        """
         self.feature_names = feature_cols
         df_clean = df[feature_cols + ["target"]].dropna()
-
-        if len(df_clean) < 1000:
-            raise ValueError(f"Insufficient training data: {len(df_clean)} rows")
+        if len(df_clean) < 100:
+            raise ValueError(f"Insufficient training data: {len(df_clean)} rows (need >= 100)")
 
         X = df_clean[feature_cols].values
         y = df_clean["target"].values
-
-        # Scale for stability (XGBoost handles raw fine, but scaling helps RF)
         X = self.scaler.fit_transform(X)
 
-        # Time-series split for validation
         tscv = TimeSeriesSplit(n_splits=3)
         scores = []
         for train_idx, val_idx in tscv.split(X):
+            if len(train_idx) < 50 or len(val_idx) < 10:
+                continue
             X_train, X_val = X[train_idx], X[val_idx]
             y_train, y_val = y[train_idx], y[val_idx]
-
             model = self._create_model()
             model.fit(X_train, y_train)
             scores.append(model.score(X_val, y_val))
 
-        # Final fit on all data
         self.model = self._create_model()
         self.model.fit(X, y)
 
         metrics = {
-            "cv_accuracy": round(np.mean(scores), 4),
+            "cv_accuracy": round(np.mean(scores), 4) if scores else None,
             "train_samples": len(df_clean),
             "features": len(feature_cols),
             "model": "xgboost" if self.is_xgb else "sklearn_rf",
         }
-
         self.save()
         logger.info(f"Model trained: {metrics}")
         return metrics
 
     def predict_proba(self, X: pd.DataFrame) -> np.ndarray:
-        """Return [p_down, p_up] for each row."""
         if self.model is None:
             self.load()
-        X_scaled = self.scaler.transform(X[self.feature_names].values)
-        proba = self.model.predict_proba(X_scaled)
-        return proba
+        for col in self.feature_names:
+            if col not in X.columns:
+                X[col] = 0.0
+        X_subset = X[self.feature_names].fillna(0)
+        X_scaled = self.scaler.transform(X_subset.values)
+        return self.model.predict_proba(X_scaled)
 
     def feature_importance(self) -> pd.DataFrame:
-        """Return feature importance sorted."""
         if self.model is None:
             raise RuntimeError("Model not trained")
-
-        if self.is_xgb:
-            imp = self.model.feature_importances_
-        else:
-            imp = self.model.feature_importances_
-
+        imp = self.model.feature_importances_
         return pd.DataFrame({
             "feature": self.feature_names,
             "importance": imp
         }).sort_values("importance", ascending=False)
 
     def save(self):
-        """Persist model + scaler + feature names."""
         payload = {
             "model": self.model,
             "scaler": self.scaler,
@@ -383,12 +359,10 @@ class ModelWrapper:
         }
         with open(self.model_path, "wb") as f:
             pickle.dump(payload, f)
-        # Also save feature list as JSON for the bot
         with open(self.model_path.with_suffix(".features.json"), "w") as f:
             json.dump(self.feature_names, f)
 
     def load(self):
-        """Load model from disk."""
         with open(self.model_path, "rb") as f:
             payload = pickle.load(f)
         self.model = payload["model"]
@@ -397,15 +371,7 @@ class ModelWrapper:
         self.cfg = payload.get("cfg", self.cfg)
 
 
-# ---------------------------------------------------------------------------
-# 5. DATA FETCHER (abstraction over OANDA / yfinance)
-# ---------------------------------------------------------------------------
-
 class DataFetcher:
-    """
-    Unified data fetcher. Normalizes OANDA and yfinance into same format.
-    """
-
     def __init__(self, use_oanda: bool = True, oanda_api=None,
                  oanda_granularity: str = "M15"):
         self.use_oanda = use_oanda
@@ -445,94 +411,18 @@ class DataFetcher:
                 continue
         df = pd.DataFrame(rows)
         if df.empty:
+            logger.warning(f"OANDA returned no candles for {instrument}")
             return pd.DataFrame(columns=["Open", "High", "Low", "Close", "Volume"])
-        return df.set_index("time").astype({
+        df = df.set_index("time").astype({
             "Open": float, "High": float, "Low": float, "Close": float, "Volume": float
         })
+        return df
 
     def _from_yfinance(self, pair: str, count: int) -> pd.DataFrame:
         import yfinance as yf
-        # yfinance doesn't take count, use period
         df = yf.download(pair, period="5d", interval="15m", progress=False)
         if df.empty:
             return pd.DataFrame(columns=["Open", "High", "Low", "Close", "Volume"])
-        # Flatten multi-index columns if present
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = [c[0] for c in df.columns]
         return df[["Open", "High", "Low", "Close", "Volume"]].tail(count)
-
-
-# ---------------------------------------------------------------------------
-# 6. INTEGRATION EXAMPLE
-# ---------------------------------------------------------------------------
-"""
-# In fx_trade_bot.py, replace data fetching + feature building with:
-
-from data_pipeline import FeatureConfig, FeatureEngine, ModelWrapper, DataFetcher, ATRModule
-
-# --- Setup ---
-cfg = FeatureConfig(
-    use_atr=True,
-    atr_sl_mult=2.0,
-    atr_tp_mult=3.0,
-    use_macd=False,
-    use_rsi=True,
-    model_type="xgboost",
-    target_horizon=6,
-)
-feat_engine = FeatureEngine(cfg)
-fetcher = DataFetcher(use_oanda=USE_OANDA_DATA, oanda_api=api, oanda_granularity="M15")
-
-# --- Training (run once per week) ---
-model_wrapper = ModelWrapper(cfg, model_path=BASE_DIR / "trade_model_xgb.pkl")
-if not model_wrapper.model_path.exists() or needs_retrain():
-    # Fetch long history for all pairs
-    train_dfs = []
-    for pair in DEFAULT_PAIRS:
-        oanda = YAHOO_TO_OANDA[pair]
-        raw = fetcher.fetch(pair, oanda, count=cfg.train_lookback_bars)
-        df = feat_engine.build(raw)
-        df = feat_engine.build_target(df, horizon=cfg.target_horizon)
-        train_dfs.append(df)
-    full_df = pd.concat(train_dfs).dropna()
-    feature_cols = feat_engine.get_feature_columns(full_df)
-    metrics = model_wrapper.fit(full_df, feature_cols)
-    print(f"Training complete: {metrics}")
-    print(model_wrapper.feature_importance().head(10))
-else:
-    model_wrapper.load()
-    feature_cols = model_wrapper.feature_names
-
-# --- Inference (each run) ---
-for pair in DEFAULT_PAIRS:
-    oanda = YAHOO_TO_OANDA[pair]
-    raw = fetcher.fetch(pair, oanda, count=200)
-    df = feat_engine.build(raw).dropna()
-    latest = df.iloc[-1]
-    proba = model_wrapper.predict_proba(pd.DataFrame([latest[feature_cols]]))
-    p_up = proba[0, 1]
-    # ... pass p_up to strategy_decision.py ...
-
-# --- ATR-based SL/TP (instead of pivot-based) ---
-atr_mod = ATRModule(period=14)
-atr_val = latest["atr"]
-sl, tp = atr_mod.sl_tp_from_atr(
-    entry=current_price,
-    direction="BUY",  # or "SELL"
-    atr_value=atr_val,
-    is_jpy="JPY" in pair,
-    sl_mult=cfg.atr_sl_mult,
-    tp_mult=cfg.atr_tp_mult,
-)
-
-# --- Position sizing ---
-equity = get_account_equity()  # you implement this
-units = atr_mod.position_size(
-    equity=equity,
-    risk_pct=cfg.risk_per_trade_pct,
-    entry=current_price,
-    sl=sl,
-    pair=pair,
-    atr_value=atr_val,
-)
-"""

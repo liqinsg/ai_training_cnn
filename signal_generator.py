@@ -15,7 +15,7 @@ THRESHOLD = 0.52
 SIGNAL_FILE = "signal.json"
 
 # --- NEW TEST VARIABLES ---
-TEST_MODE = False          # Set False for real live signals
+TEST_MODE = True       # Set False for real live signals
 MOCK_SIGNAL = 'BUY'       # Use 'BUY' / 'WAIT' / 'SELL' to test logic
 MOCK_CONFIDENCE = 0.75    # Fixed confidence for testing
 

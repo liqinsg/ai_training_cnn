@@ -1,21 +1,5 @@
-# fx_trade_bot_integrated.py — Integrated v2.0
-# Strategy layer: strategy_decision.py
-# Data/Feature layer: data_pipeline.py
-
-from utils.trading_core import get_candles as get_oanda_candles
-from utils.calculate_currency_strength import calculate_currency_strength
-from utils.strategy_helpers import build_strength_matrix, format_strength_ranking
-from telegram_message import send_telegram_message
-import numpy as np
-import pandas as pd
-import yfinance as yf
-import json
-import joblib
-import pandas_ta as ta
-import config
-from config_oanda import OANDA_API_TOKEN, OANDA_ACCOUNT_ID, OANDA_ENV
-import config_gemini
-from utils.find_support_resistence import get_support_resistance
+# fx_trade_bot_integrated.py — v3.0 Defensive
+# Strategy: strategy_decision.py | Data: data_pipeline.py
 
 import sys
 import json
@@ -24,16 +8,9 @@ from pathlib import Path
 from datetime import datetime, timezone
 from enum import Enum
 
-# ---------------------------------------------------------------------------
-# PATH SETUP
-# ---------------------------------------------------------------------------
 BASE_DIR = Path(__file__).resolve().parent
-# TELEBOT_PATH = Path.home() / "ai_training_cnn"
-# sys.path.extend([str(TELEBOT_PATH), str(BASE_DIR), str(BASE_DIR / "utils")])
+sys.path.extend([str(BASE_DIR), str(BASE_DIR / "utils")])
 
-# ---------------------------------------------------------------------------
-# LOGGING (replace prints)
-# ---------------------------------------------------------------------------
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -44,10 +21,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# IMPORTS
-# ---------------------------------------------------------------------------
 import numpy as np
+import pandas as pd
 
 from utils.trading_core import get_candles as get_oanda_candles
 from utils.calculate_currency_strength import calculate_currency_strength
@@ -61,25 +36,16 @@ from oandapyV20.endpoints.instruments import InstrumentsCandles
 from oandapyV20.endpoints.positions import PositionDetails
 from oandapyV20.endpoints.orders import OrderCreate
 
-api = oandapyV20.API(access_token=OANDA_API_TOKEN, environment=OANDA_ENV)
-
-
-# --- NEW MODULES ---
 from strategy_decision import StrategyConfig, StrategyEngine, FilterMode, Direction
 from data_pipeline import FeatureConfig, FeatureEngine, ModelWrapper, DataFetcher, ATRModule
 
+api = oandapyV20.API(access_token=OANDA_API_TOKEN, environment=OANDA_ENV)
 
 
-# ---------------------------------------------------------------------------
-# CONFIG HELPERS
-# ---------------------------------------------------------------------------
 def cfg(name, default):
     return getattr(config, name, default)
 
 
-# ---------------------------------------------------------------------------
-# BOT CONFIG
-# ---------------------------------------------------------------------------
 MODE = cfg("MODE", "LEVEL10")
 USE_OANDA_DATA = True
 TIMEFRAME = cfg("TIMEFRAME", "15m")
@@ -88,7 +54,8 @@ OANDA_GRANULARITY_MAP = {
     "30m": "M30", "1h": "H1", "4h": "H4", "1d": "D",
 }
 OANDA_GRANULARITY = OANDA_GRANULARITY_MAP.get(TIMEFRAME, "M15")
-
+USE_DEFAULT_LOT_SIZE = cfg("USE_DEFAULT_LOT_SIZE", True)
+DEFAULT_LOT_SIZE = cfg("DEFAULT_LOT_SIZE", 10000)
 DEFAULT_PAIRS = cfg(
     "DEFAULT_PAIRS",
     [
@@ -106,19 +73,17 @@ YAHOO_TO_OANDA = cfg(
     },
 )
 
-# Cooldown
 REOPEN_DELAY_RUNS = 2
 last_closed: dict = {}
 COOLDOWN_FILE = BASE_DIR / "cooldown_state.json"
 
-# Results / MC
 RESULTS_DIR = BASE_DIR / "daily_results"
 RESULTS_DIR.mkdir(exist_ok=True)
 TODAY_STR = datetime.now(timezone.utc).strftime("%Y%m%d")
 MC_MAX_AGE_HOURS = cfg("MC_MAX_AGE_HOURS", 24)
 
 # ---------------------------------------------------------------------------
-# INIT NEW PIPELINE
+# INIT PIPELINE
 # ---------------------------------------------------------------------------
 FEAT_CFG = FeatureConfig(
     use_atr=True,
@@ -152,7 +117,7 @@ MODEL_PATH = BASE_DIR / "trade_model_xgb.pkl"
 model_wrapper = ModelWrapper(FEAT_CFG, model_path=MODEL_PATH)
 
 # ---------------------------------------------------------------------------
-# COOLDOWN PERSISTENCE
+# COOLDOWN
 # ---------------------------------------------------------------------------
 def load_cooldown():
     if COOLDOWN_FILE.exists():
@@ -182,7 +147,7 @@ def forex_market_closed():
         return len(resp.get("candles", [])) == 0
     except Exception as e:
         logger.error(f"Market check failed: {e}")
-        return True  # FAIL CLOSED
+        return True
 
 
 # ---------------------------------------------------------------------------
@@ -217,7 +182,6 @@ def close_position(instrument: str):
         else:
             logger.info(f"No position to close: {instrument}")
             return
-
         api.request(
             OrderCreate(
                 accountID=OANDA_ACCOUNT_ID,
@@ -231,34 +195,29 @@ def close_position(instrument: str):
                 },
             )
         )
-        logger.info(f"Closed {instrument} — {abs(units)} units")
-        send_telegram_message(f"🔄 AUTO‑CLOSE: {instrument} — trend reversed")
+        logger.info(f"Closed {instrument}")
+        send_telegram_message(f"🔄 AUTO‑CLOSE: {instrument}")
     except Exception as e:
         logger.error(f"Close failed for {instrument}: {e}")
 
 
 # ---------------------------------------------------------------------------
-# ORDER PLACEMENT (with SL/TP)
+# ORDER
 # ---------------------------------------------------------------------------
 def open_oanda_order(signal: dict, units: int) -> dict:
     if not OANDA_ACCOUNT_ID or not OANDA_API_TOKEN:
         return {"status": "ERROR", "message": "Missing OANDA credentials"}
-
     pair_raw = signal.get("pair")
     action = signal.get("action")
     if action not in {"BUY", "SELL"}:
         return {"status": "ERROR", "message": f"Invalid action: {action}"}
-
     units = int(units) if action == "BUY" else -int(units)
     sl = signal.get("stop_loss")
     tp = signal.get("take_profit")
-
     if sl is None or tp is None:
         return {"status": "ERROR", "message": "SL/TP missing"}
-
     is_jpy = "JPY" in pair_raw
     decimals = 3 if is_jpy else 5
-
     order_payload = {
         "order": {
             "type": "MARKET",
@@ -276,7 +235,6 @@ def open_oanda_order(signal: dict, units: int) -> dict:
             },
         }
     }
-
     try:
         resp = api.request(OrderCreate(accountID=OANDA_ACCOUNT_ID, data=order_payload))
         logger.info(f"OANDA accepted order for {pair_raw}")
@@ -287,14 +245,13 @@ def open_oanda_order(signal: dict, units: int) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# MC DATA LOADER
+# MC LOADER
 # ---------------------------------------------------------------------------
 def load_mc(pair):
     safe = pair.replace("=X", "").replace("=", "_")
     f = RESULTS_DIR / f"fx_daily_{safe}_{TODAY_STR}.json"
     if not f.exists():
         return None, False
-    import os
     age = (datetime.now(timezone.utc) - datetime.fromtimestamp(f.stat().st_mtime, timezone.utc)).total_seconds() / 3600
     if age > MC_MAX_AGE_HOURS:
         return None, False
@@ -303,10 +260,9 @@ def load_mc(pair):
 
 
 # ---------------------------------------------------------------------------
-# ACCOUNT EQUITY (for position sizing)
+# EQUITY
 # ---------------------------------------------------------------------------
 def get_account_equity() -> float:
-    """Fetch account equity from OANDA. Fallback to 10k if fails."""
     try:
         from oandapyV20.endpoints.accounts import AccountDetails
         resp = api.request(AccountDetails(accountID=OANDA_ACCOUNT_ID))
@@ -317,12 +273,10 @@ def get_account_equity() -> float:
 
 
 # ---------------------------------------------------------------------------
-# MODEL TRAINING / LOADING
+# MODEL
 # ---------------------------------------------------------------------------
 def ensure_model():
-    """Train model if missing or stale, otherwise load."""
     global model_wrapper, strat_engine
-
     needs_train = False
     if not MODEL_PATH.exists():
         needs_train = True
@@ -348,25 +302,19 @@ def ensure_model():
             except Exception as e:
                 logger.error(f"Training fetch failed for {pair}: {e}")
                 continue
-
         if not train_dfs:
             raise RuntimeError("No training data available for any pair")
-
         full_df = pd.concat(train_dfs).dropna()
         feature_cols = feat_engine.get_feature_columns(full_df)
         logger.info(f"Training on {len(full_df)} rows, {len(feature_cols)} features")
-
         metrics = model_wrapper.fit(full_df, feature_cols)
         logger.info(f"Training complete: {metrics}")
-
-        # Log top features
         top_features = model_wrapper.feature_importance().head(10)
-        logger.info(f"Top features:\n{top_features.to_string(index=False)}")
+        logger.info("Top features:\n" + top_features.to_string(index=False))
     else:
         model_wrapper.load()
         logger.info(f"Loaded model from {MODEL_PATH}")
 
-    # Wire into strategy engine
     strat_engine.model = model_wrapper.model
     strat_engine.features = model_wrapper.feature_names
 
@@ -376,18 +324,15 @@ def ensure_model():
 # ---------------------------------------------------------------------------
 def main():
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    logger.info(f"\n🤖 MULTI‑PAIR RUN — {now} | MODE={MODE} | MODEL=XGBoost | DATA=OANDA")
+    logger.info(f"\n🤖 RUN — {now} | MODE={MODE} | MODEL=XGBoost | DATA=OANDA")
 
-    # Market check
     if forex_market_closed():
         logger.info("Market closed — skipping")
         send_telegram_message("⏸️ FX BOT: Market closed")
         return
 
-    # Ensure model is ready
     ensure_model()
 
-    # Currency strength
     logger.info("[STRATEGY] Step 1 — Currency Strength...")
     strength_scores = build_strength_matrix()
     logger.info(format_strength_ranking(strength_scores))
@@ -398,23 +343,44 @@ def main():
         oanda = YAHOO_TO_OANDA[pair]
         try:
             raw = fetcher.fetch(pair, oanda, count=200)
-            df = feat_engine.build(raw).dropna()
+            if raw.empty:
+                logger.warning(f"{pair}: empty raw data from OANDA")
+                continue
+            df = feat_engine.build(raw)
+            if df.empty:
+                logger.warning(f"{pair}: empty after feature build")
+                continue
+            if len(df) < 5:
+                logger.warning(f"{pair}: only {len(df)} rows after build")
+                continue
             pair_data[pair] = {"df": df, "oanda": oanda}
-            logger.info(f"📊 {pair}: {len(df)} bars, ATR={df.iloc[-1].get('atr', 'N/A')}")
+            atr_val = df.iloc[-1].get("atr", "N/A")
+            logger.info(f"📊 {pair}: {len(df)} bars, ATR={atr_val}")
         except Exception as e:
             logger.error(f"Failed to fetch/build {pair}: {e}")
             continue
 
+    if not pair_data:
+        logger.error("No pairs have usable data. Aborting run.")
+        send_telegram_message("❌ FX BOT: No usable pair data")
+        return
+
     # ==========================================
     # 1. CLOSE CHECK
     # ==========================================
-    for pair, data in pair_data.items():
-        oanda = data["oanda"]
+    for pair in DEFAULT_PAIRS:
+        if pair not in pair_data:
+            continue
+        oanda = pair_data[pair]["oanda"]
         pos = get_open_position(oanda)
         if not pos:
             continue
 
-        should_close, reason = strat_engine.should_close(pos["units"], data["df"].iloc[-1])
+        df = pair_data[pair]["df"]
+        if len(df) < 5:
+            continue
+
+        should_close, reason = strat_engine.should_close(pos["units"], df.iloc[-1])
         if should_close:
             logger.info(f"🔄 CLOSE {pair}: {reason}")
             close_position(oanda)
@@ -431,10 +397,10 @@ def main():
     candidates = []
     equity = get_account_equity()
 
-    for pair, data in pair_data.items():
-        oanda = data["oanda"]
+    for pair in DEFAULT_PAIRS:
+        oanda = YAHOO_TO_OANDA[pair]
 
-        # Cooldown check
+        # Cooldown
         if pair in last_closed:
             dir_closed, runs_left = last_closed[pair]
             if runs_left > 0:
@@ -448,8 +414,12 @@ def main():
             logger.info(f"⏭️ {pair}: position open — skip")
             continue
 
-        df = data["df"]
-        if len(df) < 20:
+        if pair not in pair_data:
+            logger.info(f"⏭️ {pair}: no data — skip")
+            continue
+
+        df = pair_data[pair]["df"]
+        if len(df) < 5:
             logger.info(f"⏭️ {pair}: insufficient bars ({len(df)})")
             continue
 
@@ -470,12 +440,10 @@ def main():
             current = df.iloc[-1]["Close"]
             spread_pips = 1.0
 
-        # MC data
         mc_data, mc_ok = load_mc(pair)
         if not mc_ok:
             logger.info(f"⚠️ MC missing/stale for {pair}")
 
-        # Generate signal via strategy engine
         sig = strat_engine.generate_signal(
             pair=pair,
             oanda_symbol=oanda,
@@ -490,7 +458,7 @@ def main():
             logger.info(f"➖ {pair}: no signal")
             continue
 
-        # --- ATR-based SL/TP override (optional but recommended) ---
+        # ATR-based SL/TP override
         atr_val = df.iloc[-1].get("atr")
         if atr_val and not np.isnan(atr_val):
             atr_sl, atr_tp = atr_mod.sl_tp_from_atr(
@@ -501,21 +469,22 @@ def main():
                 sl_mult=FEAT_CFG.atr_sl_mult,
                 tp_mult=FEAT_CFG.atr_tp_mult,
             )
-            # Use ATR-based if valid, else keep strategy's pivot-based
             if atr_sl and atr_tp:
                 sig.stop_loss = atr_sl
                 sig.take_profit = atr_tp
                 sig.filter_notes.append(f"ATR SL/TP: mult={FEAT_CFG.atr_sl_mult}/{FEAT_CFG.atr_tp_mult}")
 
-        # --- ATR-based position sizing ---
-        units = atr_mod.position_size(
-            equity=equity,
-            risk_pct=FEAT_CFG.risk_per_trade_pct,
-            entry=current,
-            sl=sig.stop_loss,
-            pair=pair,
-            atr_value=atr_val or 0.0005,
-        )
+        # Position sizing
+        units = DEFAULT_LOT_SIZE
+        if not USE_DEFAULT_LOT_SIZE:
+            units = atr_mod.position_size(
+                equity=equity,
+                risk_pct=FEAT_CFG.risk_per_trade_pct,
+                entry=current,
+                sl=sig.stop_loss,
+                pair=pair,
+                atr_value=atr_val or 0.0005,
+            )
 
         candidates.append(sig)
         logger.info(
@@ -539,27 +508,22 @@ def main():
         logger.info("No winners selected")
     else:
         for w in winners:
-            # Recalc units for winner (in case equity changed)
-            units = atr_mod.position_size(
-                equity=get_account_equity(),
-                risk_pct=FEAT_CFG.risk_per_trade_pct,
-                entry=w.entry_price,
-                sl=w.stop_loss,
-                pair=w.pair,
-                atr_value=w.mc_data.get("atr", 0.0005) if w.mc_data else 0.0005,
-            )
-
+            units = DEFAULT_LOT_SIZE
+            if not USE_DEFAULT_LOT_SIZE:
+                units = atr_mod.position_size(
+                    equity=get_account_equity(),
+                    risk_pct=FEAT_CFG.risk_per_trade_pct,
+                    entry=w.entry_price,
+                    sl=w.stop_loss,
+                    pair=w.pair,
+                    atr_value=w.mc_data.get("atr", 0.0005) if w.mc_data else 0.0005,
+                )
             res = open_oanda_order(
-                {
-                    "pair": w.oanda_symbol,
-                    "action": w.action,
-                    "stop_loss": w.stop_loss,
-                    "take_profit": w.take_profit,
-                },
+                {"pair": w.oanda_symbol, "action": w.action,
+                 "stop_loss": w.stop_loss, "take_profit": w.take_profit},
                 units=units,
             )
             logger.info(f"📤 Order result for {w.pair}: {res}")
-
             if res.get("status") == "OK":
                 lines.append(
                     f"✅ {w.pair} | {w.action} | Score={w.conviction_score} | "
@@ -574,9 +538,6 @@ def main():
     logger.info("✅ Run complete")
 
 
-# ---------------------------------------------------------------------------
-# ENTRYPOINT
-# ---------------------------------------------------------------------------
 if __name__ == "__main__":
     try:
         main()

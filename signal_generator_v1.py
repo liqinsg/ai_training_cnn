@@ -16,7 +16,7 @@ SIGNAL_FILE = "signal.json"
 MONTE_CARLO_RUNS = 50     # Number of MC simulations (adjust as needed)
 
 # --- TEST VARIABLES ---
-TEST_MODE = False          # Set False for live signals
+TEST_MODE = True      # Set False for live signals
 MOCK_SIGNAL = 'BUY'       # BUY / WAIT / SELL
 MOCK_CONFIDENCE = 0.75
 
