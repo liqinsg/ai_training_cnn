@@ -107,8 +107,9 @@ def position_monitor():
         instrument = position.get("instrument")
 
         trade_id = str(position.get("id") or position.get("trade_id") or position.get("tradeId") or "N/A")
+        print(position)
 
-        open_time = position.get("open_time_utc", "N/A")
+        open_time = position.get("open_time", "N/A")
 
         # Determine direction safely
         if "direction" in position:
@@ -132,16 +133,16 @@ def position_monitor():
 
         print(f"📌 Trade #{trade_id} [{instrument}] | Direction: {direction} | Open Time: {open_time}")
         print(f"   └── MC Win Rates: UP {p_up}% / DOWN {p_down}% | Volatility: {ann_vol}%")
-
+        CUTOFF_TH = 35.0
         # 1. Win-rate decay and reversal exit logic
-        if direction == "LONG" and p_up < 45.0:
+        if direction == "LONG" and p_up < CUTOFF_TH: # r=45?
             msg = f"⚠️ Trade #{trade_id} {instrument} (LONG): MC UP probability decayed to {p_up}% < 45% -> Triggering early reversal exit!"
             print(f"   └── {msg}")
             close_position(instrument)
             closed_instruments.add(instrument)
             send_telegram_message(msg)
 
-        elif direction == "SHORT" and p_down < 45.0:
+        elif direction == "SHORT" and p_down < CUTOFF_TH: #45
             msg = f"⚠️ Trade #{trade_id} {instrument} (SHORT): MC DOWN probability decayed to {p_down}% < 45% -> Triggering early reversal exit!"
             print(f"   └── {msg}")
             close_position(instrument)
