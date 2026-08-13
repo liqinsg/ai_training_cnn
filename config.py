@@ -209,6 +209,8 @@ MC_TP_MAX_BAND_PCT = 0.7
 PRESET = "LEVEL10"
 NO_SIDE_WAYS_TRADE = True
 MIN_REWARD_RISK = 1.2
+MIN_CONVICTION_SCORE = 45
+
 # ──────────────────────────────────────────
 # AUTO‑APPLY PRESET (OVERRIDES BASE DEFAULTS)
 # ──────────────────────────────────────────
@@ -272,6 +274,9 @@ elif PRESET == "LEVEL10":
     TREND_THRESHOLD = 20
     REOPEN_DELAY_RUNS = 2
     MIN_REWARD_RISK = 1.001
+    MIN_CONVICTION_SCORE = 40
+    STRENGTH_SIGNAL_BLOCK_THRESHOLD = 2.5
+
 
 
 # ==========================================
@@ -297,3 +302,19 @@ REENTRY_STRENGTH_CONFIRM = True  # Require currency strength still aligned
 ENTRY_PERCENTILE_LOW = 15    # LONG only if price in bottom 15% of range
 ENTRY_PERCENTILE_HIGH = 85   # SHORT only if price in top 15% of range
 
+# DEBUG_API = False
+DEBUG_MODE = False
+MIN_SL_PIPS = 35
+MIN_SL_PIPS_JPY = MIN_SL_PIPS + 10  # 15 for JPY pairs
+TRAILING_TP = False
+COOLDOWN_RUNS = 0
+REMOVE_COOLDOWN = True
+
+TRAILING_TP = False          # OANDA server-side trailing TP
+DYNAMIC_TP = True            # ✅ Bot actively RAISES TP as price trends
+TP_RAISE_THRESHOLD_PIPS = 15 # Only raise TP when ≥15 pips higher (prevents noise)
+
+# Max number of open positions allowed AT ANY TIME
+MAX_SIMULTANEOUS_TRADES = 5   # ← Change this! e.g. 1, 2, 3, 5...
+
+SKIP_MC = True

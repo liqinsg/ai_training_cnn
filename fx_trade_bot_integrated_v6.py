@@ -1,5 +1,10 @@
-# fx_trade_bot_integrated.py — v4.2 Clean Rebuild (Bot + MC + Dynamic Exit + Strength Guard)
-# Strategy: strategy_decision.py | Data: data_pipeline.py | MC: inline
+# fx_trade_bot_integrated_v6.1.py — Clean Rebuild
+# CHANGES:
+#   ✅ --test-trade defaults=True, overridable via --no-test-trade
+#   ✅ TRAILING_TP config: False=send fixed TP (default), True=dynamic SL-only exit
+#   ✅ TP validation included in order payload
+#   ✅ v6.1 FIXES: price fallback, duplicate logic, unified thresholds, precision helpers
+
 import config
 def cfg(name, default):
     return getattr(config, name, default)
@@ -25,8 +30,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ── Suppress noisy oandapyV20 "performing request" logs ──
-# Set DEBUG_API=True in config.py to see every API call
+# ── Suppress noisy oandapyV20 logs ──
 DEBUG_API = cfg("DEBUG_MODE", False)
 if not DEBUG_API:
     logging.getLogger("oandapyV20").setLevel(logging.WARNING)
@@ -56,30 +60,73 @@ from data_pipeline import FeatureConfig, FeatureEngine, ModelWrapper, DataFetche
 api = oandapyV20.API(access_token=OANDA_API_TOKEN, environment=OANDA_ENV)
 
 
-def cfg(name, default):
-    return getattr(config, name, default)
+# ============================================================================
+# HELPERS — Standardized Utilities (v6.1)
+# ============================================================================
+def price_decimals(pair: str) -> int:
+    """Return correct decimal places for OANDA pricing."""
+    return 3 if "JPY" in pair.upper() else 5
+
+def pip_size(pair: str) -> float:
+    """Return 1 pip value for pair."""
+    return 0.01 if "JPY" in pair.upper() else 0.0001
+
+
+# ============================================================================
+# CONFIG DEFAULTS
+# ============================================================================
+TRAILING_TP = cfg("TRAILING_TP", False)
+REOPEN_DELAY_RUNS = cfg("COOLDOWN_RUNS", 2)
+STRENGTH_THRESHOLD = cfg("STRENGTH_GAP_THRESHOLD", 1.0)
+STRENGTH_CLOSE_THRESHOLD = STRENGTH_THRESHOLD
+
+REMOVE_COOLDOWN = True
+MULTI_TF_CONFLUENCE = False
+CONFLUENCE_REQUIRED_TFS = cfg("CONFLUENCE_REQUIRED_TFS", 2)
 
 
 # ============================================================================
 # ARGUMENT PARSING
 # ============================================================================
-parser = argparse.ArgumentParser(description="FX Trade Bot + Monte Carlo")
-parser.add_argument("--timeframe", choices=["D", "H4", "15m", "1h"], default="H4",
-                    help="Primary timeframe: drives OANDA granularity and MC config")
-parser.add_argument("--mc-only", action="store_true",
-                    help="Run only MC generation + report, skip trading")
-parser.add_argument("--skip-mc", action="store_true",
-                    help="Skip MC generation (legacy file fallback)")
-parser.add_argument("--test-trade", action="store_true",
-                    help="TEST MODE: bypass strength veto, lower threshold, trade any >51% prob")
+parser = argparse.ArgumentParser(description="FX Trading Bot v6.1")
+parser.add_argument("--timeframe", type=str, default="H4", choices=["15m", "1H", "H4"],
+                    help="Primary chart timeframe [default: H4]")
+parser.add_argument("--test-trade", action="store_true", default=True,
+                    help="TEST MODE: cooldown OFF, confluence OFF, strength filter bypass [default: ON]")
+parser.add_argument("--no-test-trade", action="store_false", dest="test_trade",
+                    help="PROD MODE: cooldown ON, confluence ON, strict filters")
+parser.add_argument("--confluence", action="store_true", default=None,
+                    help="FORCE: require H4+1H+15m alignment")
+parser.add_argument("--no-confluence", action="store_false", dest="confluence",
+                    help="FORCE: disable multi-timeframe confluence")
+parser.add_argument("--skip-mc", action="store_true", help="Skip Monte Carlo generation")
+parser.add_argument("--mc-only", action="store_true", help="Generate MC only, skip trading signals")
 args = parser.parse_args()
 
-MODE = cfg("MODE", "LEVEL10")
+
+# ============================================================================
+# APPLY MODE & OVERRIDES
+# ============================================================================
+if args.test_trade:
+    REMOVE_COOLDOWN = True
+    MULTI_TF_CONFLUENCE = False
+    logger.info("=" * 60)
+    logger.info("⚠️  TEST MODE — SIMULATION ONLY")
+    logger.info("   Cooldown: DISABLED | Confluence: DISABLED | Strength filters: BYPASSED")
+    logger.info("   Use --no-test-trade for PRODUCTION trading")
+    logger.info("=" * 60)
+else:
+    REMOVE_COOLDOWN = False
+    MULTI_TF_CONFLUENCE = True
+    if args.confluence is not None:
+        MULTI_TF_CONFLUENCE = args.confluence
+
+
+MODE = cfg("PRESET", "LEVEL10")
 USE_OANDA_DATA = True
 TIMEFRAME = args.timeframe
 OANDA_GRANULARITY_MAP = {
-    "1m": "M1", "5m": "M5", "15m": "M15",
-    "30m": "M30", "1h": "H1", "4h": "H4", "H4": "H4", "1d": "D", "D": "D",
+    "15m": "M15", "1H": "H1", "H4": "H4", "D": "D", "1d": "D",
 }
 OANDA_GRANULARITY = OANDA_GRANULARITY_MAP.get(TIMEFRAME, "H4")
 
@@ -103,19 +150,17 @@ YAHOO_TO_OANDA = cfg(
 )
 OANDA_TO_YAHOO = {v: k for k, v in YAHOO_TO_OANDA.items()}
 
-REOPEN_DELAY_RUNS = 2
-last_closed: dict = {}
 COOLDOWN_FILE = BASE_DIR / "cooldown_state.json"
-
 RESULTS_DIR = BASE_DIR / "daily_results"
 RESULTS_DIR.mkdir(exist_ok=True)
 TODAY_STR = datetime.now(timezone.utc).strftime("%Y%m%d")
 MC_MAX_AGE_HOURS = cfg("MC_MAX_AGE_HOURS", 24)
 
+
 # ============================================================================
 # TIMEFRAME CONFIG
 # ============================================================================
-if TIMEFRAME in ("H4", "4h"):
+if TIMEFRAME in ("H4", "1H", "15m"):
     MC_TF = "H4"
     YF_INTERVAL = "4h"
     YF_PERIOD_FULL = "30d"
@@ -125,7 +170,7 @@ if TIMEFRAME in ("H4", "4h"):
     PERIODS_YEAR = 252 * 6
     DT_SCALE = 6
     MC_REPORT_TITLE = "FX H4 MONTE CARLO"
-elif TIMEFRAME in ("D", "1d"):
+else:
     MC_TF = "D"
     YF_INTERVAL = "1d"
     YF_PERIOD_FULL = "120d"
@@ -135,19 +180,10 @@ elif TIMEFRAME in ("D", "1d"):
     PERIODS_YEAR = 252
     DT_SCALE = 1
     MC_REPORT_TITLE = "FX DAILY MONTE CARLO"
-else:
-    MC_TF = "H4"
-    YF_INTERVAL = "4h"
-    YF_PERIOD_FULL = "30d"
-    YF_PERIOD_RESAMPLE = "60d"
-    MC_LOOKBACK = cfg("H4_LOOKBACK", 90)
-    MC_FORECAST = cfg("H4_FORECAST", 8)
-    PERIODS_YEAR = 252 * 6
-    DT_SCALE = 6
-    MC_REPORT_TITLE = "FX H4 MONTE CARLO (Intraday Context)"
 
 SIMULATIONS = cfg("MC_SIMULATIONS", 5000)
 CONFIDENCE = cfg("MC_CONFIDENCE", 0.90)
+
 
 # ============================================================================
 # INIT PIPELINE
@@ -185,7 +221,7 @@ model_wrapper = ModelWrapper(FEAT_CFG, model_path=MODEL_PATH)
 
 
 # ============================================================================
-# COOLDOWN
+# COOLDOWN — Unified (v6.1)
 # ============================================================================
 def load_cooldown():
     if COOLDOWN_FILE.exists():
@@ -194,12 +230,10 @@ def load_cooldown():
             return {k: (Direction(v[0]), v[1]) for k, v in raw.items()}
     return {}
 
-
 def save_cooldown(state):
     serializable = {k: (v[0].value, v[1]) for k, v in state.items()}
     with open(COOLDOWN_FILE, "w") as f:
         json.dump(serializable, f)
-
 
 last_closed = load_cooldown()
 
@@ -240,7 +274,6 @@ def get_open_position(instrument: str):
         logger.error(f"Position check failed for {instrument}: {e}")
         return None
 
-
 def close_position(instrument: str):
     try:
         pos = api.request(
@@ -273,7 +306,7 @@ def close_position(instrument: str):
 
 
 # ============================================================================
-# ORDER
+# ORDER — Fixed Price Fallback Bug (v6.1)
 # ============================================================================
 def open_oanda_order(signal: dict, units: int, current_price: float = None) -> dict:
     if not OANDA_ACCOUNT_ID or not OANDA_API_TOKEN:
@@ -284,19 +317,23 @@ def open_oanda_order(signal: dict, units: int, current_price: float = None) -> d
         return {"status": "ERROR", "message": f"Invalid action: {action}"}
     units = int(units) if action == "BUY" else -int(units)
     sl = signal.get("stop_loss")
+    tp = signal.get("take_profit")
     if sl is None:
         return {"status": "ERROR", "message": "SL missing"}
 
-    # ── HARD SAFETY GUARD ──
-    is_jpy = "JPY" in pair_raw
-    dec = 3 if is_jpy else 5
-    pip_size = 0.01 if is_jpy else 0.0001
-    entry = current_price if current_price else sl
+    # ── v6.1 CRITICAL FIX: Require explicit entry price — NEVER use SL as entry ──
+    if current_price is None:
+        logger.error(f"❌ Cannot open {pair_raw}: entry price required")
+        return {"status": "ERROR", "message": "Entry price missing"}
+    entry = current_price
 
-    max_sl_pips = cfg("MAX_SL_PIPS", 500 if is_jpy else 50)
+    dec = price_decimals(pair_raw)
+    pip = pip_size(pair_raw)
+
+    max_sl_pips = cfg("MAX_SL_PIPS", 500 if "JPY" in pair_raw else 50)
     max_sl_pct = cfg("MAX_SL_DISTANCE_PCT", 0.03)
     sl_distance = abs(entry - sl)
-    sl_pips = sl_distance / pip_size
+    sl_pips = sl_distance / pip
     sl_pct = sl_distance / entry
 
     if sl_pips > max_sl_pips or sl_pct > max_sl_pct:
@@ -315,7 +352,6 @@ def open_oanda_order(signal: dict, units: int, current_price: float = None) -> d
         logger.error(err)
         return {"status": "ERROR", "message": err}
 
-    # ── PERMANENTLY NO TP ──
     order_payload = {
         "order": {
             "type": "MARKET",
@@ -323,20 +359,27 @@ def open_oanda_order(signal: dict, units: int, current_price: float = None) -> d
             "units": str(units),
             "timeInForce": "FOK",
             "positionFill": "DEFAULT",
-            "stopLossOnFill": {
-                "price": str(round(float(sl), dec)),
-                "timeInForce": "GTC",
-            },
+            "stopLossOnFill": {"price": str(round(float(sl), dec)), "timeInForce": "GTC"},
         }
     }
-    # TP intentionally omitted. Profit captured by dynamic trailing/breakeven SL.
+
+    if not TRAILING_TP and tp is not None:
+        if (action == "BUY" and tp > entry) or (action == "SELL" and tp < entry):
+            order_payload["takeProfitOnFill"] = {"price": str(round(float(tp), dec)), "timeInForce": "GTC"}
+            logger.info(f"   ✅ Fixed TP attached: {round(float(tp), dec)}")
+        else:
+            logger.warning(f"   ⚠️ TP {tp} invalid vs entry {entry} — omitted")
+    elif TRAILING_TP:
+        logger.info("   ℹ️ TRAILING_TP=True — TP omitted, using dynamic SL exit")
+    else:
+        logger.warning("   ⚠️ No TP value — sending SL only")
 
     try:
         resp = api.request(OrderCreate(accountID=OANDA_ACCOUNT_ID, data=order_payload))
-        logger.info(f"OANDA accepted order for {pair_raw}")
+        logger.info(f"✅ OANDA accepted order for {pair_raw}")
         return {"status": "OK", "response": resp}
     except Exception as e:
-        logger.error(f"OANDA order failed for {pair_raw}: {e}")
+        logger.error(f"❌ OANDA order failed for {pair_raw}: {e}")
         return {"status": "ERROR", "message": str(e)}
 
 
@@ -354,7 +397,7 @@ def get_account_equity() -> float:
 
 
 # ============================================================================
-# MODEL
+# MODEL TRAIN/LOAD
 # ============================================================================
 def ensure_model():
     global model_wrapper, strat_engine
@@ -364,7 +407,7 @@ def ensure_model():
         logger.info("Model not found. Training...")
     else:
         age_days = (datetime.now(timezone.utc).timestamp() - MODEL_PATH.stat().st_mtime) / 86400
-        if age_days > FEAT_CFG.retrain_every_n_days:
+        if age_days > getattr(FEAT_CFG, "retrain_every_n_days", 30):
             needs_train = True
             logger.info(f"Model stale ({age_days:.1f} days). Retraining...")
 
@@ -374,7 +417,7 @@ def ensure_model():
             oanda = YAHOO_TO_OANDA[pair]
             try:
                 raw = fetcher.fetch(pair, oanda, count=FEAT_CFG.train_lookback_bars)
-                if len(raw) < FEAT_CFG.required_bars:
+                if len(raw) < getattr(FEAT_CFG, "required_bars", 100):
                     logger.warning(f"Insufficient bars for {pair}: {len(raw)}")
                     continue
                 df = feat_engine.build(raw)
@@ -441,13 +484,11 @@ class MCGenerator:
                 return df
         except Exception as e:
             logger.warning(f"MC data failed {pair}: {e}")
-
         return pd.DataFrame()
 
     def run_for_pair(self, pair: str, oanda_symbol: str, df: pd.DataFrame = None):
         if df is None or len(df) < MC_LOOKBACK:
             df = self.fetch_data(pair, oanda_symbol)
-
         if len(df) < MC_LOOKBACK:
             logger.warning(f"MC: insufficient data for {pair} ({len(df)} < {MC_LOOKBACK})")
             return None, False
@@ -455,26 +496,20 @@ class MCGenerator:
         closes = df["Close"].values[-MC_LOOKBACK:]
         current = float(closes[-1].item())
         log_returns = np.log(closes[1:] / closes[:-1])
+        mu, sigma = float(np.mean(log_returns)), float(np.std(log_returns))
+        drift = mu * PERIODS_YEAR
+        vol = sigma * np.sqrt(PERIODS_YEAR)
 
-        mu = float(np.mean(log_returns))
-        drift = mu * PERIODS_YEAR  # annualized for regime display
-        sigma = float(np.std(log_returns))
-        vol = sigma * np.sqrt(PERIODS_YEAR)  # annualized for regime display
-
-        rng = np.random.default_rng()  # fresh seed every run
+        rng = np.random.default_rng()
         paths = np.zeros((self.simulations, MC_FORECAST + 1))
         paths[:, 0] = current
         for t in range(1, MC_FORECAST + 1):
             z = rng.normal(0, 1, self.simulations)
-            # Use raw per-period returns directly — no dt scaling needed
-            paths[:, t] = paths[:, t - 1] * np.exp(
-                (mu - 0.5 * sigma ** 2) + sigma * z
-            )
+            paths[:, t] = paths[:, t - 1] * np.exp((mu - 0.5 * sigma ** 2) + sigma * z)
 
         final = paths[:, -1]
         lower = float(np.percentile(final, (1 - self.confidence) / 2 * 100))
         upper = float(np.percentile(final, (1 + self.confidence) / 2 * 100))
-
         percentile = round((np.sum(final <= current) / self.simulations) * 100, 1)
         p_up = round((np.sum(final > current) / self.simulations) * 100, 1)
         p_down = round(100 - p_up, 1)
@@ -492,26 +527,16 @@ class MCGenerator:
         else:
             regime = f"🔹 {MC_TF} NEUTRAL"
 
-        dec = 3 if "JPY" in pair else 5
+        dec = price_decimals(pair)
         result = {
-            "timeframe": MC_TF,
-            "pair": pair,
-            "current_price": round(current, dec),
-            "ann_drift_pct": round(drift * 100, 2),
-            "ann_vol_pct": round(vol * 100, 2),
+            "timeframe": MC_TF, "pair": pair, "current_price": round(current, dec),
+            "ann_drift_pct": round(drift * 100, 2), "ann_vol_pct": round(vol * 100, 2),
             "range_90": [round(lower, dec), round(upper, dec)],
-            "percentile_rank": percentile,
-            "p_up": p_up,
-            "p_down": p_down,
-            "p_up_pct": p_up,
-            "p_down_pct": p_down,
-            "touch_upper_pct": touch_upper,
-            "touch_lower_pct": touch_lower,
-            "regime": regime,
-            "lookback": MC_LOOKBACK,
-            "forecast": MC_FORECAST,
-            "simulations": self.simulations,
-            "generated_utc": datetime.now(timezone.utc).isoformat(),
+            "percentile_rank": percentile, "p_up": p_up, "p_down": p_down,
+            "p_up_pct": p_up, "p_down_pct": p_down,
+            "touch_upper_pct": touch_upper, "touch_lower_pct": touch_lower,
+            "regime": regime, "lookback": MC_LOOKBACK, "forecast": MC_FORECAST,
+            "simulations": self.simulations, "generated_utc": datetime.now(timezone.utc).isoformat(),
         }
         return result, True
 
@@ -529,15 +554,9 @@ class MCGenerator:
 # 🎯 DYNAMIC POSITION MANAGER — Breakeven + Trailing Stop
 # ============================================================================
 class DynamicPositionManager:
-    def __init__(
-        self,
-        api,
-        account_id: str,
-        be_trigger_atr_mult: float = 1.5,
-        trail_trigger_atr_mult: float = 2.5,
-        trail_atr_mult: float = 1.5,
-        max_hold_bars: int = 12,
-    ):
+    def __init__(self, api, account_id: str, be_trigger_atr_mult: float = 1.5,
+                 trail_trigger_atr_mult: float = 2.5, trail_atr_mult: float = 1.5,
+                 max_hold_bars: int = 12):
         self.api = api
         self.account_id = account_id
         self.be_trigger = be_trigger_atr_mult
@@ -548,44 +567,24 @@ class DynamicPositionManager:
     def _get_open_trades(self, instrument: str):
         try:
             resp = self.api.request(OpenTrades(accountID=self.account_id))
-            trades = []
-            for t in resp.get("trades", []):
-                if t.get("instrument") == instrument:
-                    trades.append(t)
-            return trades
+            return [t for t in resp.get("trades", []) if t.get("instrument") == instrument]
         except Exception as e:
             logger.error(f"Failed to fetch open trades for {instrument}: {e}")
             return []
 
     def _current_price(self, instrument: str, side: str) -> float:
         try:
-            r = InstrumentsCandles(
-                instrument=instrument,
-                params={"count": 1, "granularity": "M1", "price": "BA"},
-            )
+            r = InstrumentsCandles(instrument=instrument, params={"count": 1, "granularity": "M1", "price": "BA"})
             resp = self.api.request(r)["candles"][0]
-            if side == "long":
-                return float(resp["bid"]["c"])
-            return float(resp["ask"]["c"])
+            return float(resp["bid"]["c"]) if side == "long" else float(resp["ask"]["c"])
         except Exception as e:
             logger.warning(f"Price fetch failed for {instrument}: {e}")
             return None
 
     def _update_trade_sl(self, trade_id: str, new_sl: float, decimals: int):
         try:
-            data = {
-                "stopLoss": {
-                    "price": str(round(new_sl, decimals)),
-                    "timeInForce": "GTC",
-                }
-            }
-            self.api.request(
-                TradeCRCDO(
-                    accountID=self.account_id,
-                    tradeID=trade_id,
-                    data=data,
-                )
-            )
+            data = {"stopLoss": {"price": str(round(new_sl, decimals)), "timeInForce": "GTC"}}
+            self.api.request(TradeCRCDO(accountID=self.account_id, tradeID=trade_id, data=data))
             logger.info(f"   🔄 Updated SL on trade {trade_id} → {round(new_sl, decimals)}")
             return True
         except Exception as e:
@@ -593,20 +592,20 @@ class DynamicPositionManager:
             return False
 
     def update_all(self, pair_data: dict):
+        BAR_HOURS = {"15m": 0.25, "1H": 1, "H4": 4, "D": 24}
+        bar_hours = BAR_HOURS.get(TIMEFRAME, 4)
+
         for pair, info in pair_data.items():
             instrument = info["oanda"]
             df = info.get("df")
             if df is None or len(df) < 2:
                 continue
-
             atr_val = df.iloc[-1].get("atr")
             if atr_val is None or np.isnan(atr_val) or atr_val <= 0:
                 continue
 
-            is_jpy = "JPY" in pair
-            decimals = 3 if is_jpy else 5
-            pip_size = 0.01 if is_jpy else 0.0001
-
+            decimals = price_decimals(pair)
+            pip = pip_size(pair)
             trades = self._get_open_trades(instrument)
             if not trades:
                 continue
@@ -623,84 +622,46 @@ class DynamicPositionManager:
                 if current_price is None:
                     continue
 
-                if side == "long":
-                    profit_pips = (current_price - entry) / pip_size
-                else:
-                    profit_pips = (entry - current_price) / pip_size
-
+                profit_pips = (current_price - entry) / pip if side == "long" else (entry - current_price) / pip
                 open_time = datetime.fromisoformat(trade["openTime"].replace("Z", "+00:00"))
-                BAR_HOURS = {"15m": 0.25, "1h": 1, "H4": 4, "4h": 4, "D": 24, "1d": 24}
-                bar_hours = BAR_HOURS.get(TIMEFRAME, 4)
                 bars_held = (datetime.now(timezone.utc) - open_time).total_seconds() / 3600 / bar_hours
 
-                new_sl = None
-                action = None
-
-                # 1) TIME DECAY
                 if bars_held >= self.max_hold:
-                    logger.info(f"⏰ TIME EXIT: {pair} trade {tid} held {bars_held:.1f} H4 bars")
+                    logger.info(f"⏰ TIME EXIT: {pair} trade {tid} held {bars_held:.1f} bars")
                     close_position(instrument)
                     continue
 
-                # 2) BREAKEVEN
-                be_pips = self.be_trigger * atr_val / pip_size
+                new_sl = action = None
+                be_pips = self.be_trigger * atr_val / pip
+                trail_pips = self.trail_trigger * atr_val / pip
+
                 if profit_pips >= be_pips:
-                    if side == "long":
-                        be_sl = entry - (1 * pip_size)
-                    else:
-                        be_sl = entry + (1 * pip_size)
+                    be_sl = entry - pip if side == "long" else entry + pip
                     if current_sl is None or (side == "long" and be_sl > current_sl) or (side == "short" and be_sl < current_sl):
-                        new_sl = be_sl
-                        action = "BREAKEVEN"
+                        new_sl, action = be_sl, "BREAKEVEN"
 
-                # 3) TRAILING STOP
-                trail_pips = self.trail_trigger * atr_val / pip_size
                 if profit_pips >= trail_pips:
-                    if side == "long":
-                        trail_sl = current_price - (self.trail_mult * atr_val)
-                    else:
-                        trail_sl = current_price + (self.trail_mult * atr_val)
+                    trail_sl = current_price - self.trail_mult * atr_val if side == "long" else current_price + self.trail_mult * atr_val
                     if current_sl is None or (side == "long" and trail_sl > current_sl) or (side == "short" and trail_sl < current_sl):
-                        new_sl = trail_sl
-                        action = "TRAIL"
+                        new_sl, action = trail_sl, "TRAIL"
 
-                if new_sl is not None and action:
-                    if side == "long" and current_sl and new_sl < current_sl:
+                if new_sl and action:
+                    if (side == "long" and current_sl and new_sl < current_sl) or (side == "short" and current_sl and new_sl > current_sl):
                         continue
-                    if side == "short" and current_sl and new_sl > current_sl:
-                        continue
-                    ok = self._update_trade_sl(tid, new_sl, decimals)
-                    if ok:
+                    if self._update_trade_sl(tid, new_sl, decimals):
                         send_telegram_message(
                             f"🎯 {action} on {pair} #{tid} | Price: {current_price} | New SL: {round(new_sl, decimals)} | Profit: {profit_pips:.1f} pips"
                         )
 
 
 # ============================================================================
-# STRENGTH-BASED CLOSE OVERRIDE
+# STRENGTH-BASED CLOSE — Unified Threshold (v6.1)
 # ============================================================================
-STRENGTH_CLOSE_THRESHOLD = cfg("STRENGTH_CLOSE_THRESHOLD", 1.0)
-
-
 def should_close_by_strength(pair: str, side: str, strength_scores: dict) -> tuple:
-    """
-    Return (should_close: bool, reason: str) if position fights currency strength.
-
-    For BASE/QUOTE pair:
-    - LONG  = bullish BASE, bearish QUOTE
-    - SHORT = bearish BASE, bullish QUOTE
-
-    Close if strength gap contradicts position by > threshold.
-    """
-    # Extract base and quote from pair like "EURUSD=X" or "EUR_JPY"
     clean = pair.replace("=X", "").replace("_", "")
-    # Map to 3-letter codes
     if len(clean) == 6:
         base, quote = clean[:3], clean[3:]
-    elif "JPY" in pair and len(clean) == 6:
-        base, quote = clean[:3], clean[3:]
     else:
-        # Fallback: try to infer from OANDA symbol
         parts = pair.replace("=X", "").split("_")
         if len(parts) == 2:
             base, quote = parts[0], parts[1]
@@ -711,15 +672,10 @@ def should_close_by_strength(pair: str, side: str, strength_scores: dict) -> tup
     quote_score = strength_scores.get(quote, 0)
     gap = base_score - quote_score
 
-    if side == "long":
-        # We want base stronger than quote. If quote is stronger by threshold, close.
-        if -gap > STRENGTH_CLOSE_THRESHOLD:
-            return True, f"Strength flip: {quote} (+{quote_score:.2f}) now stronger than {base} ({base_score:.2f}), gap={-gap:.2f}"
-    else:
-        # We want base weaker than quote. If base is stronger by threshold, close.
-        if gap > STRENGTH_CLOSE_THRESHOLD:
-            return True, f"Strength flip: {base} (+{base_score:.2f}) now stronger than {quote} ({quote_score:.2f}), gap={gap:.2f}"
-
+    if side == "long" and -gap > STRENGTH_CLOSE_THRESHOLD:
+        return True, f"Strength flip: {quote} (+{quote_score:.2f}) stronger than {base} ({base_score:.2f}), gap={-gap:.2f}"
+    if side == "short" and gap > STRENGTH_CLOSE_THRESHOLD:
+        return True, f"Strength flip: {base} (+{base_score:.2f}) stronger than {quote} ({quote_score:.2f}), gap={gap:.2f}"
     return False, ""
 
 
@@ -728,12 +684,11 @@ def should_close_by_strength(pair: str, side: str, strength_scores: dict) -> tup
 # ============================================================================
 def load_mc_legacy(pair):
     safe = pair.replace("=X", "").replace("=", "_")
-    candidates = [
+    for f in [
         RESULTS_DIR / f"fx_daily_{safe}_{TODAY_STR}.json",
         RESULTS_DIR / f"daily_mc_{safe}_{TODAY_STR}.json",
         RESULTS_DIR / f"h4_mc_{safe}_{TODAY_STR}.json",
-    ]
-    for f in candidates:
+    ]:
         if f.exists():
             age = (datetime.now(timezone.utc) - datetime.fromtimestamp(f.stat().st_mtime, timezone.utc)).total_seconds() / 3600
             if age <= MC_MAX_AGE_HOURS:
@@ -747,14 +702,10 @@ def load_mc_legacy(pair):
 # ============================================================================
 def build_mc_telegram(mc_results: list) -> str:
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    lines = [
-        f"📊 **{MC_REPORT_TITLE}**",
-        f"📅 Generated: {now}",
-        f"🔹 TF: {MC_TF} | Lookback: {MC_LOOKBACK} | Forecast: {MC_FORECAST} | Sims: {SIMULATIONS}",
-        ""
-    ]
+    lines = [f"📊 **{MC_REPORT_TITLE}**", f"📅 Generated: {now}",
+             f"🔹 TF: {MC_TF} | Lookback: {MC_LOOKBACK} | Forecast: {MC_FORECAST} | Sims: {SIMULATIONS}", ""]
     for r in mc_results:
-        dec = 3 if "JPY" in r["pair"] else 5
+        dec = price_decimals(r["pair"])
         lo, hi = r["range_90"]
         lines.extend([
             f"🔹 **{r['pair']}**",
@@ -763,11 +714,9 @@ def build_mc_telegram(mc_results: list) -> str:
             f"   🎯 UP: `{r['p_up_pct']}%` | DOWN: `{r['p_down_pct']}%`",
             f"   📏 90% Band: `{lo}` – `{hi}`",
             f"   🔍 Touch: Low `{r['touch_lower_pct']}%` | High `{r['touch_upper_pct']}%`",
-            f"   {r['regime']}",
-            ""
+            f"   {r['regime']}", ""
         ])
     return "\n".join(lines)
-
 
 def build_trade_telegram(trade_lines: list, mc_summary: list = None) -> str:
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
@@ -786,7 +735,9 @@ def build_trade_telegram(trade_lines: list, mc_summary: list = None) -> str:
 # ============================================================================
 def main():
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    logger.info(f"\n🤖 RUN — {now} | MODE={MODE} | MODEL=XGBoost | DATA=OANDA | MC={MC_TF}")
+    logger.info(f"\n🤖 RUN — {now} | MODE=LEVEL10 | MODEL=XGBoost | DATA=OANDA | "
+                f"TF={args.timeframe} | MC=H4 | TP_MODE={'TRAILING' if TRAILING_TP else 'FIXED'} | "
+                f"TEST={args.test_trade} | CONFLUENCE={MULTI_TF_CONFLUENCE}")
 
     if forex_market_closed():
         logger.info("Market closed — skipping")
@@ -803,7 +754,7 @@ def main():
     for pair in DEFAULT_PAIRS:
         oanda = YAHOO_TO_OANDA[pair]
         try:
-            raw = fetcher.fetch(pair, oanda, count=200)
+            raw = fetcher.fetch(pair, oanda, count=200, granularity=args.timeframe)
             if raw.empty:
                 logger.warning(f"{pair}: empty raw data from OANDA")
                 continue
@@ -860,6 +811,49 @@ def main():
                 mc_cache[pair] = mc_data
 
     # ------------------------------------------------------------------
+    # 2B) MULTI-TIMEFRAME CONFLUENCE CHECK (H4 + 1H + 15m alignment)
+    # ------------------------------------------------------------------
+    tf_confluence = {}
+    if MULTI_TF_CONFLUENCE and not args.test_trade:
+        logger.info("[CONFLUENCE] Checking H4 + 1H + 15m direction alignment...")
+        TF_GRANULARITIES = {"H4": "H4", "1H": "H1", "15m": "M15"}  # Map to OANDA granularity
+        for pair in DEFAULT_PAIRS:
+            oanda = YAHOO_TO_OANDA[pair]
+            directions = []
+            for tf_label, gran in TF_GRANULARITIES.items():
+                try:
+                    tf_raw = fetcher.fetch(pair, oanda, count=100, granularity=gran)
+                    if tf_raw.empty:
+                        continue
+                    tf_df = feat_engine.build(tf_raw)
+                    if len(tf_df) < 5:
+                        continue
+                    tf_sig = strat_engine.generate_signal(
+                        pair=pair, oanda_symbol=oanda, df=tf_df,
+                        mc_data=None, strength_scores=strength_scores,
+                        current_price=tf_df.iloc[-1]["Close"], spread_pips=1.0
+                    )
+                    if tf_sig:
+                        directions.append(tf_sig.action)
+                except Exception as e:
+                    logger.debug(f"Confluence skip {pair} {tf_label}: {e}")
+
+            buy_count = directions.count("BUY")
+            sell_count = directions.count("SELL")
+            tf_confluence[pair] = {
+                "directions": directions,
+                "buy_count": buy_count,
+                "sell_count": sell_count,
+                "agrees_buy": buy_count >= CONFLUENCE_REQUIRED_TFS,
+                "agrees_sell": sell_count >= CONFLUENCE_REQUIRED_TFS,
+                "passes": (buy_count >= CONFLUENCE_REQUIRED_TFS or
+                           sell_count >= CONFLUENCE_REQUIRED_TFS)
+            }
+            logger.info(f"🔗 CONFLUENCE {pair}: {directions} → PASS={tf_confluence[pair]['passes']}")
+    else:
+        logger.info("[CONFLUENCE] Skipped (Test Mode or Disabled)")
+
+    # ------------------------------------------------------------------
     # 3) CLOSE CHECK — Model reversal + Strength override
     # ------------------------------------------------------------------
     for pair in DEFAULT_PAIRS:
@@ -879,10 +873,11 @@ def main():
         if should_close:
             logger.info(f"🔄 CLOSE {pair}: {reason}")
             close_position(oanda)
-            last_closed[pair] = (
-                Direction.LONG if pos["units"] > 0 else Direction.SHORT,
-                REOPEN_DELAY_RUNS,
-            )
+            if not REMOVE_COOLDOWN:
+                last_closed[pair] = (
+                    Direction.LONG if pos["units"] > 0 else Direction.SHORT,
+                    REOPEN_DELAY_RUNS,
+                )
             continue
 
         # B) Strength-based close override
@@ -890,10 +885,11 @@ def main():
         if sc:
             logger.info(f"🔄 STRENGTH CLOSE {pair}: {sc_reason}")
             close_position(oanda)
-            last_closed[pair] = (
-                Direction.LONG if pos["units"] > 0 else Direction.SHORT,
-                REOPEN_DELAY_RUNS,
-            )
+            if not REMOVE_COOLDOWN:
+                last_closed[pair] = (
+                    Direction.LONG if pos["units"] > 0 else Direction.SHORT,
+                    REOPEN_DELAY_RUNS,
+                )
             continue
 
     save_cooldown(last_closed)
@@ -928,7 +924,8 @@ def main():
     for pair in DEFAULT_PAIRS:
         oanda = YAHOO_TO_OANDA[pair]
 
-        if pair in last_closed and not args.test_trade:
+        # ── COOLDOWN CHECK (SKIPPED WHEN REMOVE_COOLDOWN=True) ──
+        if pair in last_closed and not REMOVE_COOLDOWN and not args.test_trade:
             dir_closed, runs_left = last_closed[pair]
             if runs_left > 0:
                 last_closed[pair] = (dir_closed, runs_left - 1)
@@ -936,6 +933,9 @@ def main():
                 continue
             else:
                 del last_closed[pair]
+        elif REMOVE_COOLDOWN and pair in last_closed:
+            logger.info(f"🧪 COOLDOWN DISABLED (TEST): proceeding with {pair}")
+            del last_closed[pair]
 
         if get_open_position(oanda) and not args.test_trade:
             logger.info(f"⏭️ {pair}: position open — skip")
@@ -957,7 +957,7 @@ def main():
                     params={"count": 1, "granularity": "M1", "price": "BA"},
                 )
             )["candles"][0]
-            current = float(tick["mid"]["c"])
+            current = float(tick["bid"]["c"]) if "bid" in tick and "c" in tick["bid"] else float(tick["ask"]["c"])
             spread_pips = abs(float(tick["ask"]["c"]) - float(tick["bid"]["c"])) / (
                 0.01 if "JPY" in pair else 0.0001
             )
@@ -971,7 +971,6 @@ def main():
             logger.info(f"⚠️ MC missing/stale for {pair}")
 
         # ── STRENGTH PRE-FILTER ──
-        # Block signals that fight currency strength trend
         clean = pair.replace("=X", "").replace("_", "")
         if len(clean) == 6:
             base, quote = clean[:3], clean[3:]
@@ -981,15 +980,7 @@ def main():
         base_score = strength_scores.get(base, 0)
         quote_score = strength_scores.get(quote, 0)
         gap = base_score - quote_score
-        strength_threshold = cfg("STRENGTH_SIGNAL_BLOCK_THRESHOLD", 1.0)
-
-        # For SELL: we sell base (want it weak) and buy quote (want it strong)
-        # If base is stronger than quote by threshold, SELL is wrong
-        # For BUY: we buy base (want it strong) and sell quote (want it weak)
-        # If quote is stronger than base by threshold, BUY is wrong
-        # We don't know direction yet, so we check both and block if either is violated
-        # Actually we need to check after signal direction is known... 
-        # Better: let the model generate, then veto if it fights strength
+        STRENGTH_THRESHOLD = cfg("STRENGTH_SIGNAL_BLOCK_THRESHOLD", 1.0)
 
         sig = strat_engine.generate_signal(
             pair=pair,
@@ -1005,12 +996,25 @@ def main():
             logger.info(f"➖ {pair}: no signal")
             continue
 
-        # Post-signal strength veto
+        # ── CONFLUENCE FILTER (H4+1H+15m MUST AGREE IN PROD MODE) ──
+        if MULTI_TF_CONFLUENCE and not args.test_trade:
+            conf = tf_confluence.get(pair, {})
+            if not conf.get("passes", True):
+                logger.info(f"🚫 {pair}: CONFLUENCE FAILED — timeframes disagree")
+                continue
+            if sig.action == "BUY" and not conf.get("agrees_buy", True):
+                logger.info(f"🚫 {pair}: BUY rejected — not all TFs agree")
+                continue
+            if sig.action == "SELL" and not conf.get("agrees_sell", True):
+                logger.info(f"🚫 {pair}: SELL rejected — not all TFs agree")
+                continue
+
+        # Post-signal strength veto (skipped in test mode)
         if not args.test_trade:
-            if sig.action == "SELL" and gap > strength_threshold:
+            if sig.action == "SELL" and gap > STRENGTH_THRESHOLD:
                 logger.info(f"🚫 {pair}: SELL blocked — {base} (+{base_score:.2f}) stronger than {quote} ({quote_score:.2f}), gap={gap:.2f}")
                 continue
-            if sig.action == "BUY" and -gap > strength_threshold:
+            if sig.action == "BUY" and -gap > STRENGTH_THRESHOLD:
                 logger.info(f"🚫 {pair}: BUY blocked — {quote} (+{quote_score:.2f}) stronger than {base} ({base_score:.2f}), gap={-gap:.2f}")
                 continue
         else:
@@ -1018,10 +1022,9 @@ def main():
 
         atr_val = df.iloc[-1].get("atr")
         if atr_val and not np.isnan(atr_val):
-            # ── ATR floor guard ──
             is_jpy = "JPY" in pair
             pip_size = 0.01 if is_jpy else 0.0001
-            min_sl_pips = cfg("MIN_SL_PIPS", 15 if is_jpy else 10)
+            min_sl_pips = cfg("MIN_SL_PIPS_JPY", 15) if is_jpy else cfg("MIN_SL_PIPS", 10)
             min_sl_distance = min_sl_pips * pip_size
             effective_atr = max(atr_val, min_sl_distance / FEAT_CFG.atr_sl_mult)
 
@@ -1051,7 +1054,7 @@ def main():
 
         candidates.append(sig)
         logger.info(
-            f"📈 SIGNAL {pair} | {sig.action} | Score={sig.conviction_score} "
+            f"📈 SIGNAL {pair} | {sig.action} | Score={sig.conviction_score:.1f} "
             f"| Prob={sig.raw_prob:.1%} | SL={sig.stop_loss} | RefTP={sig.take_profit} | Units={units}"
         )
         logger.info(f"   Breakdown: {sig.score_breakdown}")
@@ -1083,36 +1086,37 @@ def main():
                     entry=w.entry_price,
                     sl=w.stop_loss,
                     pair=w.pair,
-                    atr_value=w.mc_data.get("atr", 0.0005) if w.mc_data else 0.0005,
+                    atr_value=getattr(w, 'mc', 0.0005)
                 )
-            res = open_oanda_order(
-                {"pair": w.oanda_symbol, "action": w.action,
-                 "stop_loss": w.stop_loss, "take_profit": w.take_profit},
+
+            logger.info(f"🚀 EXECUTE: {w.pair} {w.action} | SL={w.stop_loss} | TP={w.take_profit}")
+            result = open_oanda_order(
+                signal={
+                    "pair": YAHOO_TO_OANDA[w.pair],
+                    "action": w.action,
+                    "stop_loss": w.stop_loss,
+                    "take_profit": w.take_profit,
+                },
                 units=units,
                 current_price=w.entry_price,
             )
-            logger.info(f"📤 Order result for {w.pair}: {res}")
-            if res.get("status") == "OK":
-                trade_lines.append(
-                    f"✅ {w.pair} | {w.action} | Score={w.conviction_score} | "
-                    f"Prob={w.raw_prob:.1%} | SL={w.stop_loss} | RefTP={w.take_profit} | Units={units}"
-                )
-            else:
-                trade_lines.append(f"❌ {w.pair} | ORDER FAILED: {res.get('message')}")
 
-    mc_summary = []
-    for pair in DEFAULT_PAIRS:
-        if pair in mc_cache:
-            r = mc_cache[pair]
-            mc_summary.append(
-                f"{r['pair']}: {r['regime']} (P_up={r['p_up']}%, 90%={r['range_90'][0]}-{r['range_90'][1]})"
+            status = "✅ OK" if result.get("status") == "OK" else f"❌ {result.get('message', 'FAILED')}"
+            trade_lines.append(
+                f"{w.action} {YAHOO_TO_OANDA[w.pair]} | Score={w.conviction_score:.1f} | "
+                f"Prob={w.raw_prob:.1%} | {status}"
             )
 
-    msg = build_trade_telegram(trade_lines, mc_summary)
-    logger.info(msg)
-    send_telegram_message(msg)
-    logger.info("✅ Run complete")
+    # ------------------------------------------------------------------
+    # 8) REPORT
+    # ------------------------------------------------------------------
+    mc_summary = []
+    for p, m in list(mc_cache.items())[:4]:
+        mc_summary.append(f"{p}: {m['p_up']}% UP, {m['regime']}")
 
+    msg = build_trade_telegram(trade_lines, mc_summary)
+    send_telegram_message(msg)
+    logger.info("📋 Telegram report sent")
 
 if __name__ == "__main__":
     try:

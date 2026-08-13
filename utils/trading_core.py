@@ -352,10 +352,19 @@ def open_oanda_order(signal: dict, units: float | None = None) -> dict:
         return {"status": "ERROR", "message": f"OANDA API Error: {e}"}
     
 
-def forex_market_closed():
+def _forex_market_closed():
     """Reliable UTC‑based market check — no API call"""
     now = datetime.utcnow()
     wd = now.weekday()
+    return wd == 6 or (wd == 5 and now.hour >= 21)
+
+
+def forex_market_closed():
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    tz = ZoneInfo("Europe/London")
+    now = datetime.now(tz)
+    wd = now.weekday()  # Mon=0 ... Sun=6
     return wd == 6 or (wd == 5 and now.hour >= 21)
 
 # def get_open_positions_formatted():

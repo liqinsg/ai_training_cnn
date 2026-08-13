@@ -1,8 +1,5 @@
-# fx_trade_bot_integrated.py — v4.2 Clean Rebuild (Bot + MC + Dynamic Exit + Strength Guard)
+# fx_trade_bot_integrated_v42.py — v4.2 Clean Rebuild (Bot + MC + Dynamic Exit + Strength Guard)
 # Strategy: strategy_decision.py | Data: data_pipeline.py | MC: inline
-import config
-def cfg(name, default):
-    return getattr(config, name, default)
 
 import sys
 import json
@@ -27,8 +24,8 @@ logger = logging.getLogger(__name__)
 
 # ── Suppress noisy oandapyV20 "performing request" logs ──
 # Set DEBUG_API=True in config.py to see every API call
-DEBUG_API = cfg("DEBUG_MODE", False)
-if not DEBUG_API:
+DEBUG_MODE = cfg("DEBUG_API", False)
+if not DEBUG_MODE:
     logging.getLogger("oandapyV20").setLevel(logging.WARNING)
     logging.getLogger("oandapyV20.oandapyV20").setLevel(logging.WARNING)
     logging.getLogger("oandapyV20.endpoints").setLevel(logging.WARNING)
@@ -41,7 +38,7 @@ from utils.trading_core import get_candles as get_oanda_candles
 from utils.calculate_currency_strength import calculate_currency_strength
 from utils.strategy_helpers import build_strength_matrix, format_strength_ranking
 from telegram_message import send_telegram_message
-
+import config
 from config_oanda import OANDA_API_TOKEN, OANDA_ACCOUNT_ID, OANDA_ENV
 import oandapyV20
 
@@ -456,19 +453,18 @@ class MCGenerator:
         current = float(closes[-1].item())
         log_returns = np.log(closes[1:] / closes[:-1])
 
-        mu = float(np.mean(log_returns))
-        drift = mu * PERIODS_YEAR  # annualized for regime display
-        sigma = float(np.std(log_returns))
-        vol = sigma * np.sqrt(PERIODS_YEAR)  # annualized for regime display
+        drift = float(np.mean(log_returns) * PERIODS_YEAR)
+        vol = float(np.std(log_returns) * np.sqrt(PERIODS_YEAR))
+        dt = 1 / PERIODS_YEAR * DT_SCALE
 
-        rng = np.random.default_rng()  # fresh seed every run
+        np.random.seed(42)
         paths = np.zeros((self.simulations, MC_FORECAST + 1))
         paths[:, 0] = current
         for t in range(1, MC_FORECAST + 1):
-            z = rng.normal(0, 1, self.simulations)
-            # Use raw per-period returns directly — no dt scaling needed
+            z = np.random.normal(0, 1, self.simulations)
             paths[:, t] = paths[:, t - 1] * np.exp(
-                (mu - 0.5 * sigma ** 2) + sigma * z
+                (drift / PERIODS_YEAR - 0.5 * (vol ** 2) / PERIODS_YEAR)
+                + (vol * np.sqrt(dt)) * z
             )
 
         final = paths[:, -1]
@@ -629,9 +625,7 @@ class DynamicPositionManager:
                     profit_pips = (entry - current_price) / pip_size
 
                 open_time = datetime.fromisoformat(trade["openTime"].replace("Z", "+00:00"))
-                BAR_HOURS = {"15m": 0.25, "1h": 1, "H4": 4, "4h": 4, "D": 24, "1d": 24}
-                bar_hours = BAR_HOURS.get(TIMEFRAME, 4)
-                bars_held = (datetime.now(timezone.utc) - open_time).total_seconds() / 3600 / bar_hours
+                bars_held = (datetime.now(timezone.utc) - open_time).total_seconds() / (3600 * 4)
 
                 new_sl = None
                 action = None
@@ -1018,25 +1012,18 @@ def main():
 
         atr_val = df.iloc[-1].get("atr")
         if atr_val and not np.isnan(atr_val):
-            # ── ATR floor guard ──
-            is_jpy = "JPY" in pair
-            pip_size = 0.01 if is_jpy else 0.0001
-            min_sl_pips = cfg("MIN_SL_PIPS", 15 if is_jpy else 10)
-            min_sl_distance = min_sl_pips * pip_size
-            effective_atr = max(atr_val, min_sl_distance / FEAT_CFG.atr_sl_mult)
-
             atr_sl, atr_tp = atr_mod.sl_tp_from_atr(
                 entry=current,
                 direction=sig.action,
-                atr_value=effective_atr,
-                is_jpy=is_jpy,
+                atr_value=atr_val,
+                is_jpy="JPY" in pair,
                 sl_mult=FEAT_CFG.atr_sl_mult,
                 tp_mult=FEAT_CFG.atr_tp_mult,
             )
             if atr_sl and atr_tp:
                 sig.stop_loss = atr_sl
                 sig.take_profit = atr_tp
-                sig.filter_notes.append(f"ATR SL/TP: mult={FEAT_CFG.atr_sl_mult}/{FEAT_CFG.atr_tp_mult}, floor={min_sl_pips}pips")
+                sig.filter_notes.append(f"ATR SL/TP: mult={FEAT_CFG.atr_sl_mult}/{FEAT_CFG.atr_tp_mult}")
 
         units = DEFAULT_LOT_SIZE
         if not USE_DEFAULT_LOT_SIZE:

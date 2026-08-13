@@ -1021,7 +1021,7 @@ def main():
             # ── ATR floor guard ──
             is_jpy = "JPY" in pair
             pip_size = 0.01 if is_jpy else 0.0001
-            min_sl_pips = cfg("MIN_SL_PIPS", 15 if is_jpy else 10)
+            min_sl_pips = cfg("MIN_SL_PIPS_JPY", 15) if is_jpy else cfg("MIN_SL_PIPS", 10)
             min_sl_distance = min_sl_pips * pip_size
             effective_atr = max(atr_val, min_sl_distance / FEAT_CFG.atr_sl_mult)
 

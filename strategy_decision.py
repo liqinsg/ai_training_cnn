@@ -1,6 +1,7 @@
 """
 strategy_decision.py — v3.0 Defensive
 """
+
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Tuple
 from enum import Enum
@@ -8,9 +9,11 @@ import numpy as np
 import pandas as pd
 from config import MAX_TOTAL_TRADES, MAX_PER_USD_GROUP, MAX_PER_JPY_GROUP
 
+
 class Direction(Enum):
     LONG = "LONG"
     SHORT = "SHORT"
+
 
 class FilterMode(Enum):
     OFF = "off"
@@ -81,8 +84,9 @@ class StrategyEngine:
         self.model = model
         self.features = feature_list
 
-    def should_close(self, position_units: int,
-                     latest_features: pd.Series) -> Tuple[bool, str]:
+    def should_close(
+        self, position_units: int, latest_features: pd.Series
+    ) -> Tuple[bool, str]:
         try:
             p_up = self._predict(latest_features)
         except Exception as e:
@@ -94,12 +98,16 @@ class StrategyEngine:
             return True, f"SHORT reversal: UP prob {p_up:.1%}"
         return False, "hold"
 
-    def generate_signal(self, pair: str, oanda_symbol: str,
-                        df: pd.DataFrame,
-                        mc_data: Optional[dict],
-                        strength_scores: dict,
-                        current_price: float,
-                        spread_pips: float) -> Optional[Signal]:
+    def generate_signal(
+        self,
+        pair: str,
+        oanda_symbol: str,
+        df: pd.DataFrame,
+        mc_data: Optional[dict],
+        strength_scores: dict,
+        current_price: float,
+        spread_pips: float,
+    ) -> Optional[Signal]:
         notes: List[str] = []
         breakdown: Dict[str, float] = {"base": self.cfg.base_score}
 
@@ -122,7 +130,11 @@ class StrategyEngine:
         raw_prob = p_up if direction == Direction.LONG else p_down
         edge = abs(raw_prob - 0.5)
 
-        min_prob = self.cfg.base_min_edge if self.cfg.mode == "LEVEL10" else self.cfg.normal_min_edge
+        min_prob = (
+            self.cfg.base_min_edge
+            if self.cfg.mode == "LEVEL10"
+            else self.cfg.normal_min_edge
+        )
         if raw_prob < min_prob:
             notes.append(f"Raw prob {raw_prob:.2%} < min {min_prob:.2%}")
             return None
@@ -199,13 +211,22 @@ class StrategyEngine:
             return None
 
         return Signal(
-            pair=pair, oanda_symbol=oanda_symbol, direction=direction,
-            action=action, entry_price=round(current_price, 5),
-            stop_loss=sl, take_profit=tp,
-            conviction_score=round(score, 1), raw_prob=round(raw_prob, 4),
-            edge=round(edge, 4), model_p_up=round(p_up, 4), adx=round(adx, 2),
-            mc_data=mc_data, pivot_levels=pivot_levels,
-            filter_notes=notes, score_breakdown=breakdown,
+            pair=pair,
+            oanda_symbol=oanda_symbol,
+            direction=direction,
+            action=action,
+            entry_price=round(current_price, 5),
+            stop_loss=sl,
+            take_profit=tp,
+            conviction_score=round(score, 1),
+            raw_prob=round(raw_prob, 4),
+            edge=round(edge, 4),
+            model_p_up=round(p_up, 4),
+            adx=round(adx, 2),
+            mc_data=mc_data,
+            pivot_levels=pivot_levels,
+            filter_notes=notes,
+            score_breakdown=breakdown,
         )
 
     def select_signals(self, signals: List[Signal]) -> List[Signal]:
@@ -280,7 +301,9 @@ class StrategyEngine:
             pts = self.cfg.adx_weight
             return pts, f"ADX strong {adx:.1f} (+{pts:.1f})"
         elif adx >= self.cfg.adx_moderate:
-            ratio = (adx - self.cfg.adx_moderate) / max(self.cfg.adx_strong - self.cfg.adx_moderate, 0.001)
+            ratio = (adx - self.cfg.adx_moderate) / max(
+                self.cfg.adx_strong - self.cfg.adx_moderate, 0.001
+            )
             pts = ratio * self.cfg.adx_weight
             return pts, f"ADX moderate {adx:.1f} (+{pts:.1f})"
         else:
@@ -377,7 +400,15 @@ class StrategyEngine:
             raise ValueError("DataFrame needs DatetimeIndex")
         return (
             df.resample("D")
-            .agg({"Open": "first", "High": "max", "Low": "min", "Close": "last", "Volume": "sum"})
+            .agg(
+                {
+                    "Open": "first",
+                    "High": "max",
+                    "Low": "min",
+                    "Close": "last",
+                    "Volume": "sum",
+                }
+            )
             .dropna()
         )
 
@@ -388,9 +419,12 @@ class StrategyEngine:
         if pivot_type == "Classic":
             p = (h + l + c) / 3
             return {
-                "R3": round(p + 2 * rng, 5), "R2": round(p + rng, 5),
-                "R1": round(2 * p - l, 5), "P": round(p, 5),
-                "S1": round(2 * p - h, 5), "S2": round(p - rng, 5),
+                "R3": round(p + 2 * rng, 5),
+                "R2": round(p + rng, 5),
+                "R1": round(2 * p - l, 5),
+                "P": round(p, 5),
+                "S1": round(2 * p - h, 5),
+                "S2": round(p - rng, 5),
                 "S3": round(p - 2 * rng, 5),
             }
         return {}

@@ -1,5 +1,9 @@
-# fx_trade_bot_integrated.py — v4.2 Clean Rebuild (Bot + MC + Dynamic Exit + Strength Guard)
-# Strategy: strategy_decision.py | Data: data_pipeline.py | MC: inline
+# fx_trade_bot_integrated_v5.py — v5.1 Clean Rebuild
+# CHANGES:
+#   ✅ --test-trade defaults=True, overridable via --no-test-trade
+#   ✅ TRAILING_TP config: False=send fixed TP (default), True=dynamic SL-only exit
+#   ✅ TP validation included in order payload
+
 import config
 def cfg(name, default):
     return getattr(config, name, default)
@@ -25,8 +29,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ── Suppress noisy oandapyV20 "performing request" logs ──
-# Set DEBUG_API=True in config.py to see every API call
+# ── Suppress noisy oandapyV20 logs ──
 DEBUG_API = cfg("DEBUG_MODE", False)
 if not DEBUG_API:
     logging.getLogger("oandapyV20").setLevel(logging.WARNING)
@@ -56,8 +59,10 @@ from data_pipeline import FeatureConfig, FeatureEngine, ModelWrapper, DataFetche
 api = oandapyV20.API(access_token=OANDA_API_TOKEN, environment=OANDA_ENV)
 
 
-def cfg(name, default):
-    return getattr(config, name, default)
+# ============================================================================
+# CONFIG DEFAULTS
+# ============================================================================
+TRAILING_TP = cfg("TRAILING_TP", False)  # False=send fixed TP; True=dynamic SL exit
 
 
 # ============================================================================
@@ -65,13 +70,15 @@ def cfg(name, default):
 # ============================================================================
 parser = argparse.ArgumentParser(description="FX Trade Bot + Monte Carlo")
 parser.add_argument("--timeframe", choices=["D", "H4", "15m", "1h"], default="H4",
-                    help="Primary timeframe: drives OANDA granularity and MC config")
+                    help="Primary timeframe [default: H4]")
 parser.add_argument("--mc-only", action="store_true",
                     help="Run only MC generation + report, skip trading")
 parser.add_argument("--skip-mc", action="store_true",
                     help="Skip MC generation (legacy file fallback)")
-parser.add_argument("--test-trade", action="store_true",
-                    help="TEST MODE: bypass strength veto, lower threshold, trade any >51% prob")
+parser.add_argument("--test-trade", action="store_true", default=True,
+                    help="TEST MODE: bypass strength veto, lower threshold, trade >51% prob [default: ON]")
+parser.add_argument("--no-test-trade", action="store_false", dest="test_trade",
+                    help="Disable test mode → full strength/cooldown filters")
 args = parser.parse_args()
 
 MODE = cfg("MODE", "LEVEL10")
@@ -203,7 +210,6 @@ def save_cooldown(state):
 
 last_closed = load_cooldown()
 
-
 # ============================================================================
 # MARKET STATUS
 # ============================================================================
@@ -271,9 +277,8 @@ def close_position(instrument: str):
     except Exception as e:
         logger.error(f"Close failed for {instrument}: {e}")
 
-
 # ============================================================================
-# ORDER
+# ORDER — with TRAILING_TP logic
 # ============================================================================
 def open_oanda_order(signal: dict, units: int, current_price: float = None) -> dict:
     if not OANDA_ACCOUNT_ID or not OANDA_API_TOKEN:
@@ -284,6 +289,7 @@ def open_oanda_order(signal: dict, units: int, current_price: float = None) -> d
         return {"status": "ERROR", "message": f"Invalid action: {action}"}
     units = int(units) if action == "BUY" else -int(units)
     sl = signal.get("stop_loss")
+    tp = signal.get("take_profit")
     if sl is None:
         return {"status": "ERROR", "message": "SL missing"}
 
@@ -315,7 +321,7 @@ def open_oanda_order(signal: dict, units: int, current_price: float = None) -> d
         logger.error(err)
         return {"status": "ERROR", "message": err}
 
-    # ── PERMANENTLY NO TP ──
+    # ── BUILD ORDER ──
     order_payload = {
         "order": {
             "type": "MARKET",
@@ -329,7 +335,21 @@ def open_oanda_order(signal: dict, units: int, current_price: float = None) -> d
             },
         }
     }
-    # TP intentionally omitted. Profit captured by dynamic trailing/breakeven SL.
+
+    # Include fixed TP only when TRAILING_TP is False
+    if not TRAILING_TP and tp is not None:
+        if (action == "BUY" and tp > entry) or (action == "SELL" and tp < entry):
+            order_payload["takeProfitOnFill"] = {
+                "price": str(round(float(tp), dec)),
+                "timeInForce": "GTC",
+            }
+            logger.info(f"   ✅ Fixed TP attached: {round(float(tp), dec)}")
+        else:
+            logger.warning(f"   ⚠️ TP {tp} invalid vs entry {entry} — omitted")
+    elif TRAILING_TP:
+        logger.info("   ℹ️ TRAILING_TP=True — TP omitted, using dynamic SL exit")
+    else:
+        logger.warning("   ⚠️ No TP value — sending SL only")
 
     try:
         resp = api.request(OrderCreate(accountID=OANDA_ACCOUNT_ID, data=order_payload))
@@ -338,7 +358,6 @@ def open_oanda_order(signal: dict, units: int, current_price: float = None) -> d
     except Exception as e:
         logger.error(f"OANDA order failed for {pair_raw}: {e}")
         return {"status": "ERROR", "message": str(e)}
-
 
 # ============================================================================
 # EQUITY
@@ -399,7 +418,6 @@ def ensure_model():
     strat_engine.model = model_wrapper.model
     strat_engine.features = model_wrapper.feature_names
 
-
 # ============================================================================
 # 🎲 MONTE CARLO ENGINE
 # ============================================================================
@@ -457,16 +475,15 @@ class MCGenerator:
         log_returns = np.log(closes[1:] / closes[:-1])
 
         mu = float(np.mean(log_returns))
-        drift = mu * PERIODS_YEAR  # annualized for regime display
+        drift = mu * PERIODS_YEAR
         sigma = float(np.std(log_returns))
-        vol = sigma * np.sqrt(PERIODS_YEAR)  # annualized for regime display
+        vol = sigma * np.sqrt(PERIODS_YEAR)
 
-        rng = np.random.default_rng()  # fresh seed every run
+        rng = np.random.default_rng()
         paths = np.zeros((self.simulations, MC_FORECAST + 1))
         paths[:, 0] = current
         for t in range(1, MC_FORECAST + 1):
             z = rng.normal(0, 1, self.simulations)
-            # Use raw per-period returns directly — no dt scaling needed
             paths[:, t] = paths[:, t - 1] * np.exp(
                 (mu - 0.5 * sigma ** 2) + sigma * z
             )
@@ -523,7 +540,6 @@ class MCGenerator:
         with open(fname, "w") as f:
             json.dump(result, f, indent=2)
         return fname
-
 
 # ============================================================================
 # 🎯 DYNAMIC POSITION MANAGER — Breakeven + Trailing Stop
@@ -636,13 +652,13 @@ class DynamicPositionManager:
                 new_sl = None
                 action = None
 
-                # 1) TIME DECAY
+                # TIME DECAY
                 if bars_held >= self.max_hold:
-                    logger.info(f"⏰ TIME EXIT: {pair} trade {tid} held {bars_held:.1f} H4 bars")
+                    logger.info(f"⏰ TIME EXIT: {pair} trade {tid} held {bars_held:.1f} bars")
                     close_position(instrument)
                     continue
 
-                # 2) BREAKEVEN
+                # BREAKEVEN
                 be_pips = self.be_trigger * atr_val / pip_size
                 if profit_pips >= be_pips:
                     if side == "long":
@@ -653,7 +669,7 @@ class DynamicPositionManager:
                         new_sl = be_sl
                         action = "BREAKEVEN"
 
-                # 3) TRAILING STOP
+                # TRAILING STOP
                 trail_pips = self.trail_trigger * atr_val / pip_size
                 if profit_pips >= trail_pips:
                     if side == "long":
@@ -675,7 +691,6 @@ class DynamicPositionManager:
                             f"🎯 {action} on {pair} #{tid} | Price: {current_price} | New SL: {round(new_sl, decimals)} | Profit: {profit_pips:.1f} pips"
                         )
 
-
 # ============================================================================
 # STRENGTH-BASED CLOSE OVERRIDE
 # ============================================================================
@@ -683,24 +698,10 @@ STRENGTH_CLOSE_THRESHOLD = cfg("STRENGTH_CLOSE_THRESHOLD", 1.0)
 
 
 def should_close_by_strength(pair: str, side: str, strength_scores: dict) -> tuple:
-    """
-    Return (should_close: bool, reason: str) if position fights currency strength.
-
-    For BASE/QUOTE pair:
-    - LONG  = bullish BASE, bearish QUOTE
-    - SHORT = bearish BASE, bullish QUOTE
-
-    Close if strength gap contradicts position by > threshold.
-    """
-    # Extract base and quote from pair like "EURUSD=X" or "EUR_JPY"
     clean = pair.replace("=X", "").replace("_", "")
-    # Map to 3-letter codes
     if len(clean) == 6:
         base, quote = clean[:3], clean[3:]
-    elif "JPY" in pair and len(clean) == 6:
-        base, quote = clean[:3], clean[3:]
     else:
-        # Fallback: try to infer from OANDA symbol
         parts = pair.replace("=X", "").split("_")
         if len(parts) == 2:
             base, quote = parts[0], parts[1]
@@ -712,11 +713,9 @@ def should_close_by_strength(pair: str, side: str, strength_scores: dict) -> tup
     gap = base_score - quote_score
 
     if side == "long":
-        # We want base stronger than quote. If quote is stronger by threshold, close.
         if -gap > STRENGTH_CLOSE_THRESHOLD:
             return True, f"Strength flip: {quote} (+{quote_score:.2f}) now stronger than {base} ({base_score:.2f}), gap={-gap:.2f}"
     else:
-        # We want base weaker than quote. If base is stronger by threshold, close.
         if gap > STRENGTH_CLOSE_THRESHOLD:
             return True, f"Strength flip: {base} (+{base_score:.2f}) now stronger than {quote} ({quote_score:.2f}), gap={gap:.2f}"
 
@@ -740,7 +739,6 @@ def load_mc_legacy(pair):
                 with open(f) as j:
                     return json.load(j), True
     return None, False
-
 
 # ============================================================================
 # TELEGRAM REPORT BUILDERS
@@ -784,9 +782,12 @@ def build_trade_telegram(trade_lines: list, mc_summary: list = None) -> str:
 # ============================================================================
 # MAIN
 # ============================================================================
+# ============================================================================
+# MAIN
+# ============================================================================
 def main():
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    logger.info(f"\n🤖 RUN — {now} | MODE={MODE} | MODEL=XGBoost | DATA=OANDA | MC={MC_TF}")
+    logger.info(f"\n🤖 RUN — {now} | MODE={MODE} | MODEL=XGBoost | DATA=OANDA | MC={MC_TF} | TP_MODE={'TRAILING' if TRAILING_TP else 'FIXED'} | TEST={args.test_trade}")
 
     if forex_market_closed():
         logger.info("Market closed — skipping")
@@ -957,7 +958,7 @@ def main():
                     params={"count": 1, "granularity": "M1", "price": "BA"},
                 )
             )["candles"][0]
-            current = float(tick["mid"]["c"])
+            current = float(tick["bid"]["c"]) if "bid" in tick and "c" in tick["bid"] else float(tick["ask"]["c"])
             spread_pips = abs(float(tick["ask"]["c"]) - float(tick["bid"]["c"])) / (
                 0.01 if "JPY" in pair else 0.0001
             )
@@ -971,7 +972,6 @@ def main():
             logger.info(f"⚠️ MC missing/stale for {pair}")
 
         # ── STRENGTH PRE-FILTER ──
-        # Block signals that fight currency strength trend
         clean = pair.replace("=X", "").replace("_", "")
         if len(clean) == 6:
             base, quote = clean[:3], clean[3:]
@@ -982,14 +982,6 @@ def main():
         quote_score = strength_scores.get(quote, 0)
         gap = base_score - quote_score
         strength_threshold = cfg("STRENGTH_SIGNAL_BLOCK_THRESHOLD", 1.0)
-
-        # For SELL: we sell base (want it weak) and buy quote (want it strong)
-        # If base is stronger than quote by threshold, SELL is wrong
-        # For BUY: we buy base (want it strong) and sell quote (want it weak)
-        # If quote is stronger than base by threshold, BUY is wrong
-        # We don't know direction yet, so we check both and block if either is violated
-        # Actually we need to check after signal direction is known... 
-        # Better: let the model generate, then veto if it fights strength
 
         sig = strat_engine.generate_signal(
             pair=pair,
@@ -1005,7 +997,7 @@ def main():
             logger.info(f"➖ {pair}: no signal")
             continue
 
-        # Post-signal strength veto
+        # Post-signal strength veto (skipped in test mode)
         if not args.test_trade:
             if sig.action == "SELL" and gap > strength_threshold:
                 logger.info(f"🚫 {pair}: SELL blocked — {base} (+{base_score:.2f}) stronger than {quote} ({quote_score:.2f}), gap={gap:.2f}")
@@ -1018,10 +1010,9 @@ def main():
 
         atr_val = df.iloc[-1].get("atr")
         if atr_val and not np.isnan(atr_val):
-            # ── ATR floor guard ──
             is_jpy = "JPY" in pair
             pip_size = 0.01 if is_jpy else 0.0001
-            min_sl_pips = cfg("MIN_SL_PIPS", 15 if is_jpy else 10)
+            min_sl_pips = cfg("MIN_SL_PIPS_JPY", 15) if is_jpy else cfg("MIN_SL_PIPS", 10)
             min_sl_distance = min_sl_pips * pip_size
             effective_atr = max(atr_val, min_sl_distance / FEAT_CFG.atr_sl_mult)
 
@@ -1051,7 +1042,7 @@ def main():
 
         candidates.append(sig)
         logger.info(
-            f"📈 SIGNAL {pair} | {sig.action} | Score={sig.conviction_score} "
+            f"📈 SIGNAL {pair} | {sig.action} | Score={sig.conviction_score:.1f} "
             f"| Prob={sig.raw_prob:.1%} | SL={sig.stop_loss} | RefTP={sig.take_profit} | Units={units}"
         )
         logger.info(f"   Breakdown: {sig.score_breakdown}")
@@ -1083,35 +1074,37 @@ def main():
                     entry=w.entry_price,
                     sl=w.stop_loss,
                     pair=w.pair,
-                    atr_value=w.mc_data.get("atr", 0.0005) if w.mc_data else 0.0005,
+                    atr_value=getattr(w, 'mc', 0.0005)
                 )
-            res = open_oanda_order(
-                {"pair": w.oanda_symbol, "action": w.action,
-                 "stop_loss": w.stop_loss, "take_profit": w.take_profit},
+
+            logger.info(f"🚀 EXECUTE: {w.pair} {w.action} | SL={w.stop_loss} | TP={w.take_profit}")
+            result = open_oanda_order(
+                signal={
+                    "pair": YAHOO_TO_OANDA[w.pair],
+                    "action": w.action,
+                    "stop_loss": w.stop_loss,
+                    "take_profit": w.take_profit,
+                },
                 units=units,
                 current_price=w.entry_price,
             )
-            logger.info(f"📤 Order result for {w.pair}: {res}")
-            if res.get("status") == "OK":
-                trade_lines.append(
-                    f"✅ {w.pair} | {w.action} | Score={w.conviction_score} | "
-                    f"Prob={w.raw_prob:.1%} | SL={w.stop_loss} | RefTP={w.take_profit} | Units={units}"
-                )
-            else:
-                trade_lines.append(f"❌ {w.pair} | ORDER FAILED: {res.get('message')}")
 
-    mc_summary = []
-    for pair in DEFAULT_PAIRS:
-        if pair in mc_cache:
-            r = mc_cache[pair]
-            mc_summary.append(
-                f"{r['pair']}: {r['regime']} (P_up={r['p_up']}%, 90%={r['range_90'][0]}-{r['range_90'][1]})"
+            status = "✅ OK" if result.get("status") == "OK" else f"❌ {result.get('message', 'FAILED')}"
+            trade_lines.append(
+                f"{w.action} {YAHOO_TO_OANDA[w.pair]} | Score={w.conviction_score:.1f} | "
+                f"Prob={w.raw_prob:.1%} | {status}"
             )
 
+    # ------------------------------------------------------------------
+    # 8) REPORT
+    # ------------------------------------------------------------------
+    mc_summary = []
+    for p, m in list(mc_cache.items())[:4]:
+        mc_summary.append(f"{p}: {m['p_up']}% UP, {m['regime']}")
+
     msg = build_trade_telegram(trade_lines, mc_summary)
-    logger.info(msg)
     send_telegram_message(msg)
-    logger.info("✅ Run complete")
+    logger.info("📋 Telegram report sent")
 
 
 if __name__ == "__main__":
