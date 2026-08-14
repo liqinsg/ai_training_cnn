@@ -1,22 +1,47 @@
-# config.py
-"""
-Central configuration — edit this file to control all strategy behaviour.
-Do not hardcode these values elsewhere in the codebase.
-"""
-import os
-from dotenv import load_dotenv
+# config_bot.py
+# FeatureConfig
 
-load_dotenv()
+USE_ATR = True
+ATR_SL_MULT = 2.0
+ATR_TP_MULT = 3.0
 
-# ==========================================
-# OANDA connection
-# ==========================================
-# OANDA_ENV = os.getenv("OANDA_ENV", "practice")
-OANDA_ENV = "practice"
-OANDA_API_TOKEN = os.getenv("OANDA_API_TOKEN", "")
-OANDA_ACCOUNT_ID = os.getenv("OANDA_ACCOUNT_ID", "")
-OANDA_ACCOUNT_ID = os.getenv("OANDA_ACCOUNT_ID_1", "")
-OANDA_TOKEN = OANDA_API_TOKEN
+USE_MACD = True
+USE_RSI = True
+USE_ADX = True
+
+MODEL_TYPE = "xgboost"
+TARGET_HORIZON = 6
+TRAIN_LOOKBACK_BARS = 5000
+
+
+# StrategyConfig
+
+MODE = "LEVEL10"
+
+MIN_CONVICTION_SCORE = 40.0
+BASE_MIN_EDGE = 0.50
+
+YF_INTERVAL = "4h"
+YF_PERIOD_FULL = "30d"
+YF_PERIOD_RESAMPLE = "60d"
+MC_REPORT_TITLE = "FX H4 MONTE CARLO"
+PERIODS_YEAR = 252
+
+YF_INTERVAL_D = "1d"
+YF_PERIOD_FULL_D = "120d"
+YF_PERIOD_RESAMPLE_D = "180d"
+PERIODS_YEAR_D = 252
+MC_REPORT_TITLE_D = "FX H4 MONTE CARLO"
+
+
+# TODO: Used for FilterMode in strategy_decision
+# MC_FILTER_MODE = PENALIZE
+# REGIME_FILTER_MODE = OFF
+# ADX_FILTER_MODE = OFF
+# PIVOT_FILTER_MODE = PENALIZE
+# STRENGTH_GAP_FILTER_MODE = PENALIZE
+# COOLDOWN_FILTER_MODE = BLOCK
+
 # ==========================================
 # Scheduler
 # ==========================================
@@ -74,7 +99,6 @@ RISK_PROFILE = {
 # Set True to re-enable LLM validation when needed.
 # ==========================================
 USE_GEMINI_AI = True
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
 GEMINI_NEWS_MODEL = "gemini-3.5-flash"
 GEMINI_NEWS_FALLBACK_MODEL = "gemini-flash-lite-latest"

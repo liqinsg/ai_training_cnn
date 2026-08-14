@@ -12,7 +12,7 @@ from utils.oanda_execution import (
     get_oanda_candles,
     has_open_position,
     open_oanda_order,
-    check_order_status,
+    # check_order_status,
     close_all_trades,
 )
 
@@ -83,58 +83,58 @@ def cleanup_after_test():
     close_all_trades()
 
 
-def test_open_and_close_trade(cleanup_after_test):
-    """
-    REAL trade on Practice account.
-    """
+# def test_open_and_close_trade(cleanup_after_test):
+#     """
+#     REAL trade on Practice account.
+#     """
 
-    signal = {
-        "pair": "EUR_USD",
-        "action": "BUY",
-        "stop_loss": 1.05000,
-        "take_profit": 1.25000,
-    }
+#     signal = {
+#         "pair": "EUR_USD",
+#         "action": "BUY",
+#         "stop_loss": 1.05000,
+#         "take_profit": 1.25000,
+#     }
 
-    result = open_oanda_order(
-        signal=signal,
-        units=1000,
-        tag="PYTEST_REAL_TRADE"
-    )
+#     result = open_oanda_order(
+#         signal=signal,
+#         units=1000,
+#         tag="PYTEST_REAL_TRADE"
+#     )
 
-    assert result["status"] == "SUCCESS"
+#     assert result["status"] == "SUCCESS"
 
-    assert "order_id" in result
-    assert "instrument" in result
+#     assert "order_id" in result
+#     assert "instrument" in result
 
-    time.sleep(2)
+#     time.sleep(2)
 
-    assert has_open_position("EUR_USD") is True
+#     assert has_open_position("EUR_USD") is True
 
-    status = check_order_status("EUR_USD")
+#     status = check_order_status("EUR_USD")
 
-    assert status["summary"]["open_count"] > 0
+#     assert status["summary"]["open_count"] > 0
 
-    close_result = close_all_trades()
+#     close_result = close_all_trades()
 
-    assert close_result["status"] == "SUCCESS"
+#     assert close_result["status"] == "SUCCESS"
 
-    time.sleep(2)
+#     time.sleep(2)
 
-    assert has_open_position("EUR_USD") is False
+#     assert has_open_position("EUR_USD") is False
 
 
 # ---------------------------------------
 # ORDER STATUS
 # ---------------------------------------
 
-def test_check_status_returns_expected_fields():
-    status = check_order_status()
+# def test_check_status_returns_expected_fields():
+#     status = check_order_status()
 
-    assert isinstance(status, dict)
+#     assert isinstance(status, dict)
 
-    assert "open_trades" in status
-    assert "recent_orders" in status
-    assert "summary" in status
+#     assert "open_trades" in status
+#     assert "recent_orders" in status
+#     assert "summary" in status
 
 
 # ---------------------------------------

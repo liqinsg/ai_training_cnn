@@ -1,4 +1,4 @@
-# check_order_details.py
+# check_order_details.py — FIXED: Shows SL/TP Order IDs
 import sys
 sys.path.insert(0, "/home/qili/ai_training_cnn/utils")
 
@@ -7,16 +7,32 @@ from datetime import datetime, timezone
 from utils.oanda_execution import api, OANDA_ACCOUNT_ID
 from oandapyV20.endpoints.positions import OpenPositions
 from oandapyV20.endpoints.trades import TradeDetails
-
-# def win_loss_status(unrealized_pl: float) -> str:
-#     if unrealized_pl > 0:
-#         return "✅ WIN (in profit)"
-#     if unrealized_pl < 0:
-#         return "❌ LOSS (in drawdown)"
-#     return "➖ FLAT (breakeven)"
+from oandapyV20.endpoints.orders import OrderList  # ✅ Added
 
 def get_position_win_loss_message() -> str:
     resp = api.request(OpenPositions(OANDA_ACCOUNT_ID))
+
+    # ✅ Fetch ALL open orders ONCE (faster than per-trade queries)
+    all_orders_resp = api.request(OrderList(OANDA_ACCOUNT_ID, params={"state": "PENDING"}))
+    all_orders = all_orders_resp.get("orders", [])
+
+    # ✅ Build lookup: tradeID → {sl_order, tp_order}
+    trade_orders = {}
+    for ord in all_orders:
+        tid = ord.get("tradeID")
+        if not tid:
+            continue
+        otype = ord.get("type")  # STOP_LOSS / TAKE_PROFIT / TRAILING_STOP_LOSS
+        price = ord.get("price")
+        oid = ord.get("id")
+        if tid not in trade_orders:
+            trade_orders[tid] = {"sl_price": "NONE", "sl_id": "NONE", "tp_price": "NONE", "tp_id": "NONE"}
+        if otype == "STOP_LOSS":
+            trade_orders[tid]["sl_price"] = price
+            trade_orders[tid]["sl_id"] = oid
+        elif otype == "TAKE_PROFIT":
+            trade_orders[tid]["tp_price"] = price
+            trade_orders[tid]["tp_id"] = oid
 
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
@@ -53,8 +69,13 @@ def get_position_win_loss_message() -> str:
             entry_price = trade.get("price", "NONE")
             sl = trade.get("stopLossOrder", {}).get("price", "NONE")
             tp = trade.get("takeProfitOrder", {}).get("price", "NONE")
-            sl_id = trade.get("stopLossOrderID", "NONE")
-            tp_id = trade.get("takeProfitOrderID", "NONE")
+
+            # ✅ Use lookup from OrderList
+            orders_info = trade_orders.get(tid, {})
+            sl_id = orders_info.get("sl_id", "NONE")
+            tp_id = orders_info.get("tp_id", "NONE")
+            sl = orders_info.get("sl_price", sl)
+            tp = orders_info.get("tp_price", tp)
 
             side_label = "LONG" if side == "long" else "SHORT"
 
@@ -65,7 +86,6 @@ def get_position_win_loss_message() -> str:
             lines.append(f"   SL: {sl}  (orderID: {sl_id})")
             lines.append(f"   TP: {tp}  (orderID: {tp_id})")
             lines.append(f"   Unrealized P&L: {unrealized_pl:.2f}")
-            # lines.append(f"   Status: {win_loss_status(unrealized_pl)}")
 
     lines.append("\n" + "=" * 120)
     lines.append(f"Summary: positions counted = {positions_count}")
@@ -77,5 +97,6 @@ def get_position_win_loss_message() -> str:
 if __name__ == "__main__":
     from telegram_message import send_telegram_message
     msg = get_position_win_loss_message()
-    print(msg)  # keep console output
+    print(msg)
     send_telegram_message(msg)
+    

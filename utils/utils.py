@@ -1,7 +1,21 @@
-import datetime
+def forex_market_closed():
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    now = datetime.now(ZoneInfo("Europe/London"))
+    wd = now.weekday()
+
+    return (
+        wd == 5  # Saturday
+        or (wd == 6 and now.hour < 21)  # Sunday before open
+        or (wd == 4 and now.hour >= 21)  # Friday after close
+    )
+
+
 def format_oanda_time(ts):
     dt = datetime.datetime.fromisoformat(ts)
     return dt.strftime("%Y-%m-%d %H:%M UTC")
+
 
 def _format_oanda_time(ts):
     if not ts:

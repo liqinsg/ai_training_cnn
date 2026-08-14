@@ -10,6 +10,7 @@ from utils.trading_core import (
     get_open_position,
     execute_market_trade,
     close_position,
+    oanda_client,
     check_order_status,
 )
 

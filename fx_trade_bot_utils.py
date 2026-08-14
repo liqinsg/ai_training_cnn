@@ -51,6 +51,26 @@ def save_cooldown(cooldown_file: Path, state: dict):
 # ============================================================================
 # MARKET STATUS CHECK
 # ============================================================================
+# Add this inside fx_trade_bot_utils.py
+def update_order_tp(api, account_id: str, trade_id: str, instrument: str,
+                    new_tp: float, decimals: int = 5, send_telegram=None):
+    """✅ Update TP on an open trade via TradeCRCDO"""
+    try:
+        tp_data = {
+            "takeProfit": {
+                "price": str(round(new_tp, decimals)),
+                "timeInForce": "GTC"
+            }
+        }
+        api.request(TradeCRCDO(accountID=account_id, tradeID=trade_id, data=tp_data))
+        logger.info(f"   🔄 Updated TP on trade {trade_id} → {round(new_tp, decimals)}")
+        if send_telegram:
+            send_telegram(f"🎯 TP UPDATED {instrument} #{trade_id} → {round(new_tp, decimals)}")
+        return True
+    except Exception as e:
+        logger.error(f"   ❌ Failed to update TP on trade {trade_id}: {e}")
+        return False
+
 def forex_market_closed(api, oanda_account_id: str, oanda_granularity: str) -> bool:
     """Check if forex market is closed via recent candle availability."""
     try:
@@ -69,6 +89,66 @@ def forex_market_closed(api, oanda_account_id: str, oanda_granularity: str) -> b
 # ============================================================================
 # POSITION HELPERS
 # ============================================================================
+def attach_tp_to_open_positions(engine, instrument=None):
+    """
+    Scan open positions → attach FIXED TP if missing
+    Call this at bot startup to ensure ALL positions have TP
+    """
+    from oandapyV20.endpoints.trades import OpenTrades, TradeCRCDO
+    import config
+    def cfg(name, default):
+        return getattr(config, name, default)
+
+    client = engine.client
+    account_id = engine.account_id
+    atr_dist_pips = getattr(config, "TP_ATR_PIPS", 30)  # TP distance in pips
+
+    resp = client.request(OpenTrades(account_id))
+    trades = resp.get("trades", [])
+
+    if not trades:
+        logger.info("📋 No open positions to attach TP")
+        return 0
+
+    attached_count = 0
+    for trade in trades:
+        tid = trade["id"]
+        inst = trade["instrument"]
+        current_tp = trade.get("takeProfitOrder", {}).get("price")
+        units = float(trade["currentUnits"])
+        entry_price = float(trade["price"])
+
+        if current_tp:
+            logger.debug(f"   ✅ {inst} Trade {tid}: TP already exists @ {current_tp}")
+            continue
+
+        # Calculate FIXED TP based on direction + ATR distance
+        is_short = units < 0
+        pip_sizes = {"JPY": 0.01, "XAU": 0.1, "DEFAULT": 0.0001}
+        pip = pip_sizes["JPY"] if "JPY" in inst else pip_sizes["DEFAULT"]
+        dist = atr_dist_pips * pip
+
+        if is_short:
+            tp_price = round(entry_price - dist, 5)
+            dir_label = "SHORT → TP BELOW"
+        else:
+            tp_price = round(entry_price + dist, 5)
+            dir_label = "LONG → TP ABOVE"
+
+        logger.info(f"🔧 ATTACH TP {inst} Trade {tid} | {dir_label} | Entry={entry_price} → TP={tp_price}")
+
+        # Send TP update to OANDA
+        data = {"takeProfit": {"price": f"{tp_price}", "timeInForce": "GTC"}}
+        try:
+            client.request(TradeCRCDO(account_id, tid, data=data))
+            attached_count += 1
+            logger.info(f"   ✅ TP ATTACHED for {inst} @ {tp_price}")
+        except Exception as e:
+            logger.warning(f"   ❌ Failed: {e}")
+
+    logger.info(f"📋 TP Attach Summary: {attached_count} positions updated with TP")
+    return attached_count
+
 def get_open_position(api, oanda_account_id: str, instrument: str):
     """Get current open position for an instrument."""
     try:
@@ -122,7 +202,7 @@ def close_position(api, oanda_account_id: str, instrument: str, telegram_send=No
 # ============================================================================
 # ORDER EXECUTION WITH SAFETY CHECKS
 # ============================================================================
-def open_oanda_order(
+def _open_oanda_order(
     signal: dict, units: int, current_price: float,
     api, oanda_account_id: str, oanda_token: str,
     trailing_tp: bool = False, dynamic_tp: bool = False,
@@ -230,6 +310,131 @@ def open_oanda_order(
         logger.error(f"❌ OANDA order failed for {pair_raw}: {e}")
         return {"status": "ERROR", "message": str(e)}
 
+def open_oanda_order(
+    signal: dict, units: int, current_price: float,
+    api, oanda_account_id: str, oanda_token: str,
+    trailing_tp: bool = False, 
+    dynamic_tp: bool = False,
+    max_sl_pips: int = None, max_sl_pct: float = 0.03,
+    telegram_send=None, cfg=None
+) -> dict:
+    """Open order with SL/TP logic and safety guards."""
+
+    if not oanda_account_id or not oanda_token:
+        return {"status": "ERROR", "message": "Missing OANDA credentials"}
+
+    pair_raw = signal.get("pair")
+    action = signal.get("action")
+    sl = signal.get("stop_loss")
+    tp = signal.get("take_profit")
+
+    if action not in {"BUY", "SELL"}:
+        return {"status": "ERROR", "message": f"Invalid action: {action}"}
+    if sl is None:
+        return {"status": "ERROR", "message": "SL missing"}
+    if current_price is None:
+        logger.error(f"❌ Cannot open {pair_raw}: entry price required")
+        return {"status": "ERROR", "message": "Entry price missing"}
+
+    entry = current_price
+    dec = price_decimals(pair_raw)
+    pip = pip_size(pair_raw)
+
+    is_jpy = "JPY" in pair_raw.upper()
+    if max_sl_pips is None:
+        max_sl_pips = 500 if is_jpy else 50
+
+    sl_distance = abs(entry - sl)
+    sl_pips = sl_distance / pip
+    sl_pct = sl_distance / entry
+
+    if sl_pips > max_sl_pips or sl_pct > max_sl_pct:
+        err = (f"SL GUARD BLOCKED {pair_raw}: SL={sl} is {sl_pips:.0f} pips / {sl_pct:.1%} from entry. "
+               f"Max allowed: {max_sl_pips} pips / {max_sl_pct:.1%}")
+        logger.error(err)
+        if telegram_send:
+            telegram_send(f"🛡️ {err}")
+        return {"status": "ERROR", "message": err}
+
+    if action == "BUY" and sl >= entry:
+        err = f"SL GUARD BLOCKED {pair_raw}: SL {sl} >= entry {entry} for LONG"
+        logger.error(err)
+        return {"status": "ERROR", "message": err}
+    if action == "SELL" and sl <= entry:
+        err = f"SL GUARD BLOCKED {pair_raw}: SL {sl} <= entry {entry} for SHORT"
+        logger.error(err)
+        return {"status": "ERROR", "message": err}
+
+
+    # ✅ STEP 1: Send MARKET order WITHOUT attached SL/TP
+    order_payload = {
+        "order": {
+            "type": "MARKET",
+            "instrument": pair_raw,
+            "units": str(units if action == "BUY" else -units),
+            "positionFill": "DEFAULT",
+            # ❌ NO SL/TP HERE — we attach them SEPARATELY!
+        }
+    }
+
+    try:
+        resp = api.request(OrderCreate(accountID=oanda_account_id, data=order_payload))
+        logger.info(f"✅ OANDA accepted order for {pair_raw}")
+
+        # ✅ CORRECTLY extract TradeID from OANDA response
+        trade_id = ""
+        entry_price = current_price
+        if "orderFillTransaction" in resp:
+            trade_id = str(resp["orderFillTransaction"].get("id", ""))
+            entry_price = float(resp["orderFillTransaction"].get("price", current_price))
+            logger.info(f"📦 Trade opened: TradeID={trade_id} @ {entry_price}")
+        elif "orderCreateTransaction" in resp:
+            trade_id = str(resp["orderCreateTransaction"].get("id", ""))
+            logger.info(f"📦 Order created: OrderID={trade_id}")
+        else:
+            logger.warning(f"⚠️ Could not find TradeID! Response keys: {list(resp.keys())}")
+
+        # ✅ ONLY proceed if we have a valid TradeID
+        if not trade_id:
+            logger.error(f"❌ Cannot create SL/TP — TradeID is EMPTY!")
+        else:
+            # ✅ STEP 2: Create SL ORDER separately
+            if sl is not None:
+                sl_data = {
+                    "order": {
+                        "type": "STOP_LOSS",
+                        "tradeID": trade_id,
+                        "price": str(round(float(sl), dec)),
+                        "timeInForce": "GTC"
+                    }
+                }
+                try:
+                    api.request(OrderCreate(accountID=oanda_account_id, data=sl_data))
+                    logger.info(f"   ✅ SL ORDER created: {sl}")
+                except Exception as e:
+                    logger.warning(f"   ⚠️ SL order failed: {e}")
+
+            # ✅ STEP 3: Create TP ORDER separately
+            if not trailing_tp and tp is not None:
+                if (action == "BUY" and tp > entry_price) or (action == "SELL" and tp < entry_price):
+                    tp_data = {
+                        "order": {
+                            "type": "TAKE_PROFIT",
+                            "tradeID": trade_id,
+                            "price": str(round(float(tp), dec)),
+                            "timeInForce": "GTC"
+                        }
+                    }
+                    try:
+                        api.request(OrderCreate(accountID=oanda_account_id, data=tp_data))
+                        logger.info(f"   ✅ TP ORDER created: {round(float(tp), dec)}")
+                    except Exception as e:
+                        logger.warning(f"   ⚠️ TP order failed: {e}")
+        return {"status": "OK", "response": resp}
+
+    except Exception as e:
+        logger.error(f"❌ OANDA order failed for {pair_raw}: {e}")
+        return {"status": "ERROR", "message": str(e)}
 
 # ============================================================================
 # ✅ DYNAMIC TP UPDATE FUNCTION

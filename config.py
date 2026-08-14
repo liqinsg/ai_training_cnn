@@ -306,12 +306,12 @@ ENTRY_PERCENTILE_HIGH = 85   # SHORT only if price in top 15% of range
 DEBUG_MODE = False
 MIN_SL_PIPS = 35
 MIN_SL_PIPS_JPY = MIN_SL_PIPS + 10  # 15 for JPY pairs
-TRAILING_TP = False
 COOLDOWN_RUNS = 0
 REMOVE_COOLDOWN = True
 
-TRAILING_TP = False          # OANDA server-side trailing TP
-DYNAMIC_TP = True            # ✅ Bot actively RAISES TP as price trends
+TRAILING_TP = True          # OANDA server-side trailing TP
+DYNAMIC_TP = False            # ✅ Bot actively RAISES TP as price trends
+
 TP_RAISE_THRESHOLD_PIPS = 15 # Only raise TP when ≥15 pips higher (prevents noise)
 
 # Max number of open positions allowed AT ANY TIME

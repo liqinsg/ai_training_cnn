@@ -125,20 +125,6 @@ last_closed = {}  # Track: {pair: (direction, run_count)}
 # --------------------------
 # 🛡️ MARKET STATUS CHECK
 # --------------------------
-def forex_market_closed():
-    try:
-        from oandapyV20.endpoints.instruments import InstrumentsCandles
-
-        resp = api.request(
-            InstrumentsCandles(
-                instrument="EUR_USD",
-                params={"count": 1, "granularity": OANDA_GRANULARITY},
-            )
-        )
-        return not bool(resp.get("candles"))
-    except Exception:
-        return False
-
 
 if forex_market_closed():
     print("⏸️ Market closed — skipping run")

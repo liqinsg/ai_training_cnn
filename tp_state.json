@@ -1,66 +1,66 @@
 {
   "EUR_USD": {
-    "order_id": "?",
+    "order_id": "",
     "instrument": "EUR_USD",
-    "entry_price": 1.1523,
-    "initial_tp": 1.1470500000000001,
+    "entry_price": 1.15309,
+    "initial_tp": 1.14784,
     "direction": "SELL",
-    "time_opened": "2026-08-13T05:50:16.345277"
+    "time_opened": "2026-08-13T09:41:10.495567"
   },
   "AUD_USD": {
-    "order_id": "?",
+    "order_id": "",
     "instrument": "AUD_USD",
-    "entry_price": 0.70467,
-    "initial_tp": 0.69942,
+    "entry_price": 0.7053,
+    "initial_tp": 0.7000500000000001,
     "direction": "SELL",
-    "time_opened": "2026-08-13T05:50:18.467526"
+    "time_opened": "2026-08-13T09:41:14.392888"
   },
   "GBP_USD": {
-    "order_id": "?",
+    "order_id": "",
     "instrument": "GBP_USD",
-    "entry_price": 1.34921,
-    "initial_tp": 1.34396,
+    "entry_price": 1.34866,
+    "initial_tp": 1.34341,
     "direction": "SELL",
-    "time_opened": "2026-08-13T05:50:16.822190"
+    "time_opened": "2026-08-13T09:41:11.460968"
   },
   "GBP_AUD": {
-    "order_id": "?",
+    "order_id": "",
     "instrument": "GBP_AUD",
-    "entry_price": 1.91435,
-    "initial_tp": 1.9091,
+    "entry_price": 1.91197,
+    "initial_tp": 1.90672,
     "direction": "SELL",
-    "time_opened": "2026-08-13T05:50:20.229707"
+    "time_opened": "2026-08-13T09:41:16.492206"
   },
   "USD_CHF": {
-    "order_id": "?",
+    "order_id": "",
     "instrument": "USD_CHF",
-    "entry_price": 0.81368,
-    "initial_tp": 0.80843,
+    "entry_price": 0.81204,
+    "initial_tp": 0.80679,
     "direction": "SELL",
-    "time_opened": "2026-08-13T05:50:20.732859"
+    "time_opened": "2026-08-13T09:41:17.485566"
   },
   "EUR_JPY": {
-    "order_id": "?",
+    "order_id": "",
     "instrument": "EUR_JPY",
-    "entry_price": 183.606,
-    "initial_tp": 182.93099999999998,
+    "entry_price": 183.765,
+    "initial_tp": 183.08999999999997,
     "direction": "SELL",
-    "time_opened": "2026-08-13T05:50:17.352796"
+    "time_opened": "2026-08-13T09:41:12.451222"
   },
   "GBP_JPY": {
-    "order_id": "?",
+    "order_id": "",
     "instrument": "GBP_JPY",
-    "entry_price": 214.984,
-    "initial_tp": 214.309,
+    "entry_price": 214.933,
+    "initial_tp": 214.25799999999998,
     "direction": "SELL",
-    "time_opened": "2026-08-13T05:50:17.992678"
+    "time_opened": "2026-08-13T09:41:13.448254"
   },
   "USD_JPY": {
-    "order_id": "?",
+    "order_id": "",
     "instrument": "USD_JPY",
-    "entry_price": 159.327,
-    "initial_tp": 158.652,
+    "entry_price": 159.362,
+    "initial_tp": 158.68699999999998,
     "direction": "SELL",
-    "time_opened": "2026-08-13T05:50:19.086823"
+    "time_opened": "2026-08-13T09:41:15.369900"
   }
 }
