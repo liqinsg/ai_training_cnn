@@ -1,4 +1,4 @@
-# fx_trade_bot_integrated_v6.3.py — v6.3 + DYNAMIC TP + MAX TRADES LIMIT (Optimized)
+# fx_trade_bot_integrated_v6.5.1.py — v6.5.1 + DYNAMIC TP + MAX TRADES LIMIT (Optimized)
 
 import sys
 import logging
@@ -76,6 +76,7 @@ def cfg(name, default):
 if not cfg("DEBUG_MODE", False):
     logging.getLogger("oandapyV20").setLevel(logging.WARNING)
 
+MAX_SIMULTANEOUS_TRADES = cfg("MAX_SIMULTANEOUS_TRADES", 5)
 TRAILING_TP = cfg("TRAILING_TP", False)
 DYNAMIC_TP = cfg("DYNAMIC_TP", True)
 MULTI_TF_CONFLUENCE = cfg("MULTI_TF_CONFLUENCE", False)

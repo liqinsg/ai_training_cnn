@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 
 import config
-from config import MAX_SIMULTANEOUS_TRADES
+# from config import MAX_SIMULTANEOUS_TRADES
 
 from utils.trading_core import get_candles as get_oanda_candles, forex_market_closed
 from utils.calculate_currency_strength import calculate_currency_strength
@@ -76,6 +76,7 @@ def cfg(name, default):
 if not cfg("DEBUG_MODE", False):
     logging.getLogger("oandapyV20").setLevel(logging.WARNING)
 
+MAX_SIMULTANEOUS_TRADES = cfg("MAX_SIMULTANEOUS_TRADES", 3)
 TRAILING_TP = cfg("TRAILING_TP", False)
 DYNAMIC_TP = cfg("DYNAMIC_TP", True)
 MULTI_TF_CONFLUENCE = cfg("MULTI_TF_CONFLUENCE", False)

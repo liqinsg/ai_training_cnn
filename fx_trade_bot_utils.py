@@ -198,7 +198,48 @@ def close_position(api, oanda_account_id: str, instrument: str, telegram_send=No
     except Exception as e:
         logger.error(f"Close failed for {instrument}: {e}")
 
-
+# ✅ Drop-in replacement — matches YOUR call signature exactly
+def open_oanda_order_simple(api, oanda_account_id: str, instrument: str, 
+                            direction: str, units: int, sl_price: float, tp_price: float) -> dict:
+    from oandapyV20.endpoints.orders import OrderCreate
+    dec = price_decimals(instrument)
+    order_payload = {
+        "order": {
+            "type": "MARKET",
+            "instrument": instrument,
+            "units": str(units if direction == "BUY" else -units),
+            "positionFill": "DEFAULT",
+        }
+    }
+    try:
+        resp = api.request(OrderCreate(accountID=oanda_account_id, data=order_payload))
+        logger.info(f"✅ OANDA accepted order for {instrument}")
+        trade_id = ""
+        if "orderFillTransaction" in resp:
+            trade_id = str(resp["orderFillTransaction"].get("id", ""))
+            logger.info(f"📦 Trade opened: TradeID={trade_id}")
+        elif "orderCreateTransaction" in resp:
+            trade_id = str(resp["orderCreateTransaction"].get("id", ""))
+            logger.info(f"📦 Order created: OrderID={trade_id}")
+        if not trade_id:
+            return {"status": "ERROR", "message": "TradeID missing"}
+        if sl_price:
+            api.request(OrderCreate(accountID=oanda_account_id, data={
+                "order": {"type": "STOP_LOSS", "tradeID": trade_id,
+                          "price": str(round(float(sl_price), dec)), "timeInForce": "GTC"}
+            }))
+            logger.info(f"   ✅ SL: {sl_price}")
+        if tp_price:
+            api.request(OrderCreate(accountID=oanda_account_id, data={
+                "order": {"type": "TAKE_PROFIT", "tradeID": trade_id,
+                          "price": str(round(float(tp_price), dec)), "timeInForce": "GTC"}
+            }))
+            logger.info(f"   ✅ TP: {tp_price}")
+        return {"status": "OK", "trade_id": trade_id, "response": resp}
+    except Exception as e:
+        logger.error(f"❌ FAILED {instrument}: {type(e).__name__}: {e}")
+        return {"status": "ERROR", "message": str(e)}
+    
 # ============================================================================
 # ORDER EXECUTION WITH SAFETY CHECKS
 # ============================================================================

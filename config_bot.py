@@ -1,412 +1,237 @@
-# config_bot.py
-# FeatureConfig
+# config_bot.py — v6.8 | Centralized Strategy & Bot Configuration
+# Credentials stay in config_oanda.py; legacy fallbacks in config.py
 
+
+# ─── Feature & ATR Settings ───
 USE_ATR = True
 ATR_SL_MULT = 2.0
 ATR_TP_MULT = 3.0
+ATR_PERIOD = 14
 
 USE_MACD = True
 USE_RSI = True
 USE_ADX = True
 
+
+# ─── ML Model Settings ───
 MODEL_TYPE = "xgboost"
 TARGET_HORIZON = 6
 TRAIN_LOOKBACK_BARS = 5000
 
 
-# StrategyConfig
-
+# ─── Strategy Conviction Thresholds ───
 MODE = "LEVEL10"
-
-MIN_CONVICTION_SCORE = 40.0
+MIN_CONVICTION_SCORE = 35
 BASE_MIN_EDGE = 0.50
+MIN_CONVICTION_SCORE_ALT = 45.0
+BASE_MIN_EDGE_ALT = 0.51
 
+
+# ─── Data & Timeframe Intervals ───
 YF_INTERVAL = "4h"
 YF_PERIOD_FULL = "30d"
 YF_PERIOD_RESAMPLE = "60d"
-MC_REPORT_TITLE = "FX H4 MONTE CARLO"
 PERIODS_YEAR = 252
 
 YF_INTERVAL_D = "1d"
 YF_PERIOD_FULL_D = "120d"
 YF_PERIOD_RESAMPLE_D = "180d"
 PERIODS_YEAR_D = 252
-MC_REPORT_TITLE_D = "FX H4 MONTE CARLO"
 
 
-# TODO: Used for FilterMode in strategy_decision
-# MC_FILTER_MODE = PENALIZE
-# REGIME_FILTER_MODE = OFF
-# ADX_FILTER_MODE = OFF
-# PIVOT_FILTER_MODE = PENALIZE
-# STRENGTH_GAP_FILTER_MODE = PENALIZE
-# COOLDOWN_FILTER_MODE = BLOCK
-
-# ==========================================
-# Scheduler
-# ==========================================
-CHECK_INTERVAL_MINUTES = 15  # 15 min matches the fastest signal timeframe (M15)
-
-# ==========================================
-# ACTIVE STRATEGY SETTINGS (simple runner)
-# Simple MA5 multi-timeframe trend strategy on JPY pairs.
-# ==========================================
-
-# Pairs to actually trade (direct orders placed here)
-TRADE_PAIRS = [
-    "USD_JPY",
-    "EUR_JPY",
-    "GBP_JPY",
-    "AUD_JPY",
-]
-
-# Timeframes that must ALL be above MA5 for an entry signal
-SIGNAL_TIMEFRAMES = ["H4", "H1", "M30"]  # ["H4", "H1", "M30", "M15"] for testing now ignore M15
-REQUIRE_ALIGNED = len(SIGNAL_TIMEFRAMES)
-
-# TP / SL in pips (JPY pairs: 1 pip = 0.01)
-TP_PIPS = 100                 # fixed take profit: entry + 100 pips
-SL_BUFFER_PIPS = 20          # pips below today's daily low
-SPREAD_PIPS = 3              # conservative spread buffer added to SL
-
-# NOTE: if your code imports SL_PIPS (as your earlier traceback showed),
-# add this alias (it does not rename anything else).
-SL_PIPS = SL_BUFFER_PIPS
-
-MIN_RR = 1.2
-
-# ==========================================
-# RISK LEVEL (1 = safest, 10 = most aggressive)
-# Controls position size per trade.
-# ==========================================
-RISK_LEVEL = 10
-
-RISK_PROFILE = {
-    1: {"units": 1000, "min_confidence": 0.90},
-    2: {"units": 2000, "min_confidence": 0.85},
-    3: {"units": 3000, "min_confidence": 0.80},
-    4: {"units": 4000, "min_confidence": 0.75},
-    5: {"units": 5000, "min_confidence": 0.70},
-    6: {"units": 6000, "min_confidence": 0.65},
-    7: {"units": 7000, "min_confidence": 0.60},
-    8: {"units": 8000, "min_confidence": 0.55},
-    9: {"units": 9000, "min_confidence": 0.50},
-    10: {"units": 10000, "min_confidence": 0.40},
-}
-
-# ==========================================
-# AI / GEMINI (disabled for simple strategy)
-# Set True to re-enable LLM validation when needed.
-# ==========================================
-USE_GEMINI_AI = True
-
-GEMINI_NEWS_MODEL = "gemini-3.5-flash"
-GEMINI_NEWS_FALLBACK_MODEL = "gemini-flash-lite-latest"
-
-# ==========================================
-# ADVANCED STRATEGY SETTINGS (full scheduled_runner.py)
-# Safe to ignore when running scheduled_runner_simple.py.
-# ==========================================
-
-# Meta selector
-META_MODE = "MANUAL"  # e.g. "MANUAL"
-MANUAL_STRATEGY = 1  # 1=TREND_COMBINED, 2=RANGE_REVERSION, 3=BREAKOUT_CONFIRM, 4=TREND_PULLBACK
-STRATEGY_PULLBACK = 4
-
-# ADX regime thresholds
-ADX_TREND_THRESHOLD = 25
-ADX_BREAKOUT_THRESHOLD = 20
-
-# ATR-based SL/TP (used by full runner, not simple runner)
-ATR_GRANULARITY = "D"
-ATR_CANDLE_COUNT = 20
-ATR_MULTIPLIER_SL = 0.75
-ATR_MULTIPLIER_TP = 2.0
-
-# Range strategy (full runner)
-RANGE_LOOKBACK = 20
-RANGE_TP_RATIO = 0.6
-RANGE_SL_RATIO = 0.25
-
-# Breaking / coiling entry
-BREAKOUT_DURATION_HOURS = 4
-BREAKOUT_WIDTH_PCT = 2.0
-
-# Test mode — forces a specific pair regardless of signal
-FORCE_TEST_PAIR = False
-TEST_PAIR = None  # e.g. "USD_JPY"
-
-# Order expiry for pending limit/stop orders
-EXPIRE_AFTER = 1440  # minutes (1 day)
-
-# ==========================================
-# JPY TREND STRATEGY (custom_strategy.py) — single source of truth
-# ==========================================
-
-# Minimum number of candidate JPY-cross pairs that must independently pass
-# every filter in a single cycle before ANY trade is taken.
-MIN_QUALIFYING_PAIRS = 1  # or 2-3
-
-# Candidate currencies / pairs universe
-INSTRUMENT = 'EUR_USD'
-
-CURRENCIES = ["USD", "EUR", "GBP", "AUD", "NZD", "JPY", "CHF"]
-STRENGTH_PAIRS = [
-    "EUR_USD",
-    "GBP_USD",
-    "AUD_USD",
-    "USD_JPY",
-    "EUR_GBP",
-    "EUR_JPY",
-    "EUR_AUD",
-    "GBP_JPY",
-    "GBP_AUD",
-    "AUD_JPY"
-]
-
-STRENGTH_TIMEFRAMES = {"H1": 1, "H4": 3, "H8": 6}
-
-STRENGTH_FAST_LOOKBACK = 5   # bars
-STRENGTH_SLOW_LOOKBACK = 20  # bars
-STRENGTH_FAST_WEIGHT = 0.7
-STRENGTH_SLOW_WEIGHT = 0.3
-
-ENABLE_STRENGTH_ACCELERATION = False
-STRENGTH_ACCELERATION_WEIGHT = 0.5
-
-STRENGTH_ATR_PERIOD = 14
-
-ENABLE_EMA_TREND = False
-ENABLE_ATR_NORMALIZED_STRENGTH = False
-
-ENABLE_BREAKOUT_CONFIRMATION = False
-BREAKOUT_CONFIRMATION_CLOSES = 2
-
-ENABLE_ATR_SLTP = True
-
-# --- News filter ---
-ENABLE_NEWS_FILTER = False
-NEWS_LOG_PATH = "news_events.log"
-NEWS_CURRENCIES = ["USD", "JPY", "EUR", "GBP"]
-
-# --- Signal corroboration (directional consensus across JPY crosses) ---
-MIN_DOMINANCE_RATIO = 1.5
-ENABLE_VOLATILITY_NORMALIZED_DOMINANCE = False
-DOMINANCE_ATR_PERIOD = 14
-
-# --- JPYTrendStrategy trade parameters ---
-JPY_PIP = 0.01
-MIN_MARKET_STRENGTH = 0.03
-FRONT_RUN_PIPS = 15
-MIN_RR = 1.2
-
-# --- JPYTrendStrategy ATR-based SL/TP (only used when ENABLE_ATR_SLTP=True) ---
-JPY_ATR_PERIOD = 14
-JPY_ATR_HISTORY_LOOKBACK = 50
-
-JPY_ATR_SL_MULTIPLIER_NORMAL = 2.2
-JPY_ATR_SL_MULTIPLIER_HIGH_VOL = 2.8
-JPY_ATR_SL_MULTIPLIER_LOW_VOL = 1.8
-
-JPY_ATR_RR_MULTIPLE = 2.0  # TP distance = SL distance * this
-
-# ==========================================
-# DATA PROVIDER SETTINGS
-# ==========================================
-DATA_SOURCE = "OANDA_WITH_YAHOO_FALLBACK"
-
-# ==========================================
-# ML Confirmation Layer
-# ==========================================
-ENABLE_ML_CONFIRMATION = False
-ML_MIN_CONFIDENCE = 0.50
-ML_MODEL_PATH = "ml_trade_model.pkl"
-
-ENABLE_ML_WEIGHTED_DOMINANCE = False
-
-ML_RETRAIN_HOURS = 24
-ML_TRAIN_GRANULARITY = "H1"
-ML_TRAIN_CANDLE_COUNT = 3000
-ML_HOLDOUT_FRACTION = 0.2
-ML_LABEL_HORIZON = 3
-ML_MIN_HOLDOUT_F1 = 0.0
-
-# ==========================================
-# SIDEWAYS / RANGE DETECTION (final optimized values)
-# ==========================================
-ENABLE_RANGE_DETECTOR = False
-RANGE_DETECT_LOOKBACK_DAYS = 3
-RANGE_DETECT_MAX_RANGE_PCT = 2.0
-RANGE_DETECT_MIN_VOL_RATIO = 0.6
-SKIP_SIDEWAYS_PAIRS = False
-
-# --- Weekly protection / entry gating ---
-MACRO_PROTECTION_PIPS = 10
-MIN_VALID_PAIRS_TO_TRADE = 1
-
-DEBUG_SLTP = True  # print raw entry/sl/tp/S-R values before the validity check; flip off once diagnosed
-
-# --- Allow single strong pair & only trade top pair(s) ---
-TRADE_TOP_PAIRS = 1  # Always trade only single strongest/weakest pair per cycle
-
-# --- ML CONFIRMATION (MERGED MODE) ---
-# (kept as the final/authoritative block)
-ENABLE_ML_CONFIRMATION = False
-ML_MIN_CONFIDENCE = 0.50
-ML_TRAIN_PAIR = "USDJPY=X"
-DEMO_MODE = False
-
-# --------------------------
-# STRENGTH & TREND SETTINGS
-# --------------------------
-MIN_STRENGTH_GAP = 1.2
-
-SIDEWAYS_LOOKBACK_DAYS = 7
-
-MIN_LONG_TREND_ANGLE = 15
-BREAKOUT_LOOKBACK_DAYS = 30
-
-MAX_SIDEWAYS_RANGE_PCT = 1.8
-BREAKOUT_THRESHOLD_PCT = 0.3
-
-MACRO_PROTECTION_PIPS = 10
-# set False to disable the weekly-resistance/support proximity check entirely
-ENABLE_MACRO_PROTECTION = False
-
-TIMEFRAME = "1h"  # "15m"
-
+# ─── Monte Carlo Settings ───
+MC_REPORT_TITLE = "FX H4 MONTE CARLO"
+MC_REPORT_TITLE_D = "FX DAILY MONTE CARLO"
 MC_MAX_AGE_HOURS = 24
-MIN_PROB = 0.50  # 0.52
-TREND_THRESHOLD = 20  # 25
+MC_SIMULATIONS = 5000
+MC_CONFIDENCE = 0.90
+SKIP_MC = False
 
+H4_LOOKBACK = 90
+H4_FORECAST = 8
+DAILY_LOOKBACK = 90
+DAILY_FORECAST = 5
+
+
+# ─── Risk & Trade Execution ───
+DEFAULT_LOT_SIZE = 10000
+MAX_SIMULTANEOUS_TRADES = 4
 DEFAULT_PAIRS = [
     "EURUSD=X", "GBPUSD=X", "EURJPY=X", "GBPJPY=X",
-    "AUDUSD=X", "USDJPY=X", "GBPAUD=X", "USDCHF=X"]
+    "AUDUSD=X", "USDJPY=X", "GBPAUD=X", "USDCHF=X",
+    "AUDJPY=X", "EURGBP=X", "CADJPY=X", "NZDUSD=X"
+]
 YAHOO_TO_OANDA = {
     "EURUSD=X": "EUR_USD", "GBPUSD=X": "GBP_USD", "EURJPY=X": "EUR_JPY",
     "GBPJPY=X": "GBP_JPY", "AUDUSD=X": "AUD_USD", "USDJPY=X": "USD_JPY",
-    "GBPAUD=X": "GBP_AUD", "USDCHF=X": "USD_CHF"
+    "GBPAUD=X": "GBP_AUD", "USDCHF=X": "USD_CHF", "NZDUSD=X": "NZD_USD",
+    "AUDJPY=X": "AUD_JPY", "EURGBP=X": "EUR_GBP", "CADJPY=X": "CAD_JPY",
 }
 
-# ==========================================
-# MODE SELECTOR — ONE FLIP TO SWITCH
-# ==========================================
-# ==========================================
-# MODE SELECTOR — ONE FLIP TO SWITCH
-# ==========================================
-MODE = "LEVEL10"   # ✅ Change to "LIVE" / "LEVEL1–9" anytime
-
-# Base defaults (used if no mode override)
-MIN_PROB = 0.52
-TREND_THRESHOLD = 25
-MAX_TOTAL_TRADES = 2
-MAX_PER_USD_GROUP = 2
-MAX_PER_JPY_GROUP = 2
-DEFAULT_LOT_SIZE = 10000
-# Mode overrides
-if MODE == "LEVEL10":
-    MIN_PROB = 0.50          # 0.50
-    TREND_THRESHOLD = 20
-    MAX_TOTAL_TRADES = 3
-    MAX_PER_USD_GROUP = 3
-    MAX_PER_JPY_GROUP = 3
-    # Strength‑aware thresholds
-    RELAXED_MIN_PROB = 50.0
-    STRENGTH_GAP_THRESHOLD = 10
-
-elif MODE == "LIVE":
-    MIN_PROB = 0.52
-    TREND_THRESHOLD = 25
-    MAX_TOTAL_TRADES = 2
-    MAX_PER_USD_GROUP = 2
-    MAX_PER_JPY_GROUP = 2
-    RELAXED_MIN_PROB = 51.0
-    STRENGTH_GAP_THRESHOLD = 10
-    DEFAULT_LOT_SIZE = 1
-
-# ==========================================
-# PIVOT / SUPPORT-RESISTANCE
-# ==========================================
-ENABLE_PIVOTS = True
-PIVOT_METHOD = "Classic"       # Classic / Fibonacci / Camarilla / Woodie
-PIVOT_TIMEFRAME = "D"          # Daily pivots (standard)
-PIVOT_BIAS_CHECK = True        # Require price below P for SELL / above P for BUY
-
-USE_YFINANCE_DATA = False
-USE_OANDA_DATA = True
-
-# forex xgbboost playbook params
-DIRECTION = 'auto'
-# Regime detection parameters (used when DIRECTION='auto')
-REGIME_FAST_EMA = 20
-REGIME_SLOW_EMA = 30
-
-# Risk Parameters
-RISK_MULTIPLE = 1.0
-REWARD_MULTIPLE = 2.0
-MAX_BARS = 20
-ATR_PERIOD = 14
-
-# Model Parameters
-TRAIN_WINDOW = 3000
-TEST_WINDOW = 500
-STEP_SIZE = 500
-THRESHOLD = 0.6
-
-# Feature Lookbacks
-LOOKBACKS = [5, 10, 20, 50]
-
-TEST_MODE = True
-MOCK_SIGNAL = 'BUY'  # or SELL
-
-MC_TP_MAX_BAND_PCT = 0.7  # 0.7 = use up to 70% of range; 0.8 = more aggressive; 0.6 = more conservative
+MIN_SL_PIPS = 25
+MIN_SL_PIPS_JPY = MIN_SL_PIPS + 10
 
 
-# ==========================================
-# 🚀 ONE‑CLICK PRESET SWITCH — UNCOMMENT ONE
-# ==========================================
-# PRESET = "CONSERVATIVE"   # Low freq, high conviction
-PRESET = "BALANCED"        # Default, steady
-# PRESET = "LEVEL10"        # Aggressive, your style
+# ─── Dynamic TP / Trailing ───
+DYNAMIC_TP = False
+TRAILING_TP = True
+TP_RAISE_THRESHOLD_PIPS = 15
+BE_TRIGGER_ATR_MULT = 1.5
+TRAIL_TRIGGER_ATR_MULT = 2.5
+TRAIL_ATR_MULT = 1.5
+MAX_HOLD_BARS = 12
 
-# ──────────────────────────────────────────
-# AUTO‑APPLY PRESET
-# ──────────────────────────────────────────
-if PRESET == "CONSERVATIVE":
-    MODE = "NORMAL"
-    MIN_PROB = 0.55
-    NORMAL_MIN_PROB = 53.0
-    RELAXED_MIN_PROB = 51.0
-    STRENGTH_GAP_THRESHOLD = 12
-    MC_TP_MAX_BAND_PCT = 0.6
-    MAX_TOTAL_TRADES = 1
-    MAX_PER_USD_GROUP = 1
-    MAX_PER_JPY_GROUP = 1
-    TREND_THRESHOLD = 30
-    REOPEN_DELAY_RUNS = 3
 
-elif PRESET == "BALANCED":
-    MODE = "NORMAL"
-    MIN_PROB = 0.52
-    NORMAL_MIN_PROB = 51.0
-    RELAXED_MIN_PROB = 50.5
-    STRENGTH_GAP_THRESHOLD = 10
-    MC_TP_MAX_BAND_PCT = 0.7
-    MAX_TOTAL_TRADES = 2
-    MAX_PER_USD_GROUP = 2
-    MAX_PER_JPY_GROUP = 2
-    TREND_THRESHOLD = 25
-    REOPEN_DELAY_RUNS = 2
+# ─── Multi-Timeframe Confluence ───
+MULTI_TF_CONFLUENCE = False
+CONFLUENCE_REQUIRED_TFS = 2
 
-elif PRESET == "LEVEL10":
-    MODE = "LEVEL10"
-    MIN_PROB = 0.50
-    NORMAL_MIN_PROB = 51.0
-    RELAXED_MIN_PROB = 50.0
-    STRENGTH_GAP_THRESHOLD = 10
-    MC_TP_MAX_BAND_PCT = 0.7
-    MAX_TOTAL_TRADES = 3
-    MAX_PER_USD_GROUP = 3
-    MAX_PER_JPY_GROUP = 3
-    TREND_THRESHOLD = 20
-    REOPEN_DELAY_RUNS = 2
+
+# ─── Currency Strength Filter ───
+STRENGTH_SIGNAL_BLOCK_THRESHOLD = 9.99  # Disabled
+
+
+# ─── Cooldown & Debug ───
+REMOVE_COOLDOWN = True
+DEBUG_MODE = False
+
+
+# ─── Auto-Ranking Feature ───
+USE_TOP_PAIRS_ONLY = False
+TOP_PAIRS_COUNT = 5
+TOP_PAIRS_MIN_GAP = 1.5
+MIN_STRENGTH_GAP = 0.8
+
+
+# ─────────────────────────────────────────────
+# ✅ v6.8 ACTIVE SETTINGS — Last values WINS!
+# ─────────────────────────────────────────────
+
+# P0: DIRECTION CONSENSUS
+REQUIRE_DIRECTION_CONSENSUS = True    # ✅ ENABLED
+CONSENSUS_THRESHOLD = 2               # Need ≥2 of 3
+XGB_BULLISH_THRESHOLD = 0.55          # XGB bullish threshold
+MC_BULLISH_THRESHOLD = 55.0           # MC bullish threshold
+
+# P1: ADX NORMALIZATION
+ADX_SCALE_FACTOR = 2.0                # ✅ ADX × 2
+ADX_FLOOR_ENABLED = True
+ADX_MIN_SCORE = 20.0
+ADX_BOOST_ENABLED = True
+ADX_BOOST_THRESHOLD = 30.0
+ADX_BOOST_VALUE = 10.0
+
+# P2: WEIGHTS — S=0.50 R=0.15 A=0.15 X=0.12 M=0.08
+WEIGHT_STRENGTH = 0.50
+WEIGHT_RSI      = 0.15
+WEIGHT_ADX      = 0.15
+WEIGHT_XGBOOST  = 0.12
+WEIGHT_MC       = 0.08                 # ✅ ↑ from 0.05
+
+THRESHOLD_SCORE = 35.0
+MAX_OPEN = 8 # 1-3
+
+
+# ─────────────────────────────────────────────
+# ✅ DATA SOURCE — YAHOO FINANCE PRIMARY
+# ─────────────────────────────────────────────
+PREFER_YAHOO_DATA = True          # Use Yahoo FIRST; OANDA = fallback only
+YF_INTERVAL = "15m"              # Match bot timeframe exactly
+YF_PERIOD_FULL = "30d"
+YF_PERIOD_RESAMPLE = "60d"
+
+# ─────────────────────────────────────────────
+# MC REGIME FILTER (Live Phase)
+# ─────────────────────────────────────────────
+REQUIRE_STRONG_MOMENTUM = False     # ✅ Phase1=False → open all qualified
+                                    # ✅ Phase2=True  → ⚡ ONLY strong momentum
+
+# ─────────────────────────────────────────────
+# ⚖️ PORTFOLIO BALANCE — LONG/SHORT CONTROL
+# ─────────────────────────────────────────────
+ENFORCE_LONGS_SHORTS = True    # Toggle ON/OFF with one line
+MIN_PER_SIDE = 1               # Minimum 1 LONG + 1 SHORT
+MAX_RATIO = 0.75               # Max 75% one side → at least 25% opposite
+PREFER_BALANCED = True          # Auto-balance even if lower-scoring needed
+
+# ─────────────────────────────────────────────
+# ✅ v6.8 CONFIG VALIDATION — Runs on Import
+# ─────────────────────────────────────────────
+import sys
+
+CONFIG_VALIDATION_ENABLED = True   # Set False to skip checks
+CONFIG_TOLERANCE = 0.005          # Allow ±0.5% rounding error
+
+def validate_config():
+    if not CONFIG_VALIDATION_ENABLED:
+        print("⚠️  Config validation — DISABLED")
+        return True
+
+    errors = []
+    warns = []
+
+    # ── Check Weight Sum ──
+    weights = {
+        "S": WEIGHT_STRENGTH,
+        "R": WEIGHT_RSI,
+        "A": WEIGHT_ADX,
+        "X": WEIGHT_XGBOOST,
+        "M": WEIGHT_MC,
+    }
+    weight_sum = sum(weights.values())
+
+    print("\n🔍 CONFIG VALIDATION — v6.8")
+    print("─────────────────────────────────────")
+    for k, v in weights.items():
+        print(f"   Weight {k}: {v:.4f}")
+    print(f"   ── SUM: {weight_sum:.4f}  (target: 1.0000)")
+
+    if abs(weight_sum - 1.0) > CONFIG_TOLERANCE:
+        errors.append(f"Weight sum = {weight_sum:.4f}, expected 1.0000 ± {CONFIG_TOLERANCE}")
+    elif abs(weight_sum - 1.0) > 0.0001:
+        warns.append(f"Weights sum = {weight_sum:.4f} (minor rounding)")
+
+    # ── Check Individual Weight Ranges ──
+    for name, w in weights.items():
+        if not (0.0 <= w <= 1.0):
+            errors.append(f"Weight {name} = {w:.4f} — out of range [0.0, 1.0]")
+
+    # ── Check ADX Settings ──
+    if ADX_SCALE_FACTOR < 0.5 or ADX_SCALE_FACTOR > 5.0:
+        warns.append(f"ADX_SCALE_FACTOR = {ADX_SCALE_FACTOR} — unusual value")
+    if ADX_FLOOR_ENABLED and not (0 <= ADX_MIN_SCORE <= 50):
+        warns.append(f"ADX_MIN_SCORE = {ADX_MIN_SCORE} — unusual floor")
+
+    # ── Check Consensus Settings ──
+    if REQUIRE_DIRECTION_CONSENSUS:
+        if not (1 <= CONSENSUS_THRESHOLD <= 3):
+            errors.append(f"CONSENSUS_THRESHOLD = {CONSENSUS_THRESHOLD} — must be 1–3")
+        if not (0.4 <= XGB_BULLISH_THRESHOLD <= 0.9):
+            warns.append(f"XGB_BULLISH_THRESHOLD = {XGB_BULLISH_THRESHOLD:.2f} — unusual")
+        if not (40 <= MC_BULLISH_THRESHOLD <= 65):
+            warns.append(f"MC_BULLISH_THRESHOLD = {MC_BULLISH_THRESHOLD:.1f} — unusual")
+
+    # ── Check Gap & Threshold ──
+    if MIN_STRENGTH_GAP < 0 or MIN_STRENGTH_GAP > 5:
+        warns.append(f"MIN_STRENGTH_GAP = {MIN_STRENGTH_GAP} — unusual")
+    if THRESHOLD_SCORE < 0 or THRESHOLD_SCORE > 100:
+        errors.append(f"THRESHOLD_SCORE = {THRESHOLD_SCORE} — must be 0–100")
+
+    # ── Report ──
+    print("─────────────────────────────────────")
+    if warns:
+        for w in warns:
+            print(f"⚠️  WARN: {w}")
+    if errors:
+        for e in errors:
+            print(f"❌ ERROR: {e}")
+        print(f"\n❌ {len(errors)} CONFIG ERROR(S) — Please fix before running!")
+        print("─────────────────────────────────────\n")
+        return False
+    print("✅ ALL CHECKS PASSED — Config OK\n")
+    return True
+
+# Run validation immediately on import
+if 'CONFIG_VALIDATION_ENABLED' in globals() and CONFIG_VALIDATION_ENABLED:
+    if not validate_config():
+        sys.exit(1)  # Halt on error — set to 'pass' to ignore and continue
