@@ -33,6 +33,7 @@ from fx_trade_bot_ml import ensure_model
 import oandapyV20
 
 from portfolio_balance import balance_from_config
+from sl_zone_hierarchy import compute_sl_zone
 
 # -----------------------------------------------------------------------------
 # Unified Config Lookup
@@ -598,27 +599,35 @@ def main():
             logger.info(f"➖ REASON: FINAL {w['FINAL']:.1f} < {w['THRESHOLD']}")
             continue
 
-        signal_count += 1
-        sl_pips = max(min_sl_pips_jpy if "JPY" in pair else min_sl_pips_std,
-            round(atr_val / pip_cache[pair] * cfg_bot("ATR_SL_MULT", 2.0), 1))
+        # ─── 🆕 HIERARCHICAL ZONE SL: H4→H8→Daily → ATR Fallback ───
         tp_pips = round(atr_val / pip_cache[pair] * cfg_bot("ATR_TP_MULT", 3.0), 1) if DYNAMIC_TP else sl_pips * 1.5
 
         dec = 3 if "JPY" in pair else 5
+
+        if cfg_bot("SL_USE_ZONE_HIERARCHY", True):
+            # 🆕 Zone-based SL — dedicated module
+            sl_price, sl_info = compute_sl_zone(
+                api, oanda, direction, current, pip_cache[pair], cfg_bot
+            )
+            sl_price = round(sl_price, dec)
+        else:
+            # Legacy fixed/ATR SL — untouched
+            sl_pips = max(min_sl_pips_jpy if "JPY" in pair else min_sl_pips_std,
+                round(atr_val / pip_cache[pair] * cfg_bot("ATR_SL_MULT", 2.0), 1))
+            if direction == "BUY":
+                sl_price = round(current - sl_pips * pip_cache[pair], dec)
+            else:
+                sl_price = round(current + sl_pips * pip_cache[pair], dec)
+
+        # ─── TP: 100% UNCHANGED ───
         if direction == "BUY":
-            sl_price = round(current - sl_pips * pip_cache[pair], dec)
             tp_price = round(current + tp_pips * pip_cache[pair], dec)
         else:
-            sl_price = round(current + sl_pips * pip_cache[pair], dec)
             tp_price = round(current - tp_pips * pip_cache[pair], dec)
-
-        all_candidates.append((
-            -w["FINAL"], w["FINAL"], pair, oanda, direction,
-            current, sl_price, tp_price, spread_pips, dec
-        ))
 
     # ✅ RANK & EXECUTE
     # ⚖️ Apply balanced LONG/SHORT selection (from separate module)
-    all_candidates = balance_from_config(all_candidates, MAX_SIMULTANEOUS_TRADES, cfg_bot)
+    all_candidates.append((-FINAL, FINAL, pair, oanda, direction, current, sl_price, tp_price, tp_pips, dec))
 
     logger.info(f"🏆 RANKED: {len(all_candidates)} passed → opening top {min(MAX_SIMULTANEOUS_TRADES, len(all_candidates))}")
     for i, (_, score, pair, _, dir, _, _, _, _, _) in enumerate(all_candidates, 1):
