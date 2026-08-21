@@ -1,3 +1,4 @@
+# fx_trade_bot_v6.8.2.py — RSI FIXED | Consensus + ADX-Norm + MC↑
 import sys
 import logging
 import argparse
@@ -14,7 +15,6 @@ import config
 from utils.trading_core import forex_market_closed
 from utils.strategy_helpers import build_strength_matrix, format_strength_ranking
 from telegram_message import send_telegram_message
-
 from config_oanda import OANDA_API_TOKEN, OANDA_ACCOUNT_ID, OANDA_ENV
 
 from oandapyV20.endpoints.instruments import InstrumentsCandles
@@ -30,6 +30,9 @@ from fx_trade_bot_mc import MCGenerator, MCConfig
 from fx_trade_bot_ml import ensure_model
 
 import oandapyV20
+
+from portfolio_balance import balance_from_config
+from sl_zone_hierarchy import compute_sl_zone
 
 # -----------------------------------------------------------------------------
 # Unified Config Lookup
@@ -50,19 +53,44 @@ def cfg_bot(name, default):
 def cfg(name, default):
     return getattr(config, name, default)
 
-# ─── v6.7.1 WEIGHTS ───
-W_S = cfg_bot("WEIGHT_STRENGTH", 0.50)
+# ══════════════════════════════════════════════════════════════
+# v6.8 NEW CONFIG — P0 + P1 + P2
+# ══════════════════════════════════════════════════════════════
+
+# P0: DIRECTION CONSENSUS
+REQUIRE_DIRECTION_CONSENSUS = cfg_bot("REQUIRE_DIRECTION_CONSENSUS", True)
+CONSENSUS_THRESHOLD = cfg_bot("CONSENSUS_THRESHOLD", 2)
+XGB_BULLISH_THRESHOLD = cfg_bot("XGB_BULLISH_THRESHOLD", 0.55)
+MC_BULLISH_THRESHOLD = cfg_bot("MC_BULLISH_THRESHOLD", 55.0)
+
+# P1: ADX NORMALIZATION + Floor/Bonus
+ADX_SCALE_FACTOR = cfg_bot("ADX_SCALE_FACTOR", 2.0)
+ADX_FLOOR_ENABLED = cfg_bot("ADX_FLOOR_ENABLED", True)
+ADX_MIN_SCORE = cfg_bot("ADX_MIN_SCORE", 20.0)
+ADX_BOOST_ENABLED = cfg_bot("ADX_BOOST_ENABLED", True)
+ADX_BOOST_THRESHOLD = cfg_bot("ADX_BOOST_THRESHOLD", 30.0)
+ADX_BOOST_VALUE = cfg_bot("ADX_BOOST_VALUE", 10.0)
+
+# P2: WEIGHTS — S=0.40 R=0.15 A=0.15 X=0.20 M=0.10
+W_S = cfg_bot("WEIGHT_STRENGTH", 0.40)
 W_R = cfg_bot("WEIGHT_RSI", 0.15)
 W_A = cfg_bot("WEIGHT_ADX", 0.15)
-W_X = cfg_bot("WEIGHT_XGBOOST", 0.15)
-W_M = cfg_bot("WEIGHT_MC", 0.05)
+W_X = cfg_bot("WEIGHT_XGBOOST", 0.20)
+W_M = cfg_bot("WEIGHT_MC", 0.10)
+
 _WEIGHT_SUM = W_S + W_R + W_A + W_X + W_M
 if abs(_WEIGHT_SUM - 1.00) > 0.001:
     logger.warning(f"⚠️ Weight sum = {_WEIGHT_SUM:.4f} ≠ 1.00 — normalizing")
-    W_S /= _WEIGHT_SUM; W_R /= _WEIGHT_SUM; W_A /= _WEIGHT_SUM; W_X /= _WEIGHT_SUM; W_M /= _WEIGHT_SUM
+    weights = [W_S, W_R, W_A, W_X, W_M]
+    weights = [w / _WEIGHT_SUM for w in weights]
+    W_S, W_R, W_A, W_X, W_M = weights
 logger.info(f"⚖️  WEIGHTS: S={W_S:.2f} R={W_R:.2f} A={W_A:.2f} X={W_X:.2f} M={W_M:.2f} | SUM=1.00")
 
-# ─── 🎯 AUTO-RANKING CONFIG (from config_bot) ───
+# 🎯 Tunable thresholds
+MIN_STRENGTH_GAP = cfg_bot("MIN_STRENGTH_GAP", 0.3)
+DEBUG_DETAIL = cfg_bot("DEBUG_DETAIL", True)
+
+# ─── 🎯 AUTO-RANKING CONFIG ───
 USE_TOP_PAIRS_ONLY = cfg_bot("USE_TOP_PAIRS_ONLY", False)
 TOP_PAIRS_COUNT = cfg_bot("TOP_PAIRS_COUNT", 3)
 TOP_PAIRS_MIN_GAP = cfg_bot("TOP_PAIRS_MIN_GAP", 1.5)
@@ -81,13 +109,13 @@ MULTI_TF_CONFLUENCE = cfg_bot("MULTI_TF_CONFLUENCE", False)
 CONFLUENCE_REQUIRED_TFS = cfg_bot("CONFLUENCE_REQUIRED_TFS", 2)
 TP_RAISE_THRESHOLD_PIPS = cfg_bot("TP_RAISE_THRESHOLD_PIPS", 15)
 
-parser = argparse.ArgumentParser(description="FX Trading Bot v6.7.3 | Score-Sorted Execution | ADX Debug")
+parser = argparse.ArgumentParser(description="FX Trading Bot v6.8.2 | RSI-FIXED | Consensus + ADX-Norm + MC↑")
 parser.add_argument("--timeframe", type=str, default="15m", choices=["15m", "1H", "H4"],
                     help="Chart timeframe (default: 15m)")
 parser.add_argument("--test-trade", action="store_true", default=False,
-                    help="TEST MODE: relaxed filters, threshold=20, no real orders (default: OFF)")
+                    help="TEST MODE: relaxed filters, threshold=20, no real orders")
 parser.add_argument("--no-test-trade", action="store_false", dest="test_trade",
-                    help="LIVE MODE: strict filters, threshold=40, real orders (default: ON)")
+                    help="LIVE MODE: strict filters, real orders")
 parser.add_argument("--confluence", action="store_true")
 parser.add_argument("--no-confluence", action="store_false", dest="confluence")
 parser.add_argument("--skip-mc", action="store_true")
@@ -101,15 +129,14 @@ OANDA_GRANULARITY = OANDA_GRANULARITY_MAP.get(TIMEFRAME, "H4")
 
 DEFAULT_LOT_SIZE = cfg_bot("DEFAULT_LOT_SIZE", 10000)
 
-# ✅ Master pair universe — ALWAYS COMPLETE
+# ✅ Master pair universe
 ALL_PAIRS = cfg_bot("ALL_PAIRS", [
     "EURUSD=X", "GBPUSD=X", "EURJPY=X", "GBPJPY=X",
     "AUDUSD=X", "USDJPY=X", "GBPAUD=X", "USDCHF=X",
     "AUDJPY=X", "EURGBP=X", "NZDUSD=X", "CADJPY=X",
 ])
-DEFAULT_PAIRS = ALL_PAIRS
 
-# ─── ✅ FIXED: DEFAULT MAPPING + MERGE WITH CONFIG ───
+# ─── ✅ OANDA MAPPING ───
 _YAHOO_TO_OANDA_DEFAULT = {
     "EURUSD=X": "EUR_USD", "GBPUSD=X": "GBP_USD",
     "EURJPY=X": "EUR_JPY", "GBPJPY=X": "GBP_JPY",
@@ -122,7 +149,7 @@ YAHOO_TO_OANDA = cfg_bot("YAHOO_TO_OANDA", _YAHOO_TO_OANDA_DEFAULT.copy())
 for _sym, _oanda in _YAHOO_TO_OANDA_DEFAULT.items():
     if _sym not in YAHOO_TO_OANDA:
         YAHOO_TO_OANDA[_sym] = _oanda
-logger.info(f"✅ Pair mappings loaded: {len(YAHOO_TO_OANDA)} entries | NZDUSD=X → {YAHOO_TO_OANDA.get('NZDUSD=X','❌ MISSING')}")
+logger.info(f"✅ Pair mappings loaded: {len(YAHOO_TO_OANDA)} entries")
 
 COOLDOWN_FILE = BASE_DIR / "cooldown_state.json"
 RESULTS_DIR = BASE_DIR / "daily_results"
@@ -137,10 +164,9 @@ if args.test_trade:
     REMOVE_COOLDOWN = True
     MULTI_TF_CONFLUENCE = False
     logger.info("\n" + "="*60)
-    logger.info("🧪 TEST MODE — Cooldown OFF | Threshold=20 | ALL Filters BYPASSED")
+    logger.info("🧪 TEST MODE — Cooldown OFF | Threshold=20 | Filters BYPASSED")
     logger.info("="*60 + "\n")
-else:
-    if args.confluence is not None:
+elif args.confluence is not None:
         MULTI_TF_CONFLUENCE = args.confluence
 
 # -----------------------------------------------------------------------------
@@ -202,16 +228,15 @@ atr_mod = ATRModule(period=getattr(FEAT_CFG, "atr_period", cfg_bot("ATR_PERIOD",
 
 MODEL_PATH = BASE_DIR / "trade_model_xgb.pkl"
 model_wrapper = ModelWrapper(FEAT_CFG, model_path=MODEL_PATH)
-last_closed = load_cooldown(COOLDOWN_FILE, Direction)
 
+last_closed = [] if REMOVE_COOLDOWN else load_cooldown(COOLDOWN_FILE, Direction)
 # -----------------------------------------------------------------------------
-# ✅ AUTO-RANKING: Build Top N Pairs from Strength Matrix
+# Auto-Ranking
 # -----------------------------------------------------------------------------
 def build_top_pairs(strength_scores, all_pairs, top_n=3, min_gap=1.5):
     ranked = sorted(strength_scores.items(), key=lambda x: x[1], reverse=True)
     strongest = [ccy for ccy, _ in ranked[:top_n]]
     weakest = [ccy for ccy, _ in ranked[-top_n:]]
-
     candidate_pairs = []
     for i in range(min(top_n, len(strongest), len(weakest))):
         base = strongest[i]
@@ -220,71 +245,120 @@ def build_top_pairs(strength_scores, all_pairs, top_n=3, min_gap=1.5):
         gap = strength_scores[base] - strength_scores[quote]
         if abs(gap) >= min_gap:
             symbol = f"{base}{quote}=X"
+            if symbol not in all_pairs:
+                symbol = f"{quote}{base}=X"
             if symbol in all_pairs:
                 candidate_pairs.append((symbol, abs(gap), base, quote))
-
     candidate_pairs.sort(key=lambda x: x[1], reverse=True)
     selected = [p[0] for p in candidate_pairs[:top_n]]
     return selected, candidate_pairs
 
 # -----------------------------------------------------------------------------
-# ✅ v5-STYLE WEIGHTED SCORE CALCULATOR
+# ✅ v6.8.2 — RSI FIXED: Direction-Aware Scoring
 # -----------------------------------------------------------------------------
-def calc_weighted_score(direction: str, gap: float, rsi_val: float, adx_val: float,
-                          xgb_prob: float, mc_pct: float, is_test: bool = False) -> dict:
+def calc_weighted_score(pair: str, gap: float, rsi_val: float, adx_val: float,
+                        xgb_prob: float, mc_pct_up: float, is_test: bool = False):
+    """Returns (direction, score_dict) — direction=None means SKIP"""
     MIN_FINAL_SCORE = 20.0 if is_test else min_conv
 
-    # ─── 1. STRENGTH SCORE ───
-    max_expected_gap = 3.5
-    if direction == "BUY":
-        strength_raw = max(0.0, min(100.0, (gap / max_expected_gap) * 100.0))
-    else:
-        strength_raw = max(0.0, min(100.0, (-gap / max_expected_gap) * 100.0))
-    S = strength_raw
+    # ══════════════════════════════════════════════════════════════
+    # P0 — DIRECTION CONSENSUS VOTING (Strength + XGB + MC)
+    # ══════════════════════════════════════════════════════════════
+    strength_dir = "BUY" if gap >= MIN_STRENGTH_GAP else "SELL" if gap <= -MIN_STRENGTH_GAP else "NEUTRAL"
+    xgb_bullish = xgb_prob >= XGB_BULLISH_THRESHOLD
+    xgb_dir = "BUY" if xgb_bullish else "SELL"
+    mc_bullish = mc_pct_up >= MC_BULLISH_THRESHOLD
+    mc_dir = "BUY" if mc_bullish else "SELL"
 
-    # ─── 2. RSI SCORE ───
+    buy_votes = sum(1 for d in [strength_dir, xgb_dir, mc_dir] if d == "BUY")
+    sell_votes = sum(1 for d in [strength_dir, xgb_dir, mc_dir] if d == "SELL")
+
+    logger.info(f"🤝 {pair}: Strength={strength_dir} | XGB={xgb_dir} | MC={mc_dir} | BUY={buy_votes}/3")
+
+    direction = None
+
+    if REQUIRE_DIRECTION_CONSENSUS:
+        if buy_votes >= CONSENSUS_THRESHOLD:
+            direction = "BUY"
+            logger.info(f"✅ {pair}: BUY consensus ({buy_votes}/3)")
+        elif sell_votes >= CONSENSUS_THRESHOLD:
+            direction = "SELL"
+            logger.info(f"✅ {pair}: SELL consensus ({sell_votes}/3)")
+        else:
+            logger.info(f"⏭️  {pair}: NO CONSENSUS → SKIP")
+            return None, None  # SKIP
+    else:
+        # Legacy fallback: strength only
+        direction = "BUY" if gap > 0 else "SELL"
+        logger.info(f"ℹ️  Consensus OFF — using Strength only: {direction}")
+
+    # ══════════════════════════════════════════════════════════════
+    # SCORE CALCULATION — All 5 Components | RSI FIXED v6.8.2
+    # ══════════════════════════════════════════════════════════════
+
+    # 1. STRENGTH
+    max_expected_gap = 3.5
+    strength_raw = abs(gap) / max_expected_gap * 100.0
+    S = max(0.0, min(100.0, strength_raw))
+
+    # 2. ✅ RSI — DIRECTION-AWARE FIXED LOGIC
+    # BUY: RSI < 50 = bullish → higher score; RSI=50 → 0 pts
+    # SELL: RSI > 50 = bearish → higher score; RSI=50 → 0 pts
     rsi = max(0.0, min(100.0, rsi_val))
     if direction == "BUY":
-        R = 100.0 - ((rsi - 30) / 40.0) * 100.0 if 30 <= rsi <= 70 else (100.0 if rsi < 30 else 0.0)
+        # RSI=30 → 40 pts, RSI=10 → 80 pts, RSI=50 → 0 pts
+        R = max(0.0, min(100.0, (50.0 - rsi) * 2.0))
+    else:  # SELL
+        # RSI=70 → 40 pts, RSI=90 → 80 pts, RSI=50 → 0 pts
+        R = max(0.0, min(100.0, (rsi - 50.0) * 2.0))
+
+    # 3. ADX — P1: NORMALIZE + Floor/Bonus
+    raw_adx = adx_val
+    adx_normalized = min(raw_adx * ADX_SCALE_FACTOR, 100.0)
+
+    if ADX_FLOOR_ENABLED and adx_normalized < ADX_MIN_SCORE:
+        A = ADX_MIN_SCORE
+        logger.debug(f"🛡️ ADX FLOOR: raw={raw_adx:.1f}→norm={adx_normalized:.1f}→floor={A}")
+    elif ADX_BOOST_ENABLED and raw_adx >= ADX_BOOST_THRESHOLD:
+        A = min(100.0, adx_normalized + ADX_BOOST_VALUE)
+        logger.debug(f"🚀 ADX BOOST: raw={raw_adx:.1f}≥{ADX_BOOST_THRESHOLD}→{A:.1f}")
     else:
-        R = ((rsi - 30) / 40.0) * 100.0 if 30 <= rsi <= 70 else (100.0 if rsi > 70 else 0.0)
-    R = max(0.0, min(100.0, R))
+        A = adx_normalized
+        logger.debug(f"📐 ADX NORM: raw={raw_adx:.1f}→{A:.1f}")
+    A = max(0.0, min(100.0, A))
 
-    # ─── 3. ADX SCORE ───
-    A = max(0.0, min(100.0, adx_val))
-
-    # ─── 4. XGBOOST SCORE ───
+    # 4. XGBOOST
     X = max(0.0, min(100.0, xgb_prob * 100.0 if xgb_prob else 0.0))
     if X == 0.0:
         X = max(0.0, min(100.0, S * 0.3 + R * 0.3))
 
-    # ─── 5. MC SCORE ───
-    M = max(0.0, min(100.0, mc_pct if mc_pct is not None else 50.0))
+    # 5. MONTE CARLO
+    M = max(0.0, min(100.0, mc_pct_up if mc_pct_up is not None else 50.0))
 
-    # ─── FINAL ───
+    # FINAL SCORE
     FINAL = S*W_S + R*W_R + A*W_A + X*W_X + M*W_M
     PASS = FINAL >= MIN_FINAL_SCORE
 
-    return {
+    score = {
         "S": round(S,1), "R": round(R,1), "A": round(A,1),
         "X": round(X,1), "M": round(M,1),
         "FINAL": round(FINAL,1), "PASS": PASS,
-        "THRESHOLD": round(MIN_FINAL_SCORE,1),
-        "MODE": "TEST" if is_test else "LIVE"
+        "THRESHOLD": round(MIN_FINAL_SCORE,1), "MODE": "TEST" if is_test else "LIVE"
     }
+    return direction, score
 
 # -----------------------------------------------------------------------------
-# Main Trading Flow — v6.7.3
+# Main Trading Flow — v6.8.2
 # -----------------------------------------------------------------------------
 def main():
     global model_wrapper, strat_engine
-    logger.info(f"\n🤖 RUN v6.7.3 — {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')} | "
+    logger.info(f"\n🤖 RUN v6.8.2 — RSI-FIXED | {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')} | "
                 f"TOP_PAIRS={USE_TOP_PAIRS_ONLY} | MODEL=xgboost | MC={MCConfig.TIMEFRAME} | "
-                f"TEST={args.test_trade} | MAX_OPEN={MAX_SIMULTANEOUS_TRADES}")
+                f"TEST={args.test_trade} | MAX_OPEN={MAX_SIMULTANEOUS_TRADES} | MIN_GAP={MIN_STRENGTH_GAP}")
 
     if forex_market_closed():
         logger.info("Market closed — skipping")
-        send_telegram_message("⏸️ FX BOT v6.7.3: Market closed")
+        send_telegram_message("⏸️ FX BOT v6.8.2: Market closed")
         return
 
     model_wrapper, strat_engine = ensure_model(
@@ -296,23 +370,20 @@ def main():
     strength_scores = build_strength_matrix()
     logger.info(format_strength_ranking(strength_scores))
 
-    # ─── 🎯 AUTO-RANKING DECISION ───
+    # ─── AUTO-RANKING ───
     if USE_TOP_PAIRS_ONLY:
         selected_pairs, candidates = build_top_pairs(
             strength_scores, ALL_PAIRS,
             top_n=TOP_PAIRS_COUNT, min_gap=TOP_PAIRS_MIN_GAP
         )
         if not selected_pairs:
-            logger.warning("⚠️ No pairs met min_gap threshold — scanning ALL pairs instead")
+            logger.warning("⚠️ No pairs met min_gap — scanning ALL pairs")
             selected_pairs = ALL_PAIRS[:]
         else:
-            logger.info(f"🎯 AUTO-RANK: Top {len(selected_pairs)} pairs selected (min gap ≥ {TOP_PAIRS_MIN_GAP}):")
-            for sym, gap, base, quote in candidates:
-                flag = "✅" if sym in selected_pairs else "⏭️"
-                logger.info(f"   {flag} {base}/{quote} | gap={gap:.2f} → {sym}")
+            logger.info(f"🎯 AUTO-RANK: Top {len(selected_pairs)} pairs selected")
     else:
         selected_pairs = ALL_PAIRS[:]
-        logger.info(f"📋 SCAN ALL: {len(selected_pairs)} pairs (AUTO-RANK disabled)")
+        logger.info(f"📋 SCAN ALL: {len(selected_pairs)} pairs")
 
     # ─── STEP 2: Fetch Data ───
     pair_data = {}
@@ -324,55 +395,55 @@ def main():
         try:
             raw = fetcher.fetch(pair, oanda, count=200)
             if raw.empty:
-                logger.warning(f"{pair}: empty data from OANDA")
+                logger.warning(f"{pair}: empty data")
                 continue
             df = feat_engine.build(raw)
             df = df.replace([np.inf, -np.inf], np.nan).ffill().bfill().fillna(0)
             if len(df) < 5:
-                logger.warning(f"{pair}: insufficient bars ({len(df)})")
+                logger.warning(f"{pair}: insufficient bars")
                 continue
             atr_val = df.iloc[-1].get("atr", 0.0)
             rsi_val = df.iloc[-1].get("rsi", 50.0)
             adx_val = df.iloc[-1].get("adx", -1.0)
-            if adx_val <= 0.0:
-                logger.info(f"🔍 ADX DEBUG {pair}: last_5_values={list(df['adx'].tail(5)) if 'adx' in df.columns else 'COLUMN_MISSING'}")
+            if adx_val < 10:
+                logger.info(f"⚠️ ADX {pair} = {adx_val:.1f} — possibly flat market")
             logger.info(f"📊 {pair}: {len(df)} bars | ATR={atr_val:.6f} | RSI={rsi_val:.1f} | ADX={adx_val:.1f}")
             pair_data[pair] = {"df": df, "oanda": oanda, "raw": raw, "atr": atr_val, "rsi": rsi_val, "adx": adx_val}
         except Exception as e:
             logger.error(f"❌ Fetch failed {pair}: {e}")
 
     if not pair_data:
-        logger.error("No pairs have usable data. Aborting run.")
-        send_telegram_message("❌ FX BOT: No usable pair data")
+        logger.error("No pairs have usable data. Aborting.")
+        send_telegram_message("❌ FX BOT: No usable data")
         return
 
     # ─── STEP 3: Monte Carlo ───
     if cfg_bot("SKIP_MC", False):
         args.skip_mc = True
-
     mc_cache = {}
     if not args.skip_mc:
         logger.info("[STEP 3] Monte Carlo Forecasts...")
         mc_gen = MCGenerator(fetcher, YAHOO_TO_OANDA, simulations=SIMULATIONS, confidence=CONFIDENCE)
-        for pair in DEFAULT_PAIRS:
-            if pair not in pair_data:
-                continue
+        for pair in selected_pairs:
+            if pair not in pair_data: continue
             mc_data, ok = mc_gen.run_for_pair(pair, df=pair_data[pair]["raw"])
             if ok:
+                # ─── 🔒 STRONG MOMENTUM FILTER ──────────────────────────────
+                _require_strong_mc_momentum = cfg_bot("REQUIRE_STRONG_MOMENTUM", True)
+                if _require_strong_mc_momentum:
+                    mc_text = mc_data.get("regime", "")
+                    if "STRONG MOMENTUM" not in mc_text:
+                        regime_type = mc_text.split(' ')[1] if len(mc_text.split(' '))>=2 else "UNKNOWN"
+                        logger.info(f"⏭️ {pair}: MC regime={regime_type} — SKIP (requires STRONG MOMENTUM)")
+                        continue
+                    logger.info(f"✅ {pair}: MC STRONG MOMENTUM confirmed — QUALIFIED")
                 mc_cache[pair] = mc_data
-                logger.info(f"🎲 MC {pair}: {mc_data['regime']} | 90% Band {mc_data['range_90']} | P_UP={mc_data['p_up']}%")
-        if mc_cache:
-            send_telegram_message(build_mc_telegram(
-                list(mc_cache.values()), MCConfig.MC_REPORT_TITLE,
-                MCConfig.TIMEFRAME, MCConfig.MC_LOOKBACK, MCConfig.MC_FORECAST, SIMULATIONS
-            ))
+                logger.info(f"🎲 MC {pair}: {mc_data['regime']} | Band {mc_data['range_90']} | P_UP={mc_data['p_up']}%")
     else:
         logger.info("[STEP 3] MC Skipped — loading legacy...")
-        for pair in DEFAULT_PAIRS:
+        for pair in selected_pairs:
             mc_data, ok = load_mc_legacy(pair, RESULTS_DIR, TODAY_STR, MC_MAX_AGE_HOURS)
-            if ok:
-                mc_cache[pair] = mc_data
-
+            if ok: mc_cache[pair] = mc_data
     if args.mc_only:
         return
 
@@ -381,9 +452,8 @@ def main():
     if MULTI_TF_CONFLUENCE and not args.test_trade:
         logger.info("[STEP 4] Multi-Timeframe Confluence...")
         TF_GRAN = {"H4": "H4", "1H": "H1", "15m": "M15"}
-        for pair in DEFAULT_PAIRS:
-            if pair not in pair_data:
-                continue
+        for pair in selected_pairs:
+            if pair not in pair_data: continue
             oanda = pair_data[pair]["oanda"]
             dirs = []
             for gran in TF_GRAN.values():
@@ -394,14 +464,11 @@ def main():
                         "Time": c["time"], "Open": float(c["mid"]["o"]),
                         "High": float(c["mid"]["h"]), "Low": float(c["mid"]["l"]),
                         "Close": float(c["mid"]["c"])} for c in resp["candles"]]).set_index("Time")
-                    if len(raw_tf) < 5:
-                        continue
+                    if len(raw_tf) < 5: continue
                     sig_tf = strat_engine.generate_signal(pair, oanda, feat_engine.build(raw_tf),
                         None, strength_scores, raw_tf.iloc[-1]["Close"], 1.0)
-                    if sig_tf:
-                        dirs.append(sig_tf.action)
-                except Exception:
-                    continue
+                    if sig_tf: dirs.append(sig_tf.action)
+                except Exception: continue
             buy_c, sell_c = dirs.count("BUY"), dirs.count("SELL")
             passes = buy_c >= CONFLUENCE_REQUIRED_TFS or sell_c >= CONFLUENCE_REQUIRED_TFS
             tf_confluence[pair] = {"buy": buy_c, "sell": sell_c, "passes": passes}
@@ -410,7 +477,7 @@ def main():
     # ─── STEP 5: Dynamic Exit Manager ───
     def close_wrap(instr):
         return close_position(api, OANDA_ACCOUNT_ID, instr, send_telegram_message)
-    logger.info("[STEP 5] Dynamic Exit Manager — Scanning Open Positions...")
+    logger.info("[STEP 5] Dynamic Exit Manager...")
     dyn_mgr = DynamicPositionManager(
         api, OANDA_ACCOUNT_ID, TIMEFRAME,
         cfg_bot("BE_TRIGGER_ATR_MULT", 1.5), cfg_bot("TRAIL_TRIGGER_ATR_MULT", 2.5),
@@ -418,7 +485,6 @@ def main():
         dynamic_tp=DYNAMIC_TP, tp_raise_thresh_pips=TP_RAISE_THRESHOLD_PIPS,
         telegram_send=send_telegram_message
     )
-    # ✅ SILENCE OANDA 404 NOISE — Normal behavior, not errors
     orig_level = logging.getLogger("oandapyV20").level
     logging.getLogger("oandapyV20").setLevel(logging.CRITICAL)
     dyn_mgr.update_all(pair_data, close_wrap)
@@ -427,37 +493,29 @@ def main():
     # ─── STEP 6: Scan Open Positions ───
     open_pos_by_oanda, open_pos_count = {}, 0
     if not args.test_trade:
-        for pair in DEFAULT_PAIRS:
+        for pair in selected_pairs:
             oanda = YAHOO_TO_OANDA.get(pair)
-            if not oanda:
-                continue
+            if not oanda: continue
             try:
                 pos = get_open_position(api, OANDA_ACCOUNT_ID, oanda)
             except Exception as e:
                 err_text = str(e)
-                if "NO_SUCH_POSITION" in err_text or "404" in err_text:
-                    pos = None
-                else:
-                    logger.warning(f"⚠️ API error checking {pair}: {e}")
-                    pos = None
+                pos = None if ("NO_SUCH_POSITION" in err_text or "404" in err_text) else None
             open_pos_by_oanda[oanda] = bool(pos)
-            if pos:
-                open_pos_count += 1
+            if pos: open_pos_count += 1
 
     # ══════════════════════════════════════════════════════════════
-    # STEP 7: Generate Signals → COLLECT → SORT BY SCORE → EXECUTE
+    # STEP 7: Score → Collect → Sort → Execute
     # ══════════════════════════════════════════════════════════════
     logger.info("[STEP 7] Scoring & Signals...")
     min_sl_pips_jpy, min_sl_pips_std = cfg_bot("MIN_SL_PIPS_JPY", 35), cfg_bot("MIN_SL_PIPS", 25)
     trade_lines, signal_count = [], 0
-    pip_cache = {pair: pip_size(pair) for pair in DEFAULT_PAIRS}
-    pair_parts = {p: (p.replace("=X","")[:3], p.replace("=X","")[3:]) for p in DEFAULT_PAIRS}
-
+    pip_cache = {pair: pip_size(pair) for pair in selected_pairs}
+    pair_parts = {p: (p.replace("=X","")[:3], p.replace("=X","")[3:]) for p in selected_pairs}
     all_candidates = []
 
-    for pair in DEFAULT_PAIRS:
-        if pair not in pair_data:
-            continue
+    for pair in selected_pairs:
+        if pair not in pair_data: continue
         oanda = pair_data[pair]["oanda"]
         df = pair_data[pair]["df"]
         atr_val = pair_data[pair]["atr"]
@@ -465,11 +523,11 @@ def main():
         adx_val = pair_data[pair]["adx"]
 
         # Cooldown Check
-        if pair in last_closed and not REMOVE_COOLDOWN and not args.test_trade:
+        if pair in last_closed:
             d, r = last_closed[pair]
             if r > 0:
                 last_closed[pair] = (d, r-1)
-                logger.info(f"⏳ COOLDOWN {pair}: {r-1} runs remaining")
+                logger.info(f"⏳ COOLDOWN {pair}: {r-1} runs remaining — SKIP")
                 continue
             else:
                 del last_closed[pair]
@@ -478,12 +536,10 @@ def main():
 
         # Already Open Check
         if not args.test_trade:
-            try:
-                is_open = open_pos_by_oanda.get(oanda, False)
-            except:
-                is_open = False
+            try: is_open = open_pos_by_oanda.get(oanda, False)
+            except: is_open = False
             if is_open:
-                logger.info(f"⏭️ {pair}: position already open — skip")
+                logger.info(f"⏭️ {pair}: position already open — SKIP")
                 continue
 
         # Get Current Price
@@ -498,91 +554,90 @@ def main():
         except Exception:
             current, spread_pips = float(df.iloc[-1]["Close"]), 1.0
 
-        # Strength Gap → Direction
+        # Strength Gap
         mc_data = mc_cache.get(pair)
         base, quote = pair_parts[pair]
         gap = strength_scores.get(base, 0) - strength_scores.get(quote, 0)
-        direction = "BUY" if gap > 0 else "SELL"
         gap_mag = abs(gap)
 
         # Gap Filter
-        gap_thresh = 9.99 if args.test_trade else cfg_bot("STRENGTH_SIGNAL_BLOCK_THRESHOLD", 9.99)
-        if gap_mag > gap_thresh:
-            logger.info(f"🚫 {pair}: {direction} BLOCKED — gap {gap_mag:.2f} > {gap_thresh}")
+        if gap_mag < MIN_STRENGTH_GAP:
+            logger.info(f"⏭️ {pair}: gap={gap_mag:.2f} < MIN={MIN_STRENGTH_GAP} — SKIP")
             continue
+        logger.info(f"📈 {pair}: gap={gap_mag:.2f} ≥ {MIN_STRENGTH_GAP} — QUALIFIED")
 
         # Confluence Filter
         if MULTI_TF_CONFLUENCE and not args.test_trade:
             c = tf_confluence.get(pair, {})
             if not c.get("passes", True):
-                logger.info(f"🚫 {pair}: confluence fail — skip")
-                continue
-            if direction == "BUY" and c.get("buy",0) < CONFLUENCE_REQUIRED_TFS:
-                logger.info(f"🚫 {pair}: BUY confluence fail — skip")
-                continue
-            if direction == "SELL" and c.get("sell",0) < CONFLUENCE_REQUIRED_TFS:
-                logger.info(f"🚫 {pair}: SELL confluence fail — skip")
+                logger.info(f"🚫 {pair}: confluence fail — SKIP")
                 continue
 
-        # ─── WEIGHTED SCORE CALCULATION ───
+        # Get XGB & MC values
         sig = strat_engine.generate_signal(pair, oanda, df, mc_data, strength_scores, current, spread_pips)
         prob_raw = getattr(sig,"probability",None) or getattr(sig,"model_prob",None) or getattr(sig,"prob",None) or 0.0
-        mc_pct = mc_data.get("p_up", 50.0) if mc_data else 50.0
-        if direction == "SELL":
-            mc_pct = 100.0 - mc_pct
+        mc_pct_up = mc_data.get("p_up", 50.0) if mc_data else 50.0
 
-        w = calc_weighted_score(direction, gap, rsi_val, adx_val, prob_raw, mc_pct, is_test=args.test_trade)
+        # ⭐ v6.8 CONSENSUS + SCORING
+        direction, w = calc_weighted_score(pair, gap, rsi_val, adx_val, prob_raw, mc_pct_up, args.test_trade)
+        if direction is None or w is None:
+            continue  # No consensus — skipped inside function
 
+        # Score Log — RSI values now show FIXED scores
         logger.info(
-            f"⚖️  {pair} {direction} | "
-            f"S={w['S']:5.1f}×50%={round(w['S']*W_S,1):4.1f}  "
-            f"R={w['R']:5.1f}×15%={round(w['R']*W_R,1):4.1f}  "
-            f"A={w['A']:5.1f}×15%={round(w['A']*W_A,1):4.1f}  "
-            f"X={w['X']:5.1f}×15%={round(w['X']*W_X,1):4.1f}  "
-            f"M={w['M']:5.1f}×5% ={round(w['M']*W_M,1):4.1f}  |  "
-            f"FINAL={w['FINAL']:5.1f} vs {w['THRESHOLD']} → {'✅ PASS ✅' if w['PASS'] else '❌ FAIL ❌'} [{w['MODE']}]"
+            f"⚖️  SCORE {pair} {direction} | "
+            f"S={w['S']:5.1f}×{W_S:.2f}={round(w['S']*W_S,1):4.1f}  "
+            f"R={w['R']:5.1f}×{W_R:.2f}={round(w['R']*W_R,1):4.1f}  "
+            f"A={w['A']:5.1f}×{W_A:.2f}={round(w['A']*W_A,1):4.1f}  "
+            f"X={w['X']:5.1f}×{W_X:.2f}={round(w['X']*W_X,1):4.1f}  "
+            f"M={w['M']:5.1f}×{W_M:.2f}={round(w['M']*W_M,1):4.1f}  |  "
+            f"FINAL={w['FINAL']:5.1f} vs THRESHOLD={w['THRESHOLD']} → "
+            f"{'✅ PASS' if w['PASS'] else '⏭️ BELOW THRESHOLD'}"
         )
 
         if not w["PASS"]:
-            logger.info(f"➖ {pair}: FINAL {w['FINAL']} < {w['THRESHOLD']} — no signal")
+            logger.info(f"➖ REASON: FINAL {w['FINAL']:.1f} < {w['THRESHOLD']}")
             continue
 
-        signal_count += 1
-        sl_pips = max(min_sl_pips_jpy if "JPY" in pair else min_sl_pips_std,
-                      round(atr_val / pip_cache[pair] * cfg_bot("ATR_SL_MULT", 2.0), 1))
-        tp_pips = round(atr_val / pip_cache[pair] * cfg_bot("ATR_TP_MULT", 3.0), 1) if DYNAMIC_TP else sl_pips * 1.5
+        # ─── 🆕 HIERARCHICAL ZONE SL: H4→H8→Daily → ATR Fallback ───
+        tp_mult = cfg_bot("ATR_TP_MULT", 3.0)
+        tp_pips = round(atr_val / pip_cache[pair] * tp_mult, 1)
 
         dec = 3 if "JPY" in pair else 5
 
+        if cfg_bot("SL_USE_ZONE_HIERARCHY", True):
+            sl_price, sl_info = compute_sl_zone(
+                api, oanda, direction, current, pip_cache[pair], cfg_bot
+            )
+            sl_price = round(sl_price, dec)
+        else:
+            sl_pips = max(min_sl_pips_jpy if "JPY" in pair else min_sl_pips_std,
+                round(atr_val / pip_cache[pair] * cfg_bot("ATR_SL_MULT", 2.0), 1))
+            if direction == "BUY":
+                sl_price = round(current - sl_pips * pip_cache[pair], dec)
+            else:
+                sl_price = round(current + sl_pips * pip_cache[pair], dec)
+
+        # ─── TP: UNCHANGED ───
         if direction == "BUY":
-            sl_price = round(current - sl_pips * pip_cache[pair], dec)
             tp_price = round(current + tp_pips * pip_cache[pair], dec)
         else:
-            sl_price = round(current + sl_pips * pip_cache[pair], dec)
             tp_price = round(current - tp_pips * pip_cache[pair], dec)
 
-        all_candidates.append((
-            -w["FINAL"], w["FINAL"], pair, oanda, direction,
-            current, sl_price, tp_price, spread_pips, dec
-        ))
+        all_candidates.append((-w['FINAL'], w['FINAL'], pair, oanda, direction, current, sl_price, tp_price, spread_pips, dec))
 
-    # ✅ SORT → HIGHEST FINAL SCORE FIRST
-    all_candidates.sort()
-    logger.info(f"🏆 Ranked {len(all_candidates)} signals — highest score first")
+    logger.info(f"🏆 RANKED: {len(all_candidates)} passed → opening top {min(MAX_SIMULTANEOUS_TRADES, len(all_candidates))}")
+    for i, (_, score, pair, _, dir, _, _, _, _, _) in enumerate(all_candidates, 1):
+        logger.info(f"   #{i} — {pair} {dir} SCORE={score:.1f}")
 
-    # ─── EXECUTE ───
-    for neg_score, FINAL, pair, oanda, direction, current, sl_price, tp_price, spread_pips in all_candidates:
+    for neg_score, FINAL, pair, oanda, direction, current, sl_price, tp_price, spread_pips, dec in all_candidates:
         if args.test_trade:
-            logger.info(f"🧪 TEST MODE — {direction} {pair} @ {current:.{dec}f} | SL={sl_price} | TP={tp_price}")
+            logger.info(f"🧪 TEST — {direction} {pair} @ {current:.{dec}f} | SL={sl_price} | TP={tp_price}")
             trade_lines.append(f"🧪 {pair} {direction} Score={FINAL:.1f} SL={sl_price} TP={tp_price}")
-            open_pos_count += 1
             continue
-
-        currently_open = open_pos_count
-        if currently_open >= MAX_SIMULTANEOUS_TRADES:
-            logger.info(f"⏭️ {pair}: {currently_open}/{MAX_SIMULTANEOUS_TRADES} already open — skip")
+        if open_pos_count >= MAX_SIMULTANEOUS_TRADES:
+            logger.info(f"⏭️ {pair}: MAX_OPEN reached — SKIP")
             continue
-
         try:
             resp = open_oanda_order(api, OANDA_ACCOUNT_ID, oanda, direction, DEFAULT_LOT_SIZE, sl_price, tp_price)
             trade_id = resp.get("orderFillTransaction",{}).get("id","?")
@@ -592,20 +647,33 @@ def main():
         except Exception as e:
             logger.error(f"❌ ORDER FAILED {pair}: {e}")
 
-    # ─── STEP 8: Final Report ───
+    # ─── FINAL REPORT ───
     if trade_lines:
-        summary = f"🤖 v6.7.3 RUN COMPLETE — {signal_count} SIGNAL(S)\n\n" + "\n".join(trade_lines)
+        summary = f"🤖 v6.8.2 RUN COMPLETE — {signal_count} SIGNAL(S)\n\n" + "\n".join(trade_lines)
         send_telegram_message(summary)
     else:
-        logger.info("📋 No signals passed thresholds this run")
+        logger.info("📋 No signals passed thresholds")
         if args.test_trade:
-            send_telegram_message("🤖 v6.7.3 TEST — No signals passed threshold (20.0)")
+            send_telegram_message("🤖 v6.8.2 TEST — No signals passed threshold (20.0)")
 
-    logger.info("✅ v6.7.3 Run Complete")
+    logger.info("✅ v6.8.2 Run Complete — RSI-FIXED Applied")
 
+# -----------------------------------------------------------------------------
+# CONFIG OVERRIDE — Add these to config_bot.py to toggle features
+# -----------------------------------------------------------------------------
+"""
+# Add to config_bot.py to revert ANY v6.8 change instantly:
+REQUIRE_DIRECTION_CONSENSUS = False   # ← P0 OFF = use strength-only direction
+ADX_SCALE_FACTOR = 1.0                # ← P1 OFF = raw ADX values
+WEIGHT_STRENGTH=0.50; WEIGHT_RSI=0.15; WEIGHT_ADX=0.15; WEIGHT_XGBOOST=0.15; WEIGHT_MC=0.05  # ← P2 OFF = original weights
+"""
 
 if __name__ == "__main__":
+    # Let's quickly write and test a small snippet for a robust random jitter sleep function.
+    from utils.utils import apply_jitter
     try:
+        # 随机延迟 1 到 10 秒，错开与其他任务同时并发的瞬间
+        apply_jitter(1.0, 10.0)
         main()
     except Exception as e:
         logger.exception("Fatal error in main loop")

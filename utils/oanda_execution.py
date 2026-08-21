@@ -3,13 +3,19 @@ import time
 from oandapyV20.endpoints.orders import OrderCreate
 import oandapyV20
 from config_oanda import OANDA_ACCOUNT_ID, OANDA_ENV, OANDA_API_TOKEN
+from oandapyV20.endpoints.accounts import AccountSummary
 
-api = oandapyV20.API(
-    access_token=OANDA_API_TOKEN,
-    environment=OANDA_ENV
-)
+api = oandapyV20.API(access_token=OANDA_API_TOKEN, environment=OANDA_ENV)
+
+def check_oanda_account(account_id: str = None):
+    try:
+        r = AccountSummary(account_id)
+        resp = api.request(r)
+        print('✅ ACCOUNT OK:', resp['account']['id'], '—', resp['account']['currency'])
+    except Exception as e:
+        print('❌ FORBIDDEN / MISMATCH:', e)
+
 # ==================================================
-
 def execute_market_trade(signal, units_override=None):
     instrument = signal.pair_to_trade
     units = units_override if units_override is not None else 10000

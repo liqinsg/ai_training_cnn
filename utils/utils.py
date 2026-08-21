@@ -1,3 +1,16 @@
+import random
+import time
+
+GREEN = "\033[92m"
+RED = "\033[91m"
+YELLOW = "\033[93m"
+RESET = "\033[0m"
+
+def apply_jitter(min_sec: float = 1.0, max_sec: float = 8.0) -> None:
+    """在脚本主逻辑开始前增加抖动延迟，避免并发请求撞车"""
+    delay = random.uniform(min_sec, max_sec)
+    time.sleep(delay)    
+
 def forex_market_closed():
     from datetime import datetime
     from zoneinfo import ZoneInfo

@@ -27,8 +27,9 @@ from config import (
 
 # --- Account ID safe lookup ---
 OANDA_ACCOUNT_ID = getattr(_config, "OANDA_ACCOUNT_ID", None) or os.getenv("OANDA_ACCOUNT_ID")
-if not OANDA_ACCOUNT_ID:
-    print("[HELPERS] WARNING: OANDA_ACCOUNT_ID not found in config.py or environment.")
+assert OANDA_ACCOUNT_ID, "[HELPERS] FATAL: OANDA_ACCOUNT_ID not found in config.py or environment."
+# if not OANDA_ACCOUNT_ID:
+#     print("[HELPERS] WARNING: OANDA_ACCOUNT_ID not found in config.py or environment.")
 
 
 # ==========================================

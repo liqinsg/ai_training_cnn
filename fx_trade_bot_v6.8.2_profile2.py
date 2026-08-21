@@ -1,4 +1,8 @@
-# fx_trade_bot_v6.8.1.py
+# fx_trade_bot_v6.8.2_profile2.py — v6.8.2 | Profile2 / Account 002
+# ✅ RSI-FIXED | Consensus | ADX Boost | MC | SL Zone Hierarchy
+# ✅ WEIGHTS: S=0.40 R=0.15 A=0.15 X=0.20 M=0.10 | MIN_CONVICTION=30 | MIN_GAP=0.25
+# 🔑 Account: 002 — from config_bot_profile2
+
 import sys
 import logging
 import argparse
@@ -8,22 +12,24 @@ from datetime import datetime, timezone
 import numpy as np
 import pandas as pd
 
-# ─── PRIMARY IMPORT: config_bot FIRST ───
+# ─── IMPORT CHAIN: profile2 → config_bot → config → defaults ───
 import config_bot
 import config
+import config_bot_profile2  # ✅ YOUR Profile2 settings (formerly Profile1)
 
 from utils.trading_core import forex_market_closed
-from utils.strategy_helpers import build_strength_matrix, format_strength_ranking
+from utils.strategy_helpers import build_strength_matrix, format_strength_ranking, get_live_prices
 from telegram_message import send_telegram_message
 
-from config_oanda import OANDA_API_TOKEN, OANDA_ACCOUNT_ID, OANDA_ENV
-
-from oandapyV20.endpoints.instruments import InstrumentsCandles
+# ──────────────────────────────────────────────────────
+# ✅ Get Account ID from config_bot_profile2
+# ──────────────────────────────────────────────────────
+from config_bot_profile2 import OANDA_ACCOUNT_ID
 
 from strategy_decision import StrategyConfig, StrategyEngine, FilterMode, Direction
 from data_pipeline import FeatureConfig, FeatureEngine, ModelWrapper, DataFetcher, ATRModule
 from fx_trade_bot_utils import (
-    pip_size, load_cooldown, get_open_position, close_position,
+    pip_size, load_cooldown, get_open_position, close_position, fetch_candles,
     open_oanda_order_simple as open_oanda_order, DynamicPositionManager, load_mc_legacy,
     build_mc_telegram, build_trade_telegram
 )
@@ -35,8 +41,10 @@ import oandapyV20
 from portfolio_balance import balance_from_config
 from sl_zone_hierarchy import compute_sl_zone
 
+# from utils.oanda_execution import api
+from config_oanda import api
 # -----------------------------------------------------------------------------
-# Unified Config Lookup
+# Unified Config Lookup: config_bot_profile2 → config_bot → config → default
 # -----------------------------------------------------------------------------
 BASE_DIR = Path(__file__).resolve().parent
 sys.path.extend([str(BASE_DIR), str(BASE_DIR / "utils")])
@@ -44,25 +52,29 @@ sys.path.extend([str(BASE_DIR), str(BASE_DIR / "utils")])
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[logging.FileHandler(BASE_DIR / "bot.log"), logging.StreamHandler(sys.stdout)],
+    handlers=[logging.FileHandler(BASE_DIR / "bot_profile2.log"), logging.StreamHandler(sys.stdout)],
 )
 logger = logging.getLogger(__name__)
 
 def cfg_bot(name, default):
-    return getattr(config_bot, name, getattr(config, name, default))
+    """Lookup: config_bot_profile2 → config_bot → config → default"""
+    return getattr(config_bot_profile2, name,
+           getattr(config_bot, name,
+           getattr(config, name, default)))
 
 def cfg(name, default):
     return getattr(config, name, default)
 
+
 # ══════════════════════════════════════════════════════════════
-# v6.8 NEW CONFIG — P0 + P1 + P2
+# ✅ YOUR PROFILE2 SETTINGS — S=0.40 R=0.15 A=0.15 X=0.20 M=0.10
 # ══════════════════════════════════════════════════════════════
 
 # P0: DIRECTION CONSENSUS
 REQUIRE_DIRECTION_CONSENSUS = cfg_bot("REQUIRE_DIRECTION_CONSENSUS", True)
 CONSENSUS_THRESHOLD = cfg_bot("CONSENSUS_THRESHOLD", 2)
 XGB_BULLISH_THRESHOLD = cfg_bot("XGB_BULLISH_THRESHOLD", 0.55)
-MC_BULLISH_THRESHOLD = cfg_bot("MC_BULLISH_THRESHOLD", 55.0)
+MC_BULLISH_THRESHOLD = cfg_bot("MC_BULLISH_THRESHOLD_PCT", 55.0)
 
 # P1: ADX NORMALIZATION + Floor/Bonus
 ADX_SCALE_FACTOR = cfg_bot("ADX_SCALE_FACTOR", 2.0)
@@ -72,12 +84,12 @@ ADX_BOOST_ENABLED = cfg_bot("ADX_BOOST_ENABLED", True)
 ADX_BOOST_THRESHOLD = cfg_bot("ADX_BOOST_THRESHOLD", 30.0)
 ADX_BOOST_VALUE = cfg_bot("ADX_BOOST_VALUE", 10.0)
 
-# P2: WEIGHTS — S=0.50 R=0.15 A=0.15 X=0.12 M=0.08
-W_S = cfg_bot("WEIGHT_STRENGTH", 0.50)
+# P2: ✅ YOUR WEIGHTS — S=0.40 R=0.15 A=0.15 X=0.20 M=0.10
+W_S = cfg_bot("WEIGHT_STRENGTH", 0.40)
 W_R = cfg_bot("WEIGHT_RSI", 0.15)
 W_A = cfg_bot("WEIGHT_ADX", 0.15)
-W_X = cfg_bot("WEIGHT_XGBOOST", 0.12)  # ↓ from 0.15
-W_M = cfg_bot("WEIGHT_MC", 0.08)       # ↑ from 0.05
+W_X = cfg_bot("WEIGHT_XGB", 0.20)
+W_M = cfg_bot("WEIGHT_MC", 0.10)
 
 _WEIGHT_SUM = W_S + W_R + W_A + W_X + W_M
 if abs(_WEIGHT_SUM - 1.00) > 0.001:
@@ -85,16 +97,16 @@ if abs(_WEIGHT_SUM - 1.00) > 0.001:
     weights = [W_S, W_R, W_A, W_X, W_M]
     weights = [w / _WEIGHT_SUM for w in weights]
     W_S, W_R, W_A, W_X, W_M = weights
-logger.info(f"⚖️  WEIGHTS: S={W_S:.2f} R={W_R:.2f} A={W_A:.2f} X={W_X:.2f} M={W_M:.2f} | SUM=1.00")
+logger.info(f"⚖️  PROFILE2 WEIGHTS: S={W_S:.2f} R={W_R:.2f} A={W_A:.2f} X={W_X:.2f} M={W_M:.2f} | SUM=1.00")
 
-# 🎯 Tunable thresholds
-MIN_STRENGTH_GAP = cfg_bot("MIN_STRENGTH_GAP", 0.3)
+# 🎯 YOUR Thresholds from config_bot_profile2
+MIN_STRENGTH_GAP = cfg_bot("MIN_SCORE_GAP", 0.25)
 DEBUG_DETAIL = cfg_bot("DEBUG_DETAIL", True)
 
-# ─── 🎯 AUTO-RANKING CONFIG ───
+# ─── 🎯 AUTO-RANKING ───
 USE_TOP_PAIRS_ONLY = cfg_bot("USE_TOP_PAIRS_ONLY", False)
-TOP_PAIRS_COUNT = cfg_bot("TOP_PAIRS_COUNT", 3)
-TOP_PAIRS_MIN_GAP = cfg_bot("TOP_PAIRS_MIN_GAP", 1.5)
+TOP_PAIRS_COUNT = cfg_bot("TOP_PAIRS_COUNT", 4)
+TOP_PAIRS_MIN_GAP = cfg_bot("TOP_PAIRS_MIN_GAP", 0.25)
 
 # -----------------------------------------------------------------------------
 # CLI & Runtime
@@ -103,14 +115,15 @@ DEBUG_MODE = cfg_bot("DEBUG_MODE", False)
 if not DEBUG_MODE:
     logging.getLogger("oandapyV20").setLevel(logging.WARNING)
 
-MAX_SIMULTANEOUS_TRADES = cfg_bot("MAX_SIMULTANEOUS_TRADES", 5)
+MAX_SIMULTANEOUS_TRADES = cfg_bot("MAX_OPEN_POSITIONS", 4)
+MAX_OPEN=MAX_SIMULTANEOUS_TRADES
 TRAILING_TP = cfg_bot("TRAILING_TP", False)
 DYNAMIC_TP = cfg_bot("DYNAMIC_TP", True)
 MULTI_TF_CONFLUENCE = cfg_bot("MULTI_TF_CONFLUENCE", False)
 CONFLUENCE_REQUIRED_TFS = cfg_bot("CONFLUENCE_REQUIRED_TFS", 2)
 TP_RAISE_THRESHOLD_PIPS = cfg_bot("TP_RAISE_THRESHOLD_PIPS", 15)
 
-parser = argparse.ArgumentParser(description="FX Trading Bot v6.8 | Consensus + ADX-Norm + MC↑")
+parser = argparse.ArgumentParser(description="FX Trading Bot v6.8.2 Profile2 | Account 002 | RSI-FIXED | S=0.40 X=0.20")
 parser.add_argument("--timeframe", type=str, default="15m", choices=["15m", "1H", "H4"],
                     help="Chart timeframe (default: 15m)")
 parser.add_argument("--test-trade", action="store_true", default=False,
@@ -152,13 +165,13 @@ for _sym, _oanda in _YAHOO_TO_OANDA_DEFAULT.items():
         YAHOO_TO_OANDA[_sym] = _oanda
 logger.info(f"✅ Pair mappings loaded: {len(YAHOO_TO_OANDA)} entries")
 
-COOLDOWN_FILE = BASE_DIR / "cooldown_state.json"
-RESULTS_DIR = BASE_DIR / "daily_results"
+COOLDOWN_FILE = BASE_DIR / "cooldown_profile2.json"  # ✅ Separate cooldown!
+RESULTS_DIR = BASE_DIR / "daily_results_profile2"   # ✅ Separate MC results!
 RESULTS_DIR.mkdir(exist_ok=True)
 TODAY_STR = datetime.now(timezone.utc).strftime("%Y%m%d")
 MC_MAX_AGE_HOURS = cfg_bot("MC_MAX_AGE_HOURS", 24)
 SIMULATIONS = cfg_bot("MC_SIMULATIONS", 5000)
-CONFIDENCE = cfg_bot("MC_CONFIDENCE", 0.90)
+CONFIDENCE = cfg_bot("MC_BAND_PCT", 90) / 100.0
 
 REMOVE_COOLDOWN = cfg_bot("REMOVE_COOLDOWN", False)
 if args.test_trade:
@@ -182,7 +195,7 @@ if TIMEFRAME in ("H4", "1H", "15m"):
         "MC_LOOKBACK": cfg_bot("H4_LOOKBACK", 90),
         "MC_FORECAST": cfg_bot("H4_FORECAST", 8),
         "PERIODS_YEAR": cfg_bot("PERIODS_YEAR", 252) * 6,
-        "MC_REPORT_TITLE": cfg_bot("MC_REPORT_TITLE", "FX H4 MONTE CARLO"),
+        "MC_REPORT_TITLE": "[PROFILE2] FX H4 MONTE CARLO",
         "RESULTS_DIR": RESULTS_DIR,
     })
 else:
@@ -193,7 +206,7 @@ else:
         "MC_LOOKBACK": cfg_bot("DAILY_LOOKBACK", 90),
         "MC_FORECAST": cfg_bot("DAILY_FORECAST", 5),
         "PERIODS_YEAR": cfg_bot("PERIODS_YEAR_D", 252),
-        "MC_REPORT_TITLE": cfg_bot("MC_REPORT_TITLE_D", "FX DAILY MONTE CARLO"),
+        "MC_REPORT_TITLE": "[PROFILE2] FX DAILY MONTE CARLO",
         "RESULTS_DIR": RESULTS_DIR,
     })
 
@@ -212,7 +225,7 @@ FEAT_CFG = FeatureConfig(
     train_lookback_bars=cfg_bot("TRAIN_LOOKBACK_BARS", 5000),
 )
 
-min_conv = cfg_bot("MIN_CONVICTION_SCORE", 40.0) if MODE == "LEVEL10" else cfg_bot("MIN_CONVICTION_SCORE_ALT", 45.0)
+min_conv = cfg_bot("MIN_CONVICTION_SCORE", 30.0) if MODE == "LEVEL10" else cfg_bot("MIN_CONVICTION_SCORE_ALT", 45.0)
 min_edge = cfg_bot("BASE_MIN_EDGE", 0.50) if MODE == "LEVEL10" else cfg_bot("BASE_MIN_EDGE_ALT", 0.51)
 
 STRAT_CFG = StrategyConfig(
@@ -222,7 +235,6 @@ STRAT_CFG = StrategyConfig(
     strength_gap_filter_mode=FilterMode.PENALIZE, cooldown_filter_mode=FilterMode.BLOCK,
 )
 
-api = oandapyV20.API(access_token=OANDA_API_TOKEN, environment=OANDA_ENV)
 fetcher = DataFetcher(use_oanda=True, oanda_api=api, oanda_granularity=OANDA_GRANULARITY)
 feat_engine = FeatureEngine(FEAT_CFG)
 strat_engine = StrategyEngine(STRAT_CFG, model=None, feature_list=[])
@@ -231,11 +243,12 @@ atr_mod = ATRModule(period=getattr(FEAT_CFG, "atr_period", cfg_bot("ATR_PERIOD",
 MODEL_PATH = BASE_DIR / "trade_model_xgb.pkl"
 model_wrapper = ModelWrapper(FEAT_CFG, model_path=MODEL_PATH)
 
-last_closed = [] if REMOVE_COOLDOWN else load_cooldown(COOLDOWN_FILE, Direction) 
+last_closed = [] if REMOVE_COOLDOWN else load_cooldown(COOLDOWN_FILE, Direction)
+
 # -----------------------------------------------------------------------------
 # Auto-Ranking
 # -----------------------------------------------------------------------------
-def build_top_pairs(strength_scores, all_pairs, top_n=3, min_gap=1.5):
+def build_top_pairs(strength_scores, all_pairs, top_n=4, min_gap=0.25):
     ranked = sorted(strength_scores.items(), key=lambda x: x[1], reverse=True)
     strongest = [ccy for ccy, _ in ranked[:top_n]]
     weakest = [ccy for ccy, _ in ranked[-top_n:]]
@@ -256,7 +269,7 @@ def build_top_pairs(strength_scores, all_pairs, top_n=3, min_gap=1.5):
     return selected, candidate_pairs
 
 # -----------------------------------------------------------------------------
-# ✅ v6.8 WEIGHTED SCORE + DIRECTION CONSENSUS + ADX NORM
+# ✅ v6.8.2 — RSI FIXED: Direction-Aware Scoring
 # -----------------------------------------------------------------------------
 def calc_weighted_score(pair: str, gap: float, rsi_val: float, adx_val: float,
                         xgb_prob: float, mc_pct_up: float, is_test: bool = False):
@@ -288,14 +301,13 @@ def calc_weighted_score(pair: str, gap: float, rsi_val: float, adx_val: float,
             logger.info(f"✅ {pair}: SELL consensus ({sell_votes}/3)")
         else:
             logger.info(f"⏭️  {pair}: NO CONSENSUS → SKIP")
-            return None, None  # SKIP
+            return None, None
     else:
-        # Legacy fallback: strength only
         direction = "BUY" if gap > 0 else "SELL"
         logger.info(f"ℹ️  Consensus OFF — using Strength only: {direction}")
 
     # ══════════════════════════════════════════════════════════════
-    # SCORE CALCULATION — All 5 Components
+    # SCORE CALCULATION — YOUR WEIGHTS S=0.40 R=0.15 A=0.15 X=0.20 M=0.10
     # ══════════════════════════════════════════════════════════════
 
     # 1. STRENGTH
@@ -303,13 +315,12 @@ def calc_weighted_score(pair: str, gap: float, rsi_val: float, adx_val: float,
     strength_raw = abs(gap) / max_expected_gap * 100.0
     S = max(0.0, min(100.0, strength_raw))
 
-    # 2. RSI
+    # 2. ✅ RSI — DIRECTION-AWARE FIXED LOGIC (matches RSI_DIRECTION_AWARE=True)
     rsi = max(0.0, min(100.0, rsi_val))
     if direction == "BUY":
-        R = 100.0 - ((rsi - 30) / 40.0) * 100.0 if 30 <= rsi <= 70 else (100.0 if rsi < 30 else 0.0)
+        R = max(0.0, min(100.0, (50.0 - rsi) * 2.0))
     else:
-        R = ((rsi - 30) / 40.0) * 100.0 if 30 <= rsi <= 70 else (100.0 if rsi > 70 else 0.0)
-    R = max(0.0, min(100.0, R))
+        R = max(0.0, min(100.0, (rsi - 50.0) * 2.0))
 
     # 3. ADX — P1: NORMALIZE + Floor/Bonus
     raw_adx = adx_val
@@ -317,16 +328,13 @@ def calc_weighted_score(pair: str, gap: float, rsi_val: float, adx_val: float,
 
     if ADX_FLOOR_ENABLED and adx_normalized < ADX_MIN_SCORE:
         A = ADX_MIN_SCORE
-        logger.debug(f"🛡️ ADX FLOOR: raw={raw_adx:.1f}→norm={adx_normalized:.1f}→floor={A}")
     elif ADX_BOOST_ENABLED and raw_adx >= ADX_BOOST_THRESHOLD:
         A = min(100.0, adx_normalized + ADX_BOOST_VALUE)
-        logger.debug(f"🚀 ADX BOOST: raw={raw_adx:.1f}≥{ADX_BOOST_THRESHOLD}→{A:.1f}")
     else:
         A = adx_normalized
-        logger.debug(f"📐 ADX NORM: raw={raw_adx:.1f}→{A:.1f}")
     A = max(0.0, min(100.0, A))
 
-    # 4. XGBOOST
+    # 4. XGBOOST — HIGHER WEIGHT in Profile2
     X = max(0.0, min(100.0, xgb_prob * 100.0 if xgb_prob else 0.0))
     if X == 0.0:
         X = max(0.0, min(100.0, S * 0.3 + R * 0.3))
@@ -334,7 +342,7 @@ def calc_weighted_score(pair: str, gap: float, rsi_val: float, adx_val: float,
     # 5. MONTE CARLO
     M = max(0.0, min(100.0, mc_pct_up if mc_pct_up is not None else 50.0))
 
-    # FINAL SCORE
+    # FINAL SCORE — using YOUR weights
     FINAL = S*W_S + R*W_R + A*W_A + X*W_X + M*W_M
     PASS = FINAL >= MIN_FINAL_SCORE
 
@@ -347,17 +355,18 @@ def calc_weighted_score(pair: str, gap: float, rsi_val: float, adx_val: float,
     return direction, score
 
 # -----------------------------------------------------------------------------
-# Main Trading Flow — v6.8
+# Main Trading Flow — v6.8.2 PROFILE2 (Account 002)
 # -----------------------------------------------------------------------------
 def main():
     global model_wrapper, strat_engine
-    logger.info(f"\n🤖 RUN v6.8 — {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')} | "
+    logger.info(f"\n🤖 RUN v6.8.2 PROFILE2 — Account 002 | RSI-FIXED | S=0.40 X=0.20 | {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')} | "
                 f"TOP_PAIRS={USE_TOP_PAIRS_ONLY} | MODEL=xgboost | MC={MCConfig.TIMEFRAME} | "
-                f"TEST={args.test_trade} | MAX_OPEN={MAX_SIMULTANEOUS_TRADES} | MIN_GAP={MIN_STRENGTH_GAP}")
+                f"TEST={args.test_trade} | MAX_OPEN={MAX_SIMULTANEOUS_TRADES} | MIN_GAP={MIN_STRENGTH_GAP} | MIN_SCORE={min_conv}")
+    logger.info(f"🔑 OANDA Account ID: {OANDA_ACCOUNT_ID}")
 
     if forex_market_closed():
         logger.info("Market closed — skipping")
-        send_telegram_message("⏸️ FX BOT v6.8: Market closed")
+        send_telegram_message("⏸️ FX BOT PROFILE2: Market closed")
         return
 
     model_wrapper, strat_engine = ensure_model(
@@ -413,7 +422,7 @@ def main():
 
     if not pair_data:
         logger.error("No pairs have usable data. Aborting.")
-        send_telegram_message("❌ FX BOT: No usable data")
+        send_telegram_message("❌ FX BOT PROFILE2: No usable data")
         return
 
     # ─── STEP 3: Monte Carlo ───
@@ -427,16 +436,13 @@ def main():
             if pair not in pair_data: continue
             mc_data, ok = mc_gen.run_for_pair(pair, df=pair_data[pair]["raw"])
             if ok:
-                # ─── 🔒 STRONG MOMENTUM FILTER ──────────────────────────────
-                # SKIP unless MC shows "STRONG MOMENTUM" (if enabled in config)
                 _require_strong_mc_momentum = cfg_bot("REQUIRE_STRONG_MOMENTUM", True)
                 if _require_strong_mc_momentum:
-                    mc_text = mc_data.get("regime", "")  # e.g. "⚡ 15m STRONG MOMENTUM"
+                    mc_text = mc_data.get("regime", "")
                     if "STRONG MOMENTUM" not in mc_text:
                         regime_type = mc_text.split(' ')[1] if len(mc_text.split(' '))>=2 else "UNKNOWN"
-                        logger.info(f"⏭️ {pair}: MC regime={regime_type} — SKIP (requires STRONG MOMENTUM)")
-                        continue  # ⛔ Skip this pair entirely
-                    logger.info(f"✅ {pair}: MC STRONG MOMENTUM confirmed — QUALIFIED")
+                        logger.info(f"⏭️ {pair}: MC regime={regime_type} — SKIP")
+                        continue
                 mc_cache[pair] = mc_data
                 logger.info(f"🎲 MC {pair}: {mc_data['regime']} | Band {mc_data['range_90']} | P_UP={mc_data['p_up']}%")
     else:
@@ -458,12 +464,7 @@ def main():
             dirs = []
             for gran in TF_GRAN.values():
                 try:
-                    resp = api.request(InstrumentsCandles(instrument=oanda,
-                        params={"granularity": gran, "count": 100, "price": "M"}))
-                    raw_tf = pd.DataFrame([{
-                        "Time": c["time"], "Open": float(c["mid"]["o"]),
-                        "High": float(c["mid"]["h"]), "Low": float(c["mid"]["l"]),
-                        "Close": float(c["mid"]["c"])} for c in resp["candles"]]).set_index("Time")
+                    raw_tf = fetch_candles(oanda, gran)
                     if len(raw_tf) < 5: continue
                     sig_tf = strat_engine.generate_signal(pair, oanda, feat_engine.build(raw_tf),
                         None, strength_scores, raw_tf.iloc[-1]["Close"], 1.0)
@@ -493,16 +494,29 @@ def main():
     # ─── STEP 6: Scan Open Positions ───
     open_pos_by_oanda, open_pos_count = {}, 0
     if not args.test_trade:
+        logger.info("🔍 Checking open positions...")
         for pair in selected_pairs:
-            oanda = YAHOO_TO_OANDA.get(pair)
-            if not oanda: continue
-            try:
-                pos = get_open_position(api, OANDA_ACCOUNT_ID, oanda)
-            except Exception as e:
-                err_text = str(e)
-                pos = None if ("NO_SUCH_POSITION" in err_text or "404" in err_text) else None
-            open_pos_by_oanda[oanda] = bool(pos)
-            if pos: open_pos_count += 1
+            oanda_inst = YAHOO_TO_OANDA.get(pair)
+            if not oanda_inst:
+                continue
+
+            pos = get_open_position(api, OANDA_ACCOUNT_ID, oanda_inst)
+
+            # ✅ CLEAR LOGIC: None = no position
+            is_open = pos is not None
+            open_pos_by_oanda[oanda_inst] = is_open
+
+            if is_open:
+                open_pos_count += 1
+                logger.info(f"📌 OPEN POSITION: {pair} → {oanda_inst} | {pos['side'].upper()} | units={pos['units']}")
+            else:
+                logger.debug(f"  ✅ No position: {pair} → {oanda_inst}")
+
+        logger.info(f"📊 Open positions: {open_pos_count} / {MAX_OPEN} allowed")
+        # ─── ✅ STATUS SUMMARY: Open vs Ready ───
+        open_list = [o.replace("_","/") for o,is_open in open_pos_by_oanda.items() if is_open]
+        ready_list = [p.replace("=X","") for p in selected_pairs if not open_pos_by_oanda.get(YAHOO_TO_OANDA.get(p), False)]
+        logger.info(f"📋 STATUS → OPEN: {', '.join(open_list) if open_list else 'None'} | READY: {', '.join(ready_list) if ready_list else 'None'}")
 
     # ══════════════════════════════════════════════════════════════
     # STEP 7: Score → Collect → Sort → Execute
@@ -542,17 +556,21 @@ def main():
                 logger.info(f"⏭️ {pair}: position already open — SKIP")
                 continue
 
-        # Get Current Price
         try:
-            tick = api.request(InstrumentsCandles(instrument=oanda,
-                params={"count":1, "granularity":"M1", "price":"BA"}))["candles"][0]
-            if "bid" in tick and tick["bid"] and tick["ask"]:
-                bid_c, ask_c = float(tick["bid"]["c"]), float(tick["ask"]["c"])
-                current, spread_pips = bid_c, abs(ask_c-bid_c)/pip_cache[pair]
+            prices = get_live_prices(oanda)  # ✅ Your function!
+            if prices and "bid" in prices and "ask" in prices:
+                bid_c = prices["bid"]
+                ask_c = prices["ask"]
+                current = bid_c  # or mid-price: (bid_c + ask_c) / 2
+                spread_pips = abs(ask_c - bid_c) / pip_cache[pair]
             else:
-                current, spread_pips = float(tick["ask"]["c"]), 1.0
-        except Exception:
-            current, spread_pips = float(df.iloc[-1]["Close"]), 1.0
+                # Function returned None or incomplete data
+                current = float(df.iloc[-1]["Close"])
+                spread_pips = 1.0  # fallback guess
+        except Exception as e:
+            # Any failure → use last known close price
+            current = float(df.iloc[-1]["Close"])
+            spread_pips = 1.0
 
         # Strength Gap
         mc_data = mc_cache.get(pair)
@@ -560,7 +578,7 @@ def main():
         gap = strength_scores.get(base, 0) - strength_scores.get(quote, 0)
         gap_mag = abs(gap)
 
-        # Gap Filter
+        # Gap Filter — YOUR MIN_GAP = 0.25
         if gap_mag < MIN_STRENGTH_GAP:
             logger.info(f"⏭️ {pair}: gap={gap_mag:.2f} < MIN={MIN_STRENGTH_GAP} — SKIP")
             continue
@@ -578,12 +596,11 @@ def main():
         prob_raw = getattr(sig,"probability",None) or getattr(sig,"model_prob",None) or getattr(sig,"prob",None) or 0.0
         mc_pct_up = mc_data.get("p_up", 50.0) if mc_data else 50.0
 
-        # ⭐ v6.8 CONSENSUS + SCORING
+        # ⭐ YOUR WEIGHTS CONSENSUS + SCORING
         direction, w = calc_weighted_score(pair, gap, rsi_val, adx_val, prob_raw, mc_pct_up, args.test_trade)
         if direction is None or w is None:
-            continue  # No consensus — skipped inside function
+            continue
 
-        # Score Log — updated weights shown
         logger.info(
             f"⚖️  SCORE {pair} {direction} | "
             f"S={w['S']:5.1f}×{W_S:.2f}={round(w['S']*W_S,1):4.1f}  "
@@ -592,28 +609,24 @@ def main():
             f"X={w['X']:5.1f}×{W_X:.2f}={round(w['X']*W_X,1):4.1f}  "
             f"M={w['M']:5.1f}×{W_M:.2f}={round(w['M']*W_M,1):4.1f}  |  "
             f"FINAL={w['FINAL']:5.1f} vs THRESHOLD={w['THRESHOLD']} → "
-            f"{'✅ PASS' if w['PASS'] else '❌ FAIL'}"
+            f"{'✅ PASS' if w['PASS'] else '⏭️ Not satisfied'}"
         )
 
         if not w["PASS"]:
             logger.info(f"➖ REASON: FINAL {w['FINAL']:.1f} < {w['THRESHOLD']}")
             continue
 
-        # ─── 🆕 HIERARCHICAL ZONE SL: H4→H8→Daily → ATR Fallback ───
-        # ✅ FIXED: Always calculate TP from ATR — no sl_pips dependency!
+        # ─── 🆕 HIERARCHICAL ZONE SL ───
         tp_mult = cfg_bot("ATR_TP_MULT", 3.0)
         tp_pips = round(atr_val / pip_cache[pair] * tp_mult, 1)
-
         dec = 3 if "JPY" in pair else 5
 
         if cfg_bot("SL_USE_ZONE_HIERARCHY", True):
-            # 🆕 Zone-based SL — dedicated module
             sl_price, sl_info = compute_sl_zone(
                 api, oanda, direction, current, pip_cache[pair], cfg_bot
             )
             sl_price = round(sl_price, dec)
         else:
-            # Legacy fixed/ATR SL — untouched
             sl_pips = max(min_sl_pips_jpy if "JPY" in pair else min_sl_pips_std,
                 round(atr_val / pip_cache[pair] * cfg_bot("ATR_SL_MULT", 2.0), 1))
             if direction == "BUY":
@@ -621,21 +634,14 @@ def main():
             else:
                 sl_price = round(current + sl_pips * pip_cache[pair], dec)
 
-
-        # ─── TP: 100% UNCHANGED ───
         if direction == "BUY":
             tp_price = round(current + tp_pips * pip_cache[pair], dec)
         else:
             tp_price = round(current - tp_pips * pip_cache[pair], dec)
 
-        # ✅ ↓ APPEND INSIDE THE LOOP — RIGHT HERE! ↓
-        FINAL = w['FINAL']
-        all_candidates.append((-FINAL, FINAL, pair, oanda, direction, current, sl_price, tp_price, spread_pips, dec))
+        all_candidates.append((-w['FINAL'], w['FINAL'], pair, oanda, direction, current, sl_price, tp_price, spread_pips, dec))
 
     logger.info(f"🏆 RANKED: {len(all_candidates)} passed → opening top {min(MAX_SIMULTANEOUS_TRADES, len(all_candidates))}")
-    for i, (_, score, pair, _, dir, _, _, _, _, _) in enumerate(all_candidates, 1):
-        logger.info(f"   #{i} — {pair} {dir} SCORE={score:.1f}")
-
     for i, (_, score, pair, _, dir, _, _, _, _, _) in enumerate(all_candidates, 1):
         logger.info(f"   #{i} — {pair} {dir} SCORE={score:.1f}")
 
@@ -649,6 +655,7 @@ def main():
             continue
         try:
             resp = open_oanda_order(api, OANDA_ACCOUNT_ID, oanda, direction, DEFAULT_LOT_SIZE, sl_price, tp_price)
+
             trade_id = resp.get("orderFillTransaction",{}).get("id","?")
             logger.info(f"✅ EXECUTED {pair} {direction} | SL={sl_price} | TP={tp_price} | TradeID={trade_id}")
             trade_lines.append(f"✅ {pair} {direction} Score={FINAL:.1f} | SL={sl_price} TP={tp_price}")
@@ -656,31 +663,22 @@ def main():
         except Exception as e:
             logger.error(f"❌ ORDER FAILED {pair}: {e}")
 
-    # ─── FINAL REPORT ───
     if trade_lines:
-        summary = f"🤖 v6.8 RUN COMPLETE — {signal_count} SIGNAL(S)\n\n" + "\n".join(trade_lines)
+        summary = f"🤖 v6.8.2 PROFILE2 RUN COMPLETE — Account 002 — {signal_count} SIGNAL(S)\n\n" + "\n".join(trade_lines)
         send_telegram_message(summary)
     else:
         logger.info("📋 No signals passed thresholds")
         if args.test_trade:
-            send_telegram_message("🤖 v6.8 TEST — No signals passed threshold (20.0)")
+            send_telegram_message("🤖 v6.8.2 PROFILE2 TEST — No signals passed threshold")
 
-    logger.info("✅ v6.8 Run Complete")
-
-# -----------------------------------------------------------------------------
-# CONFIG OVERRIDE — Add these to config_bot.py to toggle features
-# -----------------------------------------------------------------------------
-"""
-# Add to config_bot.py to revert ANY v6.8 change instantly:
-REQUIRE_DIRECTION_CONSENSUS = False   # ← P0 OFF = use strength-only direction
-ADX_SCALE_FACTOR = 1.0                 # ← P1 OFF = raw ADX values
-WEIGHT_STRENGTH=0.50; WEIGHT_RSI=0.15; WEIGHT_ADX=0.15; WEIGHT_XGBOOST=0.15; WEIGHT_MC=0.05  # ← P2 OFF = original weights
-"""
+    logger.info("✅ v6.8.2 PROFILE2 Run Complete — Account 002 — RSI-FIXED Applied | S=0.40 X=0.20")
 
 if __name__ == "__main__":
+    from utils.utils import apply_jitter
     try:
+        apply_jitter(1.0, 10.0)
         main()
     except Exception as e:
-        logger.exception("Fatal error in main loop")
-        send_telegram_message(f"❌ FX BOT FATAL ERROR: {e}")
+        logger.exception("Fatal error in PROFILE2 main loop")
+        send_telegram_message(f"❌ FX BOT PROFILE2 FATAL ERROR: {e}")
         raise
