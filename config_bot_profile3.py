@@ -1,5 +1,6 @@
 # config_bot_profile3.py — v6.8.2 | Profile 3 (Account 003)
 # Weights: S=40 R=15 A=15 X=20 M=10 | RSI-FIXED | A/C ending 003
+from config_bot import *
 
 # ─── Account Identity ───
 from config_oanda import OANDA_ACCOUNT_ID_3 as OANDA_ACCOUNT_ID
@@ -62,6 +63,8 @@ MC_SIGNIFICANT_PCT = 60
 MC_MOMENTUM_BAND = 0.001
 
 if __name__ == "__main__":
+    from config_oanda import OANDA_ACCOUNT_ID_4 as OANDA_ACCOUNT_ID
+    print(OANDA_ACCOUNT_ID)
     from utils.oanda_execution import check_oanda_account
     try:
         check_oanda_account(account_id=OANDA_ACCOUNT_ID)

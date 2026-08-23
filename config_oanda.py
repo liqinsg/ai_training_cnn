@@ -25,9 +25,10 @@ OANDA_API_TOKEN = os.getenv("OANDA_API_TOKEN", "")
 OANDA_ACCOUNT_ID = os.getenv("OANDA_ACCOUNT_ID", "")
 
 # Main 3 accounts we validate by default when no args are passed
-OANDA_ACCOUNT_ID_1 = os.getenv("OANDA_ACCOUNT_ID_1", "")
-OANDA_ACCOUNT_ID_2 = os.getenv("OANDA_ACCOUNT_ID_2", "")
-OANDA_ACCOUNT_ID_3 = os.getenv("OANDA_ACCOUNT_ID_3", "")
+OANDA_ACCOUNT_ID_1 = os.getenv("OANDA_ACCOUNT_ID_1", "001-003-21515688-001")
+OANDA_ACCOUNT_ID_2 = os.getenv("OANDA_ACCOUNT_ID_2", "001-003-21515688-002")
+OANDA_ACCOUNT_ID_3 = os.getenv("OANDA_ACCOUNT_ID_3", "001-003-21515688-003")
+OANDA_ACCOUNT_ID_4 = os.getenv("OANDA_ACCOUNT_ID_4", "001-003-21515688-004")
 
 
 # ────────────────────────────────────────────────────────────────

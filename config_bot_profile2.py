@@ -1,9 +1,10 @@
 # config_bot_profile1.py — v6.8.2 | Profile 1 (Account 001)
 # Weights: S=40 R=15 A=15 X=20 M=10 | RSI-FIXED | A/C ending 001
+from config_bot import *
 
 # ─── Account Identity ───
-from config_oanda import OANDA_ACCOUNT_ID_2 as OANDA_ACCOUNT_ID
-
+from config_oanda import OANDA_ACCOUNT_ID_2 as oanda_account_id
+OANDA_ACCOUNT_ID = oanda_account_id
 # ─── Feature & ATR Settings ───
 USE_ATR = True
 ATR_SL_MULT = 2.0
