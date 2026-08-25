@@ -1,66 +1,199 @@
 #!/usr/bin/env python3
 """
-    fx_trade_bot_v6.8.3.py — v6.8.3
+    fx_trade_bot_v6.8.3.3.py — v6.8.3.3
     Multi-Profile: Profile2/Account002 · Profile3/Account003
     ✅ RSI-FIXED | Consensus | ADX Boost | Monte Carlo | SL Zone Hierarchy
-    ✅ WEIGHTS: S=0.40 R=0.15 A=0.15 X=0.20 M=0.10 | MIN_CONVICTION=30 | MIN_GAP=0.25
+    ✅ TREND FILTER: H1 EMA10 Slope + Weekly EMA100 Counter-Trend Block
+    ✅ SMART TP: Profile2=×1.0/×2.0 @75%MC  |  Profile3=Fixed ×1.2
+    ✅ EMA100 Buffer: 30p — TP never lands inside zone
+    ✅ Account IDs from profile config only
+    ✅ DUPLICATE-ORDER PROTECTION — Instrument + Run guards
+    ✅ REMOVED: --test-trade / --no-test-trade — ALL runs execute live
 
 
     Usage:
-        python fx_trade_bot_v6.8.3.py --profile2   # default
-        python fx_trade_bot_v6.8.3.py --profile3
-        python fx_trade_bot_v6.8.3.py --profile3 --test-trade --timeframe H4
+        python fx_trade_bot_v6.8.3.3.py --profile2   # default
+        python fx_trade_bot_v6.8.3.3.py --profile3
+        python fx_trade_bot_v6.8.3.3.py --profile3 --timeframe H4
 """
-
-
-import numpy as np
-import pandas as pd
+import contextlib
 import sys
+import os
 import logging
 import argparse
 import importlib
 from pathlib import Path
 from datetime import datetime, timezone
-from config_oanda import api
 
+import numpy as np
+import pandas as pd
+
+# ─── PRIMARY IMPORT: config_bot FIRST ───
+import config_bot
+import config
+
+from utils.trading_core import forex_market_closed
+from utils.strategy_helpers import build_strength_matrix, format_strength_ranking, get_live_prices
+from telegram_message import send_telegram_message
+from oandapyV20.endpoints.instruments import InstrumentsCandles
+from strategy_decision import StrategyConfig, StrategyEngine, FilterMode, Direction
+from data_pipeline import FeatureConfig, FeatureEngine, ModelWrapper, DataFetcher, ATRModule
+from fx_trade_bot_utils import (
+    pip_size, load_cooldown, get_open_position, close_position, fetch_candles,
+    open_oanda_order_simple as open_oanda_order, DynamicPositionManager, load_mc_legacy,
+)
+from fx_trade_bot_mc import MCGenerator, MCConfig
+from fx_trade_bot_ml import ensure_model
+from portfolio_balance import balance_from_config
+from sl_zone_hierarchy import compute_sl_zone
+from config_oanda import api
 
 # ─── BASE SETUP ──────────────────────────────────────────────────────────────
 BASE_DIR = Path(__file__).resolve().parent
 sys.path.extend([str(BASE_DIR), str(BASE_DIR / "utils")])
 
+# ─── TREND FILTER + SMART TP CONFIGURATION ──────────────────────────────────
+_TREND_TP_CONFIG = {
+    "base_tp_pips":           30,
+    "mc_strong_threshold":   0.75,   # ≥75% = strong momentum → Profile2 ×2 TP
+    "weekly_ema_period":     100,
+    "ema100_buffer_pips":     30,    # keep TP ≥30p away from Weekly EMA100
+    # "trend_filter_enabled":  True,
+    "profile2": {
+        "tp_normal_mult":     1.0,
+        "tp_strong_mult":     2.0,
+        "ema_period":         10,
+        "slope_lookback":      5,
+        "min_slope":       0.001,
+    },
+    "profile3": {
+        "tp_mult":            1.2,
+        "ema_period":         10,
+        "slope_lookback":      5,
+        "min_slope":       0.001,
+    },
+}
+
+# ─── TREND HELPERS ──────────────────────────────────────────────────────────
+def calculate_ema(series, period):
+    """Calculate Exponential Moving Average"""
+    return series.ewm(span=period, adjust=False).mean()
+
+def calculate_ema_slope(ema_series, lookback_bars):
+    """% change from lookback bars ago → trend strength"""
+    ema_now  = ema_series.iloc[-1]
+    ema_prev = ema_series.iloc[-lookback_bars]
+    slope_pct = (ema_now - ema_prev) / ema_prev
+    return slope_pct, ema_now
+
+def _pips_to_price(entry, direction, pips, pip_value):
+    offset = pips * pip_value
+    return entry + offset if direction == "BUY" else entry - offset
+
+def _price_to_pips(entry, tp_price, pip_value):
+    return abs(tp_price - entry) / pip_value
+
+def fetch_weekly_ema100(oanda_instrument, api):
+    """Fetch Weekly candles and compute EMA100 for trend filter"""
+    try:
+        resp = api.request(InstrumentsCandles(
+            instrument=oanda_instrument,
+            params={"granularity": "W", "count": 105, "price": "M"}
+        ))
+        candles = resp["candles"]
+        if len(candles) < 100:
+            return None
+        closes = [float(c["mid"]["c"]) for c in candles]
+        series = pd.Series(closes)
+        # ema100 = calculate_ema(series, 100).iloc[-1]
+        # return ema100
+        return calculate_ema(series, 100).iloc[-1]
+    except Exception as e:
+        logger.warning(f"⚠️ Cannot fetch Weekly EMA100 for {oanda_instrument}: {e}")
+        return None
+
+def evaluate_trend_and_tp(profile_name, direction, mc_pct_up,
+                           entry_price, pip_value, df_h1, weekly_ema100,
+                           timeframe="H1"):
+    """
+    ENTRY FILTERS:
+      A — Trend alignment on specified timeframe
+      B — No counter-trend vs Weekly EMA100
+    TP LOGIC:
+      Profile2 → ×1.0 normal / ×2.0 strong (MC ≥75%)
+      Profile3 → fixed ×1.2
+      Buffer 30p away from Weekly EMA100
+    """
+    cfg = TREND_TP_CONFIG[profile_name]
+
+    base_pips = TREND_TP_CONFIG["base_tp_pips"]
+    mc_momentum = mc_pct_up / 100.0
+    ema_cross_filter = cfg_bot("TREND_FILTER_ENABLED", False)
+    logger.info(f"🔍 {timeframe} TREND FILTER: ema_cross_filter={ema_cross_filter} | profile={profile_name}")
+
+    # --- Rule A: Trend Alignment on specified timeframe ---
+    ema10 = calculate_ema(df_h1["Close"], cfg["ema_period"])
+    slope, ema_level = calculate_ema_slope(ema10, cfg["slope_lookback"])
+    min_slope = cfg["min_slope"]
+    current_price = entry_price
+
+    if ema_cross_filter:
+        if direction == "BUY":
+            filter_slope = slope >= min_slope
+            if not (current_price > ema_level and filter_slope):
+                reason = f"{timeframe} TREND MISALIGNED — Price below EMA10 or slope={slope:.4f} < {min_slope}"
+                logger.info(f"⏭️ SKIP BUY: {reason}")
+                return False, 0.0, reason
+        else:
+            filter_slope = slope <= -min_slope
+            if not (current_price < ema_level and filter_slope):
+                reason = f"{timeframe} TREND MISALIGNED — Price above EMA10 or slope={slope:.4f} > {-min_slope}"
+                logger.info(f"⏭️ SKIP SELL: {reason}")
+                return False, 0.0, reason
+
+    # --- Rule B: No Counter-Trend vs Weekly EMA100 ---
+    if weekly_ema100:
+        if direction == "BUY" and current_price < weekly_ema100:
+            reason = f"COUNTER-TREND vs WEEKLY EMA100 — Price below {weekly_ema100:.5f}"
+            logger.info(f"⏭️ SKIP BUY: {reason}")
+            return False, 0.0, reason
+        if direction == "SELL" and current_price > weekly_ema100:
+            reason = f"COUNTER-TREND vs WEEKLY EMA100 — Price above {weekly_ema100:.5f}"
+            logger.info(f"⏭️ SKIP SELL: {reason}")
+            return False, 0.0, reason
+
+    # --- Calculate TP ---
+    if profile_name == "profile2":
+        if mc_momentum >= TREND_TP_CONFIG["mc_strong_threshold"]:
+            tp_pips = base_pips * cfg["tp_strong_mult"]
+            tp_mode = f"✅ STRONG MOMENTUM ×2 — MC={mc_pct_up:.1f}% → TP={tp_pips:.1f}p"
+        else:
+            tp_pips = base_pips * cfg["tp_normal_mult"]
+            tp_mode = f"✅ NORMAL ×1 — MC={mc_pct_up:.1f}% → TP={tp_pips:.1f}p"
+    else:
+        tp_pips = base_pips * cfg["tp_mult"]
+        tp_mode = f"✅ FIXED ×{cfg['tp_mult']} — TP={tp_pips:.1f}p"
+
+    # --- Rule C: Keep TP away from Weekly EMA100 Buffer ---
+    if weekly_ema100:
+        tp_price = _pips_to_price(entry_price, direction, tp_pips, pip_value)
+        buffer_dist = TREND_TP_CONFIG["ema100_buffer_pips"] * pip_value
+        if abs(tp_price - weekly_ema100) < buffer_dist:
+            if direction == "BUY":
+                tp_price = weekly_ema100 + buffer_dist
+            else:
+                tp_price = weekly_ema100 - buffer_dist
+            tp_pips = _price_to_pips(entry_price, tp_price, pip_value)
+            tp_mode += f" | 📌 TP shifted away from Weekly EMA100 → {tp_pips:.1f}p"
+
+    logger.info(tp_mode)
+    return True, round(tp_pips, 1), tp_mode
 
 # ─── PROFILE SELECTION — HAPPENS FIRST ───────────────────────────────────────
-# ============================================================
-# PROFILE4 — Account 004 | H4 Timeframe | RSI-FIXED
-# ============================================================
-OANDA_ACCOUNT_ID_4 = os.getenv("001-003-21515688-004")
-
-PROFILE4_WEIGHTS = {
-    "S": 0.40,   # Currency Strength
-    "R": 0.15,   # RSI
-    "A": 0.15,   # ADX / Trend
-    "X": 0.20,   # XGB Model
-    "M": 0.10    # Monte Carlo Forecast
-}
-# SUM = 1.00 ✅
-
-PROFILE4 = {
-    "account_id": OANDA_ACCOUNT_ID_4,
-    "weights": PROFILE4_WEIGHTS,
-    "timeframe": "H4",
-    "max_open": 4,
-    "min_gap": 0.25,
-    "rsi_fixed": True,
-    "description": "Profile4 — Account 004 | H4 | RSI-FIXED"
-}
-
-# Step 1: Detect profile EARLY using a parser that accepts ALL flags
 parser = argparse.ArgumentParser(add_help=False)
 parser.add_argument("--profile2", action="store_true")
 parser.add_argument("--profile3", action="store_true")
 parser.add_argument("--timeframe", type=str, default="15m", choices=["15m", "1H", "H4"])
-parser.add_argument("--test-trade", action="store_true", default=False)
-parser.add_argument("--no-test-trade", action="store_false", dest="test_trade")
 parser.add_argument("--confluence", action="store_true", default=None)
 parser.add_argument("--no-confluence", action="store_false", dest="confluence")
 parser.add_argument("--skip-mc", action="store_true")
@@ -73,69 +206,49 @@ if args_known.profile3:
     PROFILE_MODULE = "config_bot_profile3"
     PROFILE_LABEL = "PROFILE3"
     ACCOUNT_NAME = "Account 003"
+    PROFILE_NAME = "profile3"
     COOLDOWN_FILE = BASE_DIR / "cooldown_profile3.json"
     RESULTS_DIR = BASE_DIR / "daily_results_profile3"
 else:
     PROFILE_MODULE = "config_bot_profile2"
     PROFILE_LABEL = "PROFILE2"
     ACCOUNT_NAME = "Account 002"
+    PROFILE_NAME = "profile2"
     COOLDOWN_FILE = BASE_DIR / "cooldown_profile2.json"
     RESULTS_DIR = BASE_DIR / "daily_results_profile2"
 
-
-# Step 3: NOW build the REAL parser with description (variables exist!)
+# Step 3: Build full parser
 parser = argparse.ArgumentParser(
-    description=f"FX Trading Bot v6.8.3 {PROFILE_LABEL} | {ACCOUNT_NAME} | RSI-FIXED | S=0.40 X=0.20"
+    description=f"FX Trading Bot v6.8.3.3 {PROFILE_LABEL} | {ACCOUNT_NAME} | TREND+TP"
 )
 parser.add_argument("--profile2", action="store_true", help="Use Profile2 / Account002")
 parser.add_argument("--profile3", action="store_true", help="Use Profile3 / Account003")
 parser.add_argument("--timeframe", type=str, default="15m", choices=["15m", "1H", "H4"])
-parser.add_argument("--test-trade", action="store_true", default=False)
-parser.add_argument("--no-test-trade", action="store_false", dest="test_trade")
 parser.add_argument("--confluence", action="store_true", default=None)
 parser.add_argument("--no-confluence", action="store_false", dest="confluence")
 parser.add_argument("--skip-mc", action="store_true")
 parser.add_argument("--mc-only", action="store_true")
 args = parser.parse_args()
 
-
-# ✅ Load profile ONLY — config_bot AND config are ALREADY inside it
+# ✅ Load profile config
 profile_cfg = importlib.import_module(PROFILE_MODULE)
 
-# Get account ID directly from active profile
-OANDA_ACCOUNT_ID = profile_cfg.OANDA_ACCOUNT_ID
+# ✅ Account ID COMES ONLY FROM PROFILE CONFIG — single source of truth
+OANDA_ACCOUNT_ID = getattr(profile_cfg, "OANDA_ACCOUNT_ID", None)
+if not OANDA_ACCOUNT_ID:
+    raise RuntimeError(f"OANDA_ACCOUNT_ID not found in {PROFILE_MODULE}. Please define it there.")
 
-
-# ─── CONFIG LOOKUP FUNCTION ─────────────────────────────────────────────────
+# ─── CENTRAL CONFIG LOOKUP ──────────────────────────────────────────────────
 def cfg_bot(name, default):
-    """
-    Lookup priority:
-        profile_cfg → (config_bot inherited inside profile) → (config inherited inside profile) → default
-    Binds automatically to Profile2 or Profile3 — NO extra imports in main script.
-    """
-    return getattr(profile_cfg, name, default)
+    """Lookup: profile_cfg → config_bot → config → default"""
+    return getattr(profile_cfg, name, getattr(config_bot, name, getattr(config, name, default)))
 
-
-# ─── SHARED IMPORTS ──────────────────────────────────────────────────────────
-from utils.trading_core import forex_market_closed
-from utils.strategy_helpers import build_strength_matrix, format_strength_ranking, get_live_prices
-from telegram_message import send_telegram_message
-from strategy_decision import StrategyConfig, StrategyEngine, FilterMode, Direction
-from data_pipeline import FeatureConfig, FeatureEngine, ModelWrapper, DataFetcher, ATRModule
-from fx_trade_bot_utils import (
-    pip_size, load_cooldown, get_open_position, close_position, fetch_candles,
-    open_oanda_order_simple as open_oanda_order, DynamicPositionManager, load_mc_legacy,
-)
-from fx_trade_bot_mc import MCGenerator, MCConfig
-from fx_trade_bot_ml import ensure_model
-from portfolio_balance import balance_from_config
-from sl_zone_hierarchy import compute_sl_zone
-
+def cfg(name, default):
+    return getattr(config, name, default)
 
 # ─── INIT FOLDERS & LOGGING ──────────────────────────────────────────────────
 RESULTS_DIR.mkdir(exist_ok=True)
 TODAY_STR = datetime.now(timezone.utc).strftime("%Y%m%d")
-
 
 logging.basicConfig(
     level=logging.INFO,
@@ -147,13 +260,14 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-
 # ─── CONSOLIDATED STRATEGY CONSTANTS ─────────────────────────────────────────
+
+
+TREND_TP_CONFIG = cfg("TREND_TP_CONFIG", _TREND_TP_CONFIG)
 REQUIRE_DIRECTION_CONSENSUS = cfg_bot("REQUIRE_DIRECTION_CONSENSUS", True)
 CONSENSUS_THRESHOLD = cfg_bot("CONSENSUS_THRESHOLD", 2)
 XGB_BULLISH_THRESHOLD = cfg_bot("XGB_BULLISH_THRESHOLD", 0.55)
 MC_BULLISH_THRESHOLD = cfg_bot("MC_BULLISH_THRESHOLD_PCT", 55.0)
-
 
 ADX_SCALE_FACTOR = cfg_bot("ADX_SCALE_FACTOR", 2.0)
 ADX_FLOOR_ENABLED = cfg_bot("ADX_FLOOR_ENABLED", True)
@@ -162,13 +276,11 @@ ADX_BOOST_ENABLED = cfg_bot("ADX_BOOST_ENABLED", True)
 ADX_BOOST_THRESHOLD = cfg_bot("ADX_BOOST_THRESHOLD", 30.0)
 ADX_BOOST_VALUE = cfg_bot("ADX_BOOST_VALUE", 10.0)
 
-
 W_S = cfg_bot("WEIGHT_STRENGTH", 0.40)
 W_R = cfg_bot("WEIGHT_RSI", 0.15)
 W_A = cfg_bot("WEIGHT_ADX", 0.15)
 W_X = cfg_bot("WEIGHT_XGB", 0.20)
 W_M = cfg_bot("WEIGHT_MC", 0.10)
-
 
 _WEIGHT_SUM = W_S + W_R + W_A + W_X + W_M
 if abs(_WEIGHT_SUM - 1.00) > 0.001:
@@ -177,13 +289,11 @@ if abs(_WEIGHT_SUM - 1.00) > 0.001:
     W_S, W_R, W_A, W_X, W_M = weights
 logger.info(f"⚖️  {PROFILE_LABEL} WEIGHTS: S={W_S:.2f} R={W_R:.2f} A={W_A:.2f} X={W_X:.2f} M={W_M:.2f} | SUM=1.00")
 
-
 MIN_STRENGTH_GAP = cfg_bot("MIN_SCORE_GAP", 0.25)
 DEBUG_DETAIL = cfg_bot("DEBUG_DETAIL", True)
 USE_TOP_PAIRS_ONLY = cfg_bot("USE_TOP_PAIRS_ONLY", False)
 TOP_PAIRS_COUNT = cfg_bot("TOP_PAIRS_COUNT", 4)
 TOP_PAIRS_MIN_GAP = cfg_bot("TOP_PAIRS_MIN_GAP", 0.25)
-
 
 DEBUG_MODE = cfg_bot("DEBUG_MODE", False)
 if not DEBUG_MODE:
@@ -196,14 +306,12 @@ MULTI_TF_CONFLUENCE = cfg_bot("MULTI_TF_CONFLUENCE", False)
 CONFLUENCE_REQUIRED_TFS = cfg_bot("CONFLUENCE_REQUIRED_TFS", 2)
 TP_RAISE_THRESHOLD_PIPS = cfg_bot("TP_RAISE_THRESHOLD_PIPS", 15)
 
-
 # ─── CLI MODE OVERRIDES ──────────────────────────────────────────────────────
 MODE = cfg_bot("MODE", "LEVEL10")
 TIMEFRAME = args.timeframe
 OANDA_GRANULARITY_MAP = {"15m": "M15", "1H": "H1", "H4": "H4", "D": "D"}
 OANDA_GRANULARITY = OANDA_GRANULARITY_MAP.get(TIMEFRAME, "H4")
 DEFAULT_LOT_SIZE = cfg_bot("DEFAULT_LOT_SIZE", 10000)
-
 
 ALL_PAIRS = cfg_bot("ALL_PAIRS", [
     "EURUSD=X", "GBPUSD=X", "EURJPY=X", "GBPJPY=X",
@@ -223,22 +331,13 @@ for _sym, _oanda in _YAHOO_TO_OANDA_DEFAULT.items():
     YAHOO_TO_OANDA.setdefault(_sym, _oanda)
 logger.info(f"✅ Pair mappings loaded: {len(YAHOO_TO_OANDA)} entries")
 
-
 MC_MAX_AGE_HOURS = cfg_bot("MC_MAX_AGE_HOURS", 24)
 SIMULATIONS = cfg_bot("MC_SIMULATIONS", 5000)
 CONFIDENCE = cfg_bot("MC_BAND_PCT", 90) / 100.0
 
-
 REMOVE_COOLDOWN = cfg_bot("REMOVE_COOLDOWN", False)
-if args.test_trade:
-    REMOVE_COOLDOWN = True
-    MULTI_TF_CONFLUENCE = False
-    logger.info("\n" + "="*60)
-    logger.info("🧪 TEST MODE — Cooldown OFF | Threshold=20 | Filters BYPASSED")
-    logger.info("="*60 + "\n")
-elif args.confluence is not None:
+if args.confluence is not None:
     MULTI_TF_CONFLUENCE = args.confluence
-
 
 # ─── MC TIMEFRAME CONFIG ─────────────────────────────────────────────────────
 if TIMEFRAME in ("H4", "1H", "15m"):
@@ -264,7 +363,6 @@ else:
         "RESULTS_DIR": RESULTS_DIR,
     })
 
-
 # ─── PIPELINE & STRATEGY CONFIG ──────────────────────────────────────────────
 FEAT_CFG = FeatureConfig(
     use_atr=cfg_bot("USE_ATR", True),
@@ -286,7 +384,6 @@ STRAT_CFG = StrategyConfig(
     strength_gap_filter_mode=FilterMode.PENALIZE, cooldown_filter_mode=FilterMode.BLOCK,
 )
 
-
 fetcher = DataFetcher(use_oanda=True, oanda_api=api, oanda_granularity=OANDA_GRANULARITY)
 feat_engine = FeatureEngine(FEAT_CFG)
 strat_engine = StrategyEngine(STRAT_CFG, model=None, feature_list=[])
@@ -294,7 +391,6 @@ atr_mod = ATRModule(period=getattr(FEAT_CFG, "atr_period", cfg_bot("ATR_PERIOD",
 MODEL_PATH = BASE_DIR / "trade_model_xgb.pkl"
 model_wrapper = ModelWrapper(FEAT_CFG, model_path=MODEL_PATH)
 last_closed = [] if REMOVE_COOLDOWN else load_cooldown(COOLDOWN_FILE, Direction)
-
 
 # ─── HELPER FUNCTIONS ─────────────────────────────────────────────────────────
 def build_top_pairs(strength_scores, all_pairs, top_n=4, min_gap=0.25):
@@ -313,23 +409,18 @@ def build_top_pairs(strength_scores, all_pairs, top_n=4, min_gap=0.25):
     candidate_pairs.sort(key=lambda x: x[1], reverse=True)
     return [p[0] for p in candidate_pairs[:top_n]], candidate_pairs
 
-
-
 def calc_weighted_score(pair: str, gap: float, rsi_val: float, adx_val: float,
-                        xgb_prob: float, mc_pct_up: float, is_test: bool = False):
+                        xgb_prob: float, mc_pct_up: float):
     """RSI-FIXED Direction-Aware Consensus Scoring — shared across profiles"""
-    MIN_FINAL_SCORE = 20.0 if is_test else min_conv
-
+    MIN_FINAL_SCORE = min_conv
 
     strength_dir = "BUY" if gap >= MIN_STRENGTH_GAP else "SELL" if gap <= -MIN_STRENGTH_GAP else "NEUTRAL"
     xgb_dir = "BUY" if (xgb_prob or 0.0) >= XGB_BULLISH_THRESHOLD else "SELL"
     mc_dir = "BUY" if (mc_pct_up or 50.0) >= MC_BULLISH_THRESHOLD else "SELL"
 
-
     buy_votes  = sum(1 for d in (strength_dir, xgb_dir, mc_dir) if d == "BUY")
     sell_votes = sum(1 for d in (strength_dir, xgb_dir, mc_dir) if d == "SELL")
     logger.info(f"🤝 {pair}: Strength={strength_dir} | XGB={xgb_dir} | MC={mc_dir} | BUY={buy_votes}/3")
-
 
     if REQUIRE_DIRECTION_CONSENSUS:
         if buy_votes >= CONSENSUS_THRESHOLD:
@@ -343,14 +434,12 @@ def calc_weighted_score(pair: str, gap: float, rsi_val: float, adx_val: float,
         direction = "BUY" if gap > 0 else "SELL"
         logger.info(f"ℹ️  Consensus OFF — using Strength only: {direction}")
 
-
     S = max(0.0, min(100.0, abs(gap) / 3.5 * 100.0))
     rsi = max(0.0, min(100.0, rsi_val))
     if direction == "BUY":
         R = max(0.0, min(100.0, (50.0 - rsi) * 2.0))
     else:
         R = max(0.0, min(100.0, (rsi - 50.0) * 2.0))
-
 
     adx_normalized = min(adx_val * ADX_SCALE_FACTOR, 100.0)
     if ADX_FLOOR_ENABLED and adx_normalized < ADX_MIN_SCORE:
@@ -361,12 +450,10 @@ def calc_weighted_score(pair: str, gap: float, rsi_val: float, adx_val: float,
         A = adx_normalized
     A = max(0.0, min(100.0, A))
 
-
     X = max(0.0, min(100.0, (xgb_prob or 0.0) * 100.0))
     if X == 0.0:
         X = max(0.0, min(100.0, S * 0.3 + R * 0.3))
     M = max(0.0, min(100.0, mc_pct_up if mc_pct_up is not None else 50.0))
-
 
     FINAL = S*W_S + R*W_R + A*W_A + X*W_X + M*W_M
     return direction, {
@@ -375,46 +462,41 @@ def calc_weighted_score(pair: str, gap: float, rsi_val: float, adx_val: float,
         "PASS": FINAL >= MIN_FINAL_SCORE, "THRESHOLD": round(MIN_FINAL_SCORE,1),
     }
 
-
 # ─── MAIN TRADING FLOW ───────────────────────────────────────────────────────
 def main():
     global model_wrapper, strat_engine
-    logger.info(f"\n🤖 RUN v6.8.3 {PROFILE_LABEL} — {ACCOUNT_NAME} | RSI-FIXED | S=0.40 X=0.20 | "
+    logger.info(f"\n🤖 RUN v6.8.3.3 {PROFILE_LABEL} — {ACCOUNT_NAME} | TREND FILTER + SMART TP | "
                 f"{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')} | "
-                f"TEST={args.test_trade} | MAX_OPEN={MAX_OPEN} | MIN_GAP={MIN_STRENGTH_GAP}")
+                f"MAX_OPEN={MAX_OPEN} | MIN_GAP={MIN_STRENGTH_GAP}")
     logger.info(f"🔑 OANDA Account ID: {OANDA_ACCOUNT_ID}")
 
-
     if forex_market_closed():
-        logger.info("Market closed — skipping")
-        send_telegram_message(f"⏸️ FX BOT {PROFILE_LABEL}: Market closed")
+        # logger.info("Market closed — skipping")
+        # send_telegram_message(f"⏸️ FX BOT {PROFILE_LABEL}: Market closed")
         return
-
 
     model_wrapper, strat_engine = ensure_model(
         MODEL_PATH, FEAT_CFG, model_wrapper, strat_engine,
         fetcher, feat_engine, ALL_PAIRS, YAHOO_TO_OANDA, cfg_bot,
     )
 
-
     # Step 1 — Currency Strength
     logger.info("[STEP 1] Currency Strength...")
     strength_scores = build_strength_matrix()
     logger.info(format_strength_ranking(strength_scores))
 
-
     if USE_TOP_PAIRS_ONLY:
         selected_pairs, _ = build_top_pairs(strength_scores, ALL_PAIRS,
-                                             top_n=TOP_PAIRS_COUNT, min_gap=TOP_PAIRS_MIN_GAP)
+                                            top_n=TOP_PAIRS_COUNT, min_gap=TOP_PAIRS_MIN_GAP)
         selected_pairs = selected_pairs or ALL_PAIRS[:]
         logger.info(f"🎯 AUTO-RANK: Top {len(selected_pairs)} pairs selected")
     else:
         selected_pairs = ALL_PAIRS[:]
         logger.info(f"📋 SCAN ALL: {len(selected_pairs)} pairs")
 
-
     # Step 2 — Fetch Data
     pair_data = {}
+    weekly_ema_cache = {}
     for pair in selected_pairs:
         oanda = YAHOO_TO_OANDA.get(pair)
         if not oanda:
@@ -435,13 +517,13 @@ def main():
                 logger.info(f"⚠️ ADX {pair} = {pair_data[pair]['adx']:.1f} — possibly flat market")
             logger.info(f"📊 {pair}: {len(df)} bars | ATR={pair_data[pair]['atr']:.6f} | "
                         f"RSI={pair_data[pair]['rsi']:.1f} | ADX={pair_data[pair]['adx']:.1f}")
+            weekly_ema_cache[oanda] = fetch_weekly_ema100(oanda, api)
         except Exception as e:
             logger.error(f"❌ Fetch failed {pair}: {e}")
     if not pair_data:
         logger.error("No pairs have usable data. Aborting.")
         send_telegram_message(f"❌ FX BOT {PROFILE_LABEL}: No usable data")
         return
-
 
     # Step 3 — Monte Carlo
     if cfg_bot("SKIP_MC", False):
@@ -469,29 +551,26 @@ def main():
     if args.mc_only:
         return
 
-
     # Step 4 — Multi-Timeframe Confluence
     tf_confluence = {}
-    if MULTI_TF_CONFLUENCE and not args.test_trade:
+    if MULTI_TF_CONFLUENCE:
         logger.info("[STEP 4] Multi-Timeframe Confluence...")
         TF_GRAN = {"H4": "H4", "1H": "H1", "15m": "M15"}
         for pair in selected_pairs:
             if pair not in pair_data: continue
             dirs = []
             for gran in TF_GRAN.values():
-                try:
+                with contextlib.suppress(Exception):
                     raw_tf = fetch_candles(pair_data[pair]["oanda"], gran)
                     if len(raw_tf) < 5: continue
                     sig = strat_engine.generate_signal(pair, pair_data[pair]["oanda"],
-                                                       feat_engine.build(raw_tf), None,
-                                                       strength_scores, raw_tf.iloc[-1]["Close"], 1.0)
+                                                        feat_engine.build(raw_tf), None,
+                                                        strength_scores, raw_tf.iloc[-1]["Close"], 1.0)
                     if sig: dirs.append(sig.action)
-                except Exception: pass
             buy_c, sell_c = dirs.count("BUY"), dirs.count("SELL")
             passes = buy_c >= CONFLUENCE_REQUIRED_TFS or sell_c >= CONFLUENCE_REQUIRED_TFS
             tf_confluence[pair] = {"buy": buy_c, "sell": sell_c, "passes": passes}
             logger.info(f"🔗 CONFLUENCE {pair}: BUY={buy_c} SELL={sell_c} → {'✅ PASS' if passes else '❌ BLOCK'}")
-
 
     # Step 5 — Dynamic Exit Manager
     logger.info("[STEP 5] Dynamic Exit Manager...")
@@ -509,37 +588,32 @@ def main():
     dyn_mgr.update_all(pair_data, close_wrap)
     logging.getLogger("oandapyV20").setLevel(oanda_level)
 
-
     # Step 6 — Scan Open Positions
     open_pos_by_oanda, open_pos_count = {}, 0
-    if not args.test_trade:
-        logger.info("🔍 Checking open positions...")
-        for pair in selected_pairs:
-            oanda_inst = YAHOO_TO_OANDA.get(pair)
-            if not oanda_inst: continue
-            pos = get_open_position(api, OANDA_ACCOUNT_ID, oanda_inst)
-            is_open = pos is not None
-            open_pos_by_oanda[oanda_inst] = is_open
-            if is_open:
-                open_pos_count += 1
-                logger.info(f"📌 OPEN POSITION: {pair} → {oanda_inst} | {pos['side'].upper()} | units={pos['units']}")
-        open_list = [o.replace("_","/") for o,s in open_pos_by_oanda.items() if s]
-        ready_list = [p.replace("=X","") for p in selected_pairs if not open_pos_by_oanda.get(YAHOO_TO_OANDA.get(p), False)]
-        logger.info(f"📊 Open positions: {open_pos_count}/{MAX_OPEN} | OPEN: {', '.join(open_list) or 'None'} | READY: {', '.join(ready_list) or 'None'}")
+    logger.info("🔍 Checking open positions...")
+    for pair in selected_pairs:
+        oanda_inst = YAHOO_TO_OANDA.get(pair)
+        if not oanda_inst: continue
+        pos = get_open_position(api, OANDA_ACCOUNT_ID, oanda_inst)
+        is_open = pos is not None
+        open_pos_by_oanda[oanda_inst] = is_open
+        if is_open:
+            open_pos_count += 1
+            logger.info(f"📌 OPEN POSITION: {pair} → {oanda_inst} | {pos['side'].upper()} | units={pos['units']}")
+    open_list = [o.replace("_","/") for o,s in open_pos_by_oanda.items() if s]
+    ready_list = [p.replace("=X","") for p in selected_pairs if not open_pos_by_oanda.get(YAHOO_TO_OANDA.get(p), False)]
+    logger.info(f"📊 Open positions: {open_pos_count}/{MAX_OPEN} | OPEN: {', '.join(open_list) or 'None'} | READY: {', '.join(ready_list) or 'None'}")
 
-
-    # Step 7 — Score, Rank & Execute
-    logger.info("[STEP 7] Scoring & Signals...")
+    # Step 7 — Score, Trend Filter, Smart TP & Execute
+    logger.info("[STEP 7] Scoring + TREND FILTER + SMART TP...")
     min_sl_pips_jpy, min_sl_pips_std = cfg_bot("MIN_SL_PIPS_JPY", 35), cfg_bot("MIN_SL_PIPS", 25)
     trade_lines, pip_cache, pair_parts = {}, {p: pip_size(p) for p in selected_pairs}, {p: (p[:3], p[3:].replace("=X","")) for p in selected_pairs}
     all_candidates = []
-
 
     for pair in selected_pairs:
         if pair not in pair_data: continue
         oanda = pair_data[pair]["oanda"]
         atr_val, rsi_val, adx_val = pair_data[pair]["atr"], pair_data[pair]["rsi"], pair_data[pair]["adx"]
-
 
         # Cooldown
         if pair in last_closed:
@@ -551,12 +625,10 @@ def main():
             else:
                 del last_closed[pair]
 
-
-        # Already Open
-        if not args.test_trade and open_pos_by_oanda.get(oanda, False):
-            logger.info(f"⏭️ {pair}: position already open — SKIP")
+        # Already Open → SKIP DUPLICATE
+        if open_pos_by_oanda.get(oanda, False):
+            logger.info(f"⏭️ {pair}: position already open — SKIP DUPLICATE")
             continue
-
 
         # Current Price
         try:
@@ -570,7 +642,6 @@ def main():
             current = float(pair_data[pair]["df"].iloc[-1]["Close"])
             spread_pips = 1.0
 
-
         # Strength Gap
         base, quote = pair_parts[pair]
         gap = strength_scores.get(base, 0) - strength_scores.get(quote, 0)
@@ -579,12 +650,10 @@ def main():
             continue
         logger.info(f"📈 {pair}: gap={abs(gap):.2f} ≥ {MIN_STRENGTH_GAP} — QUALIFIED")
 
-
         # Confluence Filter
-        if MULTI_TF_CONFLUENCE and not args.test_trade and not tf_confluence.get(pair, {}).get("passes", True):
+        if MULTI_TF_CONFLUENCE and not tf_confluence.get(pair, {}).get("passes", True):
             logger.info(f"🚫 {pair}: confluence fail — SKIP")
             continue
-
 
         # Get Model & MC
         sig = strat_engine.generate_signal(pair, oanda, pair_data[pair]["df"], mc_cache.get(pair),
@@ -592,14 +661,12 @@ def main():
         prob_raw = getattr(sig,"probability",None) or getattr(sig,"model_prob",None) or getattr(sig,"prob",None) or 0.0
         mc_pct_up = mc_cache.get(pair, {}).get("p_up", 50.0)
 
-
         # Score
-        direction, w = calc_weighted_score(pair, gap, rsi_val, adx_val, prob_raw, mc_pct_up, args.test_trade)
+        direction, w = calc_weighted_score(pair, gap, rsi_val, adx_val, prob_raw, mc_pct_up)
         if not (direction and w and w["PASS"]):
             if w and not w["PASS"]:
                 logger.info(f"➖ REASON: FINAL {w['FINAL']:.1f} < {w['THRESHOLD']}")
             continue
-
 
         logger.info(
             f"⚖️  SCORE {pair} {direction} | "
@@ -610,10 +677,19 @@ def main():
             f"M={w['M']:5.1f}×{W_M:.2f}={w['M']*W_M:4.1f}  | FINAL={w['FINAL']:5.1f}"
         )
 
+        # ─── ✅ TREND FILTER + SMART TP CALCULATION ───────────────────────
+        weekly_ema100 = weekly_ema_cache.get(oanda) and cfg_bot("WEEK_EMA100_FILTER_ENABLED", False)
+        allow_entry, smart_tp_pips, tp_info = evaluate_trend_and_tp(
+            PROFILE_NAME, direction, mc_pct_up,
+            current, pip_cache[pair],
+            pair_data[pair]["df"], weekly_ema100,
+            timeframe=args.timeframe
+        )
+        if not allow_entry:
+            continue  # TREND FILTER REJECTED
 
-        # SL & TP
+        # SL & TP — use SMART TP instead of fixed ATR multiplier
         dec = 3 if "JPY" in pair else 5
-        tp_pips = round(atr_val / pip_cache[pair] * cfg_bot("ATR_TP_MULT", 3.0), 1)
         if cfg_bot("SL_USE_ZONE_HIERARCHY", True):
             sl_price, _ = compute_sl_zone(api, oanda, direction, current, pip_cache[pair], cfg_bot)
             sl_price = round(sl_price, dec)
@@ -622,24 +698,28 @@ def main():
                           round(atr_val / pip_cache[pair] * cfg_bot("ATR_SL_MULT", 2.0), 1))
             sl_price = round(current - sl_pips * pip_cache[pair], dec) if direction == "BUY" else \
                        round(current + sl_pips * pip_cache[pair], dec)
-        tp_price = round(current + tp_pips * pip_cache[pair], dec) if direction == "BUY" else \
-                   round(current - tp_pips * pip_cache[pair], dec)
+        tp_price = round(current + smart_tp_pips * pip_cache[pair], dec) if direction == "BUY" else \
+                   round(current - smart_tp_pips * pip_cache[pair], dec)
 
-
-        all_candidates.append((-w["FINAL"], w["FINAL"], pair, oanda, direction, current, sl_price, tp_price, dec))
-
+        all_candidates.append((-w["FINAL"], w["FINAL"], pair, oanda, direction, current, sl_price, tp_price, dec, smart_tp_pips))
 
     # Execute Top Candidates
     logger.info(f"🏆 RANKED: {len(all_candidates)} passed → opening top {min(MAX_OPEN, len(all_candidates))}")
-    for i, (_, score, pair, _, dir, _, _, _, _) in enumerate(all_candidates, 1):
-        logger.info(f"   #{i} — {pair} {dir} SCORE={score:.1f}")
+    for i, (_, score, pair, _, dir, _, _, _, _, tp_pips) in enumerate(all_candidates, 1):
+        logger.info(f"   #{i} — {pair} {dir} SCORE={score:.1f} SMART-TP={tp_pips:.1f}p")
 
+    # ✅ DUPLICATE GUARD: Track instruments executed THIS run
+    executed_in_this_run = set()
 
-    for _, FINAL, pair, oanda, direction, current, sl_price, tp_price, dec in all_candidates:
-        if args.test_trade:
-            logger.info(f"🧪 TEST — {direction} {pair} @ {current:.{dec}f} | SL={sl_price} | TP={tp_price}")
-            trade_lines[pair] = f"🧪 {pair} {direction} Score={FINAL:.1f} SL={sl_price} TP={tp_price}"
+    for _, FINAL, pair, oanda, direction, current, sl_price, tp_price, dec, _ in all_candidates:
+        # ✅ Double-guard: already open OR already selected in THIS run
+        if open_pos_by_oanda.get(oanda, False):
+            logger.info(f"⏭️ {pair} ({oanda}): position already open — SKIP DUPLICATE")
             continue
+        if oanda in executed_in_this_run:
+            logger.info(f"⏭️ {pair} ({oanda}): already selected in THIS run — SKIP DUPLICATE")
+            continue
+
         if open_pos_count >= MAX_OPEN:
             logger.info(f"⏭️ {pair}: MAX_OPEN reached — SKIP")
             continue
@@ -649,21 +729,18 @@ def main():
             logger.info(f"✅ EXECUTED {pair} {direction} | SL={sl_price} | TP={tp_price} | TradeID={tid}")
             trade_lines[pair] = f"✅ {pair} {direction} Score={FINAL:.1f} | SL={sl_price} TP={tp_price}"
             open_pos_count += 1
+            executed_in_this_run.add(oanda)
         except Exception as e:
             logger.error(f"❌ ORDER FAILED {pair}: {e}")
 
-
     # Summary
     if trade_lines:
-        summary = f"🤖 v6.8.3 {PROFILE_LABEL} RUN COMPLETE — {ACCOUNT_NAME}\n\n" + "\n".join(trade_lines.values())
+        summary = f"🤖 v6.8.3.3 {PROFILE_LABEL} RUN COMPLETE — {ACCOUNT_NAME}\n\n" + "\n".join(trade_lines.values())
         send_telegram_message(summary)
     else:
-        logger.info("📋 No signals passed thresholds")
-        if args.test_trade:
-            send_telegram_message(f"🤖 v6.8.3 {PROFILE_LABEL} TEST — No signals passed threshold")
+        logger.info("📋 No signals passed all filters")
 
-
-    logger.info(f"✅ v6.8.3 {PROFILE_LABEL} Run Complete — {ACCOUNT_NAME} — RSI-FIXED Applied")
+    logger.info(f"✅ v6.8.3.3 {PROFILE_LABEL} Run Complete — {ACCOUNT_NAME} — TREND+TP ACTIVE")
 
 
 if __name__ == "__main__":

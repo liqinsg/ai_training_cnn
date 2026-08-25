@@ -62,6 +62,9 @@ MC_BAND_PCT = 90
 MC_SIGNIFICANT_PCT = 60
 MC_MOMENTUM_BAND = 0.001
 
+TREND_FILTER_ENABLED = False   # Set False → skip EMA10 slope + EMA100 checks entirely
+WEEK_EMA100_FILTER_ENABLED = True
+
 if __name__ == "__main__":
     from utils.oanda_execution import check_oanda_account
     try:

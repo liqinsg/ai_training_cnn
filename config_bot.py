@@ -183,6 +183,8 @@ SL_H8_LOOKBACK_BARS = 4  # ✅ H8 fallback lookback
 SL_DAILY_LOOKBACK_BARS = 2  # ✅ Daily fallback lookback
 SL_FALLBACK_FIXED_PIPS = 35  # ✅ Final fallback fixed pips
 
+TREND_FILTER_ENABLED = True   # Set False → skip EMA10 slope + EMA100 checks entirely
+
 # ─────────────────────────────────────────────
 # ✅ v6.8 CONFIG VALIDATION — Runs on Import
 # ─────────────────────────────────────────────
