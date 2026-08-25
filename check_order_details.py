@@ -1,32 +1,49 @@
-# check_order_details.py — FIXED: Shows SL/TP Order IDs
-import sys
-sys.path.insert(0, "/home/qili/ai_training_cnn/utils")
+#!/usr/bin/env python3
+"""
+    check_order_details.py — Open Positions + SL/TP + P&L Reporter
+    Usage:
+        python check_order_details.py                    # → uses default OANDA_ACCOUNT_ID
+        python check_order_details.py ACCT_ID1           # → single account
+        python check_order_details.py ID1,ID2,ID3        # → comma-separated list
+        python check_order_details.py ID1 ID2 ID3        # → space-separated list
+"""
 
+import sys
+import argparse
 from datetime import datetime, timezone
 
-from utils.oanda_execution import api, OANDA_ACCOUNT_ID
+# ─── PATH ADJUSTMENT ───
+# sys.path.insert(0, "/home/nie/projects/ai_training_cnn/utils")
+
+from utils.oanda_execution import api, OANDA_ACCOUNT_ID as DEFAULT_ACCOUNT
 from oandapyV20.endpoints.positions import OpenPositions
 from oandapyV20.endpoints.trades import TradeDetails
-from oandapyV20.endpoints.orders import OrderList  # ✅ Added
+from oandapyV20.endpoints.orders import OrderList
+from telegram_message import send_telegram_message
 
-def get_position_win_loss_message() -> str:
-    resp = api.request(OpenPositions(OANDA_ACCOUNT_ID))
 
-    # ✅ Fetch ALL open orders ONCE (faster than per-trade queries)
-    all_orders_resp = api.request(OrderList(OANDA_ACCOUNT_ID, params={"state": "PENDING"}))
+def get_position_win_loss_message(account_id: str) -> str:
+    """Generate detailed position report for ONE account"""
+    resp = api.request(OpenPositions(account_id))
+
+    # Fetch ALL pending orders once
+    all_orders_resp = api.request(OrderList(account_id, params={"state": "PENDING"}))
     all_orders = all_orders_resp.get("orders", [])
 
-    # ✅ Build lookup: tradeID → {sl_order, tp_order}
+    # Build lookup: tradeID → {sl_price, sl_id, tp_price, tp_id}
     trade_orders = {}
     for ord in all_orders:
         tid = ord.get("tradeID")
         if not tid:
             continue
-        otype = ord.get("type")  # STOP_LOSS / TAKE_PROFIT / TRAILING_STOP_LOSS
+        otype = ord.get("type")
         price = ord.get("price")
         oid = ord.get("id")
         if tid not in trade_orders:
-            trade_orders[tid] = {"sl_price": "NONE", "sl_id": "NONE", "tp_price": "NONE", "tp_id": "NONE"}
+            trade_orders[tid] = {
+                "sl_price": "NONE", "sl_id": "NONE",
+                "tp_price": "NONE", "tp_id": "NONE",
+            }
         if otype == "STOP_LOSS":
             trade_orders[tid]["sl_price"] = price
             trade_orders[tid]["sl_id"] = oid
@@ -38,7 +55,7 @@ def get_position_win_loss_message() -> str:
 
     lines = []
     lines.append("=" * 120)
-    lines.append(f"📊 OANDA OPEN POSITIONS — DETAILED WIN/LOSS (UNREALIZED P&L) for OANDA A/C {OANDA_ACCOUNT_ID}")
+    lines.append(f"📊 OANDA OPEN POSITIONS — Account: {account_id}")
     lines.append(f"🕒 {now}")
     lines.append("=" * 120)
 
@@ -54,23 +71,22 @@ def get_position_win_loss_message() -> str:
                 continue
 
             positions_count += 1
-
             unrealized_pl = float(pos[side].get("unrealizedPL", 0.0))
             grand_unrealized += unrealized_pl
 
             trade_ids = pos[side].get("tradeIDs", [])
             if not trade_ids:
-                lines.append(f"\n➡️ {instr} {side.upper()} has no tradeIDs!")
+                lines.append(f"\n➡️ {instr} {side.upper()} — No tradeIDs found!")
                 continue
 
             tid = trade_ids[0]
-            trade = api.request(TradeDetails(OANDA_ACCOUNT_ID, tid))["trade"]
+            trade = api.request(TradeDetails(account_id, tid))["trade"]
 
             entry_price = trade.get("price", "NONE")
             sl = trade.get("stopLossOrder", {}).get("price", "NONE")
             tp = trade.get("takeProfitOrder", {}).get("price", "NONE")
 
-            # ✅ Use lookup from OrderList
+            # Override with pending order details if available
             orders_info = trade_orders.get(tid, {})
             sl_id = orders_info.get("sl_id", "NONE")
             tp_id = orders_info.get("tp_id", "NONE")
@@ -80,7 +96,7 @@ def get_position_win_loss_message() -> str:
             side_label = "LONG" if side == "long" else "SHORT"
 
             lines.append(f"\n➡️ {instr} {side_label}")
-            lines.append(f"   Units (abs): {abs(int(units))} | signed: {units}")
+            lines.append(f"   Units (abs): {abs(int(units))}")
             lines.append(f"   TradeID: {tid}")
             lines.append(f"   Entry: {entry_price}")
             lines.append(f"   SL: {sl}  (orderID: {sl_id})")
@@ -88,15 +104,43 @@ def get_position_win_loss_message() -> str:
             lines.append(f"   Unrealized P&L: {unrealized_pl:.2f}")
 
     lines.append("\n" + "=" * 120)
-    lines.append(f"Summary: positions counted = {positions_count}")
-    lines.append(f"Grand TOTAL unrealized P&L: {grand_unrealized:.2f}")
+    lines.append(f"Summary: Positions = {positions_count}")
+    lines.append(f"Grand TOTAL Unrealized P&L: {grand_unrealized:.2f}")
     lines.append("=" * 120)
 
     return "\n".join(lines)
 
+
+def parse_account_ids(args_list):
+    """Accept comma-separated OR space-separated IDs"""
+    ids = []
+    for arg in args_list:
+        ids.extend([aid.strip() for aid in arg.split(",") if aid.strip()])
+    return ids if ids else [DEFAULT_ACCOUNT]
+
+
 if __name__ == "__main__":
-    from telegram_message import send_telegram_message
-    msg = get_position_win_loss_message()
-    print(msg)
-    send_telegram_message(msg)
-    
+    parser = argparse.ArgumentParser(
+        description="Check OANDA open positions + SL/TP + P&L",
+        epilog="Examples:\n  python check_order_details.py\n  python check_order_details.py ACCT_ID\n  python check_order_details.py ID1,ID2\n  python check_order_details.py ID1 ID2",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "accounts",
+        nargs="*",
+        help="One or more OANDA Account IDs (comma or space separated)",
+    )
+    args = parser.parse_args()
+
+    account_ids = parse_account_ids(args.accounts)
+    full_report = []
+
+    for acct in account_ids:
+        report = get_position_win_loss_message(acct)
+        full_report.append(report)
+        print("\n" + report)
+        print("\n" + "━" * 120 + "\n")
+
+    # Send combined report via Telegram
+    combined = "\n\n" + "📋 " + "=" * 30 + " MULTI-ACCOUNT REPORT " + "=" * 30 + "\n\n".join(full_report)
+    send_telegram_message(combined.strip())
