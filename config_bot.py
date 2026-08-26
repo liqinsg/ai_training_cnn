@@ -183,8 +183,6 @@ SL_H8_LOOKBACK_BARS = 4  # ✅ H8 fallback lookback
 SL_DAILY_LOOKBACK_BARS = 2  # ✅ Daily fallback lookback
 SL_FALLBACK_FIXED_PIPS = 35  # ✅ Final fallback fixed pips
 
-TREND_FILTER_ENABLED = True   # Set False → skip EMA10 slope + EMA100 checks entirely
-
 # ─────────────────────────────────────────────
 # ✅ v6.8 CONFIG VALIDATION — Runs on Import
 # ─────────────────────────────────────────────
@@ -193,6 +191,17 @@ import sys
 CONFIG_VALIDATION_ENABLED = True  # Set False to skip checks
 CONFIG_TOLERANCE = 0.005  # Allow ±0.5% rounding error
 
+# ─── Trend & TP Shared Defaults ───
+BASE_TP_PIPS = 30
+TP_MULT = 1.0
+TP_STRONG_MULT = 2.0   # Profile2 default: strong MC → ×2 TP
+TREND_FILTER_ENABLED = False   # ✅ PROFILE2: NO EMA CROSS FILTER
+MC_STRONG_THRESHOLD = 0.75
+WEEKLY_EMA_PERIOD = 100
+EMA100_BUFFER_PIPS = 30
+EMA_PERIOD = 10
+SLOPE_LOOKBACK = 5
+MIN_SLOPE = 0.001
 
 def validate_config():
     if not CONFIG_VALIDATION_ENABLED:

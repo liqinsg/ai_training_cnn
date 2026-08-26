@@ -18,6 +18,73 @@ from oandapyV20.endpoints.trades import OpenTrades, TradeCRCDO
 logger = logging.getLogger(__name__)
 # logging.getLogger("oandapyV20").setLevel(logging.WARNING)
 
+# ==================================================
+# 🛡️ STOP-LOSS RULES — LOCKED — v6.x+ IMMUTABLE
+# RULES:
+#   SELL → SL = max(4 closed H4 highs) + 20 pips
+#   BUY  → SL = min(4 closed H4 lows) - 20 pips
+#   MAX  → >200 pips → ABORT TRADE
+# ==================================================
+SL_OFFSET_PIPS        = 20    # Buffer from extreme levels — LOCKED
+SL_MAX_ALLOWED_PIPS  = 200   # Max allowed distance — adjust later if needed
+REQUIRED_H4_CANDLES  = 4     # Only fully closed H4 — LOCKED
+
+
+def calculate_stop_loss(side: str, entry_price: float, h4_candles, pip_size: float) -> tuple[float, float, bool]:
+    """
+    Calculate Stop-Loss per H4 Zone Hierarchy + Max SL Cap
+    
+    ⚠️  CRITICAL: h4_candles must contain ONLY fully closed H4 candles
+                 — ALWAYS exclude the current forming candle before calling
+    
+    Args:
+        side: 'BUY' or 'SELL'
+        entry_price: estimated entry price
+        h4_candles: list of dicts — [{"high":x, "low":y}, ...]
+        pip_size: 0.0001 (non-JPY) / 0.01 (JPY)
+    
+    Returns:
+        (sl_price: float, sl_pips: float, skip_trade: bool)
+    """
+
+    # ─── Validate Candle Count ───
+    if len(h4_candles) < REQUIRED_H4_CANDLES:
+        raise ValueError(
+            f"⚠️ H4 candle count insufficient: need ≥{REQUIRED_H4_CANDLES}, got {len(h4_candles)} — "
+            "Did you forget to remove the forming candle? Use h4_data[:-1]"
+        )
+
+    # ─── Calculate SL per H4 Zone Hierarchy ───
+    if side.upper() == "SELL":
+        ref_level = max(c["high"] for c in h4_candles)
+        sl_price  = ref_level + (SL_OFFSET_PIPS * pip_size)
+        sl_pips   = (sl_price - entry_price) / pip_size  # positive value
+
+    elif side.upper() == "BUY":
+        ref_level = min(c["low"] for c in h4_candles)
+        sl_price  = ref_level - (SL_OFFSET_PIPS * pip_size)
+        sl_pips   = (entry_price - sl_price) / pip_size  # positive value
+
+    else:
+        raise ValueError(f"Invalid order side: '{side}' — use BUY or SELL")
+
+    # ─── Enforce Max SL Cap ───
+    if sl_pips > SL_MAX_ALLOWED_PIPS:
+        skip_trade = True
+        logging.warning(
+            f"🚫 SL TOO LARGE — TRADE ABORTED | Side: {side} | Ref: {ref_level:.5f} | "
+            f"Entry: {entry_price:.5f} | SL: {sl_price:.5f} | "
+            f"Distance: {sl_pips:.1f} pips | MAX ALLOWED: {SL_MAX_ALLOWED_PIPS}"
+        )
+    else:
+        skip_trade = False
+        logging.info(
+            f"✅ SL ACCEPTED | Side: {side} | Ref: {ref_level:.5f} | "
+            f"Entry: {entry_price:.5f} | SL: {sl_price:.5f} | "
+            f"Distance: {sl_pips:.1f} pips"
+        )
+
+    return sl_price, sl_pips, skip_trade
 
 # ✅ KEEP THIS — proper candle fetcher
 def fetch_candles(api, oanda_instrument: str, gran: str, count: int = 100):
@@ -863,6 +930,78 @@ def build_trade_telegram(trade_lines: list, mc_summary: list = None) -> str:
             lines.append(f"   {s}")
     return "\n".join(lines)
 
+def compute_sl_zone(api, oanda_instrument, direction, entry_price, pip_size, cfg_fn):
+    """Hierarchical SL: H4 → H8 → Daily → ATR → Fixed"""
+    BUFFER_PIPS   = cfg_fn("SL_BUFFER_PIPS", 25)
+    MIN_DIST_PIPS = cfg_fn("SL_MIN_DISTANCE_PIPS", 20)
+    ATR_MULT      = cfg_fn("ATR_SL_MULT", 2.0)
+    FIXED_PIPS    = cfg_fn("SL_FALLBACK_FIXED_PIPS", 35)
+
+    TF_LIST = [
+        ("H4",  "H4", cfg_fn("SL_H4_LOOKBACK_BARS", 6)),
+        ("H8",  "H8", cfg_fn("SL_H8_LOOKBACK_BARS", 4)),
+        ("DAILY","D", cfg_fn("SL_DAILY_LOOKBACK_BARS", 2)),
+    ]
+
+    def _fetch_zone(gran, count, dir):
+        try:
+            resp = api.request(InstrumentsCandles(
+                instrument=oanda_instrument,
+                params={"granularity": gran, "count": count, "price": "M"}
+            ))
+            candles = resp.get("candles", [])
+            if len(candles) < count * 0.5:
+                return None, 0
+            highs = [float(c["mid"]["h"]) for c in candles]
+            lows  = [float(c["mid"]["l"]) for c in candles]
+            closes = [float(c["mid"]["c"]) for c in candles]
+            trs = []
+            for i in range(1, len(candles)):
+                tr = max(highs[i]-lows[i], abs(highs[i]-closes[i-1]), abs(lows[i]-closes[i-1]))
+                trs.append(tr)
+            atr = np.mean(trs[-14:]) if len(trs)>=14 else np.mean(trs) if trs else 0
+            if dir == "BUY":
+                return min(lows), atr
+            else:
+                return max(highs), atr
+        except Exception as e:
+            logger.debug(f"⚠️ {gran} fetch failed: {e}")
+            return None, 0
+
+    buffer_amt = BUFFER_PIPS * pip_size
+
+    for name, gran, lookback in TF_LIST:
+        zone, atr = _fetch_zone(gran, lookback, direction)
+        if zone is None:
+            logger.info(f"⏭️ {oanda_instrument} {direction} {name}: no data → next")
+            continue
+        if direction == "BUY":
+            sl_candidate = zone - buffer_amt
+        else:
+            sl_candidate = zone + buffer_amt
+        dist = abs(entry_price - sl_candidate) / pip_size
+        if dist >= MIN_DIST_PIPS:
+            logger.info(f"📏 SL {name}: Zone={zone:.5f} ±{BUFFER_PIPS}p → {sl_candidate:.5f} | Dist={dist:.1f}p")
+            return sl_candidate, f"{name} Zone {dist:.0f}p"
+        else:
+            logger.info(f"⚠️ {name} too close ({dist:.1f}p < {MIN_DIST_PIPS}p) → stepping up")
+
+    _, atr = _fetch_zone("H4", 14, direction)
+    if atr and atr > 0:
+        if direction == "BUY":
+            sl_atr = entry_price - atr * ATR_MULT
+        else:
+            sl_atr = entry_price + atr * ATR_MULT
+        dist = abs(entry_price - sl_atr) / pip_size
+        logger.info(f"🔁 SL ATR-{ATR_MULT}x: {sl_atr:.5f} | Dist={dist:.1f}p")
+        return sl_atr, f"ATR-{ATR_MULT}x {dist:.0f}p"
+
+    if direction == "BUY":
+        sl_fix = entry_price - FIXED_PIPS * pip_size
+    else:
+        sl_fix = entry_price + FIXED_PIPS * pip_size
+    logger.info(f"🚨 SL FIXED-{FIXED_PIPS}p: {sl_fix:.5f}")
+    return sl_fix, f"FIXED-{FIXED_PIPS}p"
 
 # ============================================================================
 # 🎯 DYNAMIC POSITION MANAGER — Breakeven + Trailing Stop + ✅ DYNAMIC TP

@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
 """
-    fx_trade_bot_v6.8.3.3.py — v6.8.3.3
+    fx_trade_bot_v6.8.4.py — v6.8.4
     Multi-Profile: Profile2/Account002 · Profile3/Account003
     ✅ RSI-FIXED | Consensus | ADX Boost | Monte Carlo | SL Zone Hierarchy
-    ✅ TREND FILTER: H1 EMA10 Slope + Weekly EMA100 Counter-Trend Block
-    ✅ SMART TP: Profile2=×1.0/×2.0 @75%MC  |  Profile3=Fixed ×1.2
-    ✅ EMA100 Buffer: 30p — TP never lands inside zone
+    ✅ TREND FILTER: Dynamic EMA Slope + Weekly EMA100 Counter-Trend Block
+    ✅ SMART TP: Fully unified config — TP_MULT + TP_STRONG_MULT
+    ✅ EMA100 Buffer: Configurable — TP never lands inside zone
     ✅ Account IDs from profile config only
     ✅ DUPLICATE-ORDER PROTECTION — Instrument + Run guards
-    ✅ REMOVED: --test-trade / --no-test-trade — ALL runs execute live
-
+    ✅ MARKET CLOSED = Silent Exit — No Telegram message
+    ✅ ALL runs execute live — No test-trade flag
 
     Usage:
-        python fx_trade_bot_v6.8.3.3.py --profile2   # default
-        python fx_trade_bot_v6.8.3.3.py --profile3
-        python fx_trade_bot_v6.8.3.3.py --profile3 --timeframe H4
+        python fx_trade_bot_v6.8.4.py --profile2   # default
+        python fx_trade_bot_v6.8.4.py --profile3
+        python fx_trade_bot_v6.8.4.py --profile3 --timeframe H4
 """
 import contextlib
 import sys
@@ -45,35 +45,11 @@ from fx_trade_bot_utils import (
 )
 from fx_trade_bot_mc import MCGenerator, MCConfig
 from fx_trade_bot_ml import ensure_model
-# from portfolio_balance import balance_from_config
-# from sl_zone_hierarchy import compute_sl_zone
 from config_oanda import api
 
 # ─── BASE SETUP ──────────────────────────────────────────────────────────────
 BASE_DIR = Path(__file__).resolve().parent
 sys.path.extend([str(BASE_DIR), str(BASE_DIR / "utils")])
-
-# ─── TREND FILTER + SMART TP CONFIGURATION ──────────────────────────────────
-_TREND_TP_CONFIG = {
-    "base_tp_pips":           30,
-    "mc_strong_threshold":   0.75,   # ≥75% = strong momentum → Profile2 ×2 TP
-    "weekly_ema_period":     100,
-    "ema100_buffer_pips":     30,    # keep TP ≥30p away from Weekly EMA100
-    # "trend_filter_enabled":  True,
-    "profile2": {
-        "tp_normal_mult":     1.0,
-        "tp_strong_mult":     2.0,
-        "ema_period":         10,
-        "slope_lookback":      5,
-        "min_slope":       0.001,
-    },
-    "profile3": {
-        "tp_mult":            1.2,
-        "ema_period":         10,
-        "slope_lookback":      5,
-        "min_slope":       0.001,
-    },
-}
 
 # ─── TREND HELPERS ──────────────────────────────────────────────────────────
 def calculate_ema(series, period):
@@ -158,26 +134,21 @@ def fetch_weekly_ema100(oanda_instrument, api):
         return None
 
 def evaluate_trend_and_tp(profile_name, direction, mc_pct_up,
-                           entry_price, pip_value, df_h1, weekly_ema100,
-                           timeframe="H1"):
+                          entry_price, pip_value, df, weekly_ema100,
+                          timeframe="15m"):
     """
     ENTRY FILTERS:
-      A — Trend alignment on specified timeframe
+      A — Trend Alignment on specified timeframe
       B — No counter-trend vs Weekly EMA100
     TP LOGIC:
-      Profile2 → ×1.0 normal / ×2.0 strong (MC ≥75%)
-      Profile3 → fixed ×1.2
-      Buffer 30p away from Weekly EMA100
+      Profile-aware multipliers + Weekly EMA100 buffer
     """
-    cfg = TREND_TP_CONFIG[profile_name]
-
-    base_pips = TREND_TP_CONFIG["base_tp_pips"]
-    mc_momentum = mc_pct_up / 100.0
+    cfg = TREND_TP_CONFIG  # profile-aware config
     ema_cross_filter = cfg_bot("TREND_FILTER_ENABLED", False)
     logger.info(f"🔍 {timeframe} TREND FILTER: ema_cross_filter={ema_cross_filter} | profile={profile_name}")
 
-    # --- Rule A: Trend Alignment on specified timeframe ---
-    ema10 = calculate_ema(df_h1["Close"], cfg["ema_period"])
+    # ─── RULE A: Trend Alignment on SPECIFIED timeframe ──────────────
+    ema10 = calculate_ema(df["Close"], cfg["ema_period"])
     slope, ema_level = calculate_ema_slope(ema10, cfg["slope_lookback"])
     min_slope = cfg["min_slope"]
     current_price = entry_price
@@ -186,53 +157,39 @@ def evaluate_trend_and_tp(profile_name, direction, mc_pct_up,
         if direction == "BUY":
             filter_slope = slope >= min_slope
             if not (current_price > ema_level and filter_slope):
-                reason = f"{timeframe} TREND MISALIGNED — Price below EMA10 or slope={slope:.4f} < {min_slope}"
+                reason = f"{timeframe} TREND MISALIGNED — Price below EMA{cfg['ema_period']} or slope={slope:.4f} < {min_slope}"
                 logger.info(f"⏭️ SKIP BUY: {reason}")
                 return False, 0.0, reason
-        else:
+        else:  # SELL
             filter_slope = slope <= -min_slope
             if not (current_price < ema_level and filter_slope):
-                reason = f"{timeframe} TREND MISALIGNED — Price above EMA10 or slope={slope:.4f} > {-min_slope}"
+                reason = f"{timeframe} TREND MISALIGNED — Price above EMA{cfg['ema_period']} or slope={slope:.4f} > {-min_slope}"
                 logger.info(f"⏭️ SKIP SELL: {reason}")
                 return False, 0.0, reason
 
-    # --- Rule B: No Counter-Trend vs Weekly EMA100 ---
-    if weekly_ema100:
+    # ─── RULE B: Weekly EMA100 Counter-Trend Check ────────────────────
+    # weekly_ema100 = None → filter OFF → skip entirely
+    if weekly_ema100 is not None:
         if direction == "BUY" and current_price < weekly_ema100:
             reason = f"COUNTER-TREND vs WEEKLY EMA100 — Price below {weekly_ema100:.5f}"
             logger.info(f"⏭️ SKIP BUY: {reason}")
             return False, 0.0, reason
+
         if direction == "SELL" and current_price > weekly_ema100:
             reason = f"COUNTER-TREND vs WEEKLY EMA100 — Price above {weekly_ema100:.5f}"
             logger.info(f"⏭️ SKIP SELL: {reason}")
             return False, 0.0, reason
 
-    # --- Calculate TP ---
-    if profile_name == "profile2":
-        if mc_momentum >= TREND_TP_CONFIG["mc_strong_threshold"]:
-            tp_pips = base_pips * cfg["tp_strong_mult"]
-            tp_mode = f"✅ STRONG MOMENTUM ×2 — MC={mc_pct_up:.1f}% → TP={tp_pips:.1f}p"
-        else:
-            tp_pips = base_pips * cfg["tp_normal_mult"]
-            tp_mode = f"✅ NORMAL ×1 — MC={mc_pct_up:.1f}% → TP={tp_pips:.1f}p"
+    # ─── TP CALCULATION ────────────────────────────────────────────────
+    base_pips = cfg["base_tp_pips"]
+    mc_momentum = mc_pct_up / 100.0
+
+    if mc_momentum >= cfg.get("mc_strong_threshold", 0.75):
+        tp_pips = base_pips * cfg["tp_strong_mult"]
     else:
         tp_pips = base_pips * cfg["tp_mult"]
-        tp_mode = f"✅ FIXED ×{cfg['tp_mult']} — TP={tp_pips:.1f}p"
 
-    # --- Rule C: Keep TP away from Weekly EMA100 Buffer ---
-    if weekly_ema100:
-        tp_price = _pips_to_price(entry_price, direction, tp_pips, pip_value)
-        buffer_dist = TREND_TP_CONFIG["ema100_buffer_pips"] * pip_value
-        if abs(tp_price - weekly_ema100) < buffer_dist:
-            if direction == "BUY":
-                tp_price = weekly_ema100 + buffer_dist
-            else:
-                tp_price = weekly_ema100 - buffer_dist
-            tp_pips = _price_to_pips(entry_price, tp_price, pip_value)
-            tp_mode += f" | 📌 TP shifted away from Weekly EMA100 → {tp_pips:.1f}p"
-
-    logger.info(tp_mode)
-    return True, round(tp_pips, 1), tp_mode
+    return True, tp_pips, f"TP={tp_pips:.1f}p"
 
 # ─── PROFILE SELECTION — HAPPENS FIRST ───────────────────────────────────────
 parser = argparse.ArgumentParser(add_help=False)
@@ -264,7 +221,7 @@ else:
 
 # Step 3: Build full parser
 parser = argparse.ArgumentParser(
-    description=f"FX Trading Bot v6.8.3.3 {PROFILE_LABEL} | {ACCOUNT_NAME} | TREND+TP"
+    description=f"FX Trading Bot v6.8.4 {PROFILE_LABEL} | {ACCOUNT_NAME} | TREND+TP"
 )
 parser.add_argument("--profile2", action="store_true", help="Use Profile2 / Account002")
 parser.add_argument("--profile3", action="store_true", help="Use Profile3 / Account003")
@@ -285,11 +242,27 @@ if not OANDA_ACCOUNT_ID:
 
 # ─── CENTRAL CONFIG LOOKUP ──────────────────────────────────────────────────
 def cfg_bot(name, default):
-    """Lookup: profile_cfg → config_bot → config → default"""
+    """Lookup priority: profile_cfg → config_bot → config → default"""
     return getattr(profile_cfg, name, getattr(config_bot, name, getattr(config, name, default)))
 
 def cfg(name, default):
     return getattr(config, name, default)
+
+# ─── TREND FILTER + SMART TP CONFIGURATION ──────────────────────────────────
+# ✅ FULLY UNIFIED — cfg_bot() auto-loads Profile2 OR Profile3 values
+# ✅ TP_STRONG_MULT defaults to 1.0 = NO boost unless explicitly set
+_TREND_TP_CONFIG = {
+    "base_tp_pips":         cfg_bot("BASE_TP_PIPS", 30),
+    "mc_strong_threshold":  cfg_bot("MC_STRONG_THRESHOLD", 0.75),
+    "weekly_ema_period":    cfg_bot("WEEKLY_EMA_PERIOD", 100),
+    "ema100_buffer_pips":   cfg_bot("EMA100_BUFFER_PIPS", 30),
+    "tp_mult":              cfg_bot("TP_MULT", 1.0),
+    "tp_strong_mult":       cfg_bot("TP_STRONG_MULT", 1.0),
+    "ema_period":           cfg_bot("EMA_PERIOD", 10),
+    "slope_lookback":       cfg_bot("SLOPE_LOOKBACK", 5),
+    "min_slope":            cfg_bot("MIN_SLOPE", 0.001),
+}
+TREND_TP_CONFIG = _TREND_TP_CONFIG
 
 # ─── INIT FOLDERS & LOGGING ──────────────────────────────────────────────────
 RESULTS_DIR.mkdir(exist_ok=True)
@@ -306,9 +279,6 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ─── CONSOLIDATED STRATEGY CONSTANTS ─────────────────────────────────────────
-
-
-TREND_TP_CONFIG = cfg("TREND_TP_CONFIG", _TREND_TP_CONFIG)
 REQUIRE_DIRECTION_CONSENSUS = cfg_bot("REQUIRE_DIRECTION_CONSENSUS", True)
 CONSENSUS_THRESHOLD = cfg_bot("CONSENSUS_THRESHOLD", 2)
 XGB_BULLISH_THRESHOLD = cfg_bot("XGB_BULLISH_THRESHOLD", 0.55)
@@ -510,14 +480,13 @@ def calc_weighted_score(pair: str, gap: float, rsi_val: float, adx_val: float,
 # ─── MAIN TRADING FLOW ───────────────────────────────────────────────────────
 def main():
     global model_wrapper, strat_engine
-    logger.info(f"\n🤖 RUN v6.8.3.3 {PROFILE_LABEL} — {ACCOUNT_NAME} | TREND FILTER + SMART TP | "
+    logger.info(f"\n🤖 RUN v6.8.4 {PROFILE_LABEL} — {ACCOUNT_NAME} | TREND FILTER + SMART TP | "
                 f"{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')} | "
                 f"MAX_OPEN={MAX_OPEN} | MIN_GAP={MIN_STRENGTH_GAP}")
     logger.info(f"🔑 OANDA Account ID: {OANDA_ACCOUNT_ID}")
 
+    # ✅ MARKET CLOSED = SILENT EXIT — no Telegram message
     if forex_market_closed():
-        # logger.info("Market closed — skipping")
-        # send_telegram_message(f"⏸️ FX BOT {PROFILE_LABEL}: Market closed")
         return
 
     model_wrapper, strat_engine = ensure_model(
@@ -609,8 +578,8 @@ def main():
                     raw_tf = fetch_candles(pair_data[pair]["oanda"], gran)
                     if len(raw_tf) < 5: continue
                     sig = strat_engine.generate_signal(pair, pair_data[pair]["oanda"],
-                                                        feat_engine.build(raw_tf), None,
-                                                        strength_scores, raw_tf.iloc[-1]["Close"], 1.0)
+                                                    feat_engine.build(raw_tf), None,
+                                                    strength_scores, raw_tf.iloc[-1]["Close"], 1.0)
                     if sig: dirs.append(sig.action)
             buy_c, sell_c = dirs.count("BUY"), dirs.count("SELL")
             passes = buy_c >= CONFLUENCE_REQUIRED_TFS or sell_c >= CONFLUENCE_REQUIRED_TFS
@@ -702,7 +671,7 @@ def main():
 
         # Get Model & MC
         sig = strat_engine.generate_signal(pair, oanda, pair_data[pair]["df"], mc_cache.get(pair),
-                                           strength_scores, current, spread_pips)
+                                        strength_scores, current, spread_pips)
         # FIX: Signal exposes P(up) as `model_p_up` (`raw_prob` is P of the chosen
         # direction). Old code read non-existent attrs (.probability/.model_prob/.prob)
         # so xgb_prob was always 0.0 and the XGBoost vote never influenced decisions.
@@ -727,18 +696,23 @@ def main():
             f"M={w['M']:5.1f}×{W_M:.2f}={w['M']*W_M:4.1f}  | FINAL={w['FINAL']:5.1f}"
         )
 
-        # ─── ✅ TREND FILTER + SMART TP CALCULATION ───────────────────────
-        # FIX: `value and flag` coerced the EMA price to boolean True, making every
-        # comparison `price < 1.0` / `price > 1.0` (logged as "1.00000") and blocking
-        # nearly all candidates. Keep switch and price separate; None = bypass filter.
-        weekly_ema100_price = weekly_ema_cache.get(oanda)
-        weekly_ema100 = weekly_ema100_price if cfg_bot("WEEK_EMA100_FILTER_ENABLED", False) else None
+        # ─── ✅ TREND FILTER + SMART TP — CLEAN SEPARATION: Filter=Switch, Price=Value ────────
+        ema_cross_filter = cfg_bot("WEEK_EMA100_FILTER_ENABLED", False)  # 🔘 ON/OFF switch
+        weekly_ema100_price = weekly_ema_cache.get(oanda)                   # 📈 Always has value
+
+        # Pass price ONLY when filter is ON → else pass None = skip entirely
+        if ema_cross_filter:
+            weekly_ema100 = weekly_ema100_price
+        else:
+            weekly_ema100 = None
+
         allow_entry, smart_tp_pips, tp_info = evaluate_trend_and_tp(
             PROFILE_NAME, direction, mc_pct_up,
             current, pip_cache[pair],
             pair_data[pair]["df"], weekly_ema100,
             timeframe=args.timeframe
         )
+
         if not allow_entry:
             continue  # TREND FILTER REJECTED
 
@@ -772,7 +746,7 @@ def main():
                            round(current + sl_pips * pip_cache[pair], dec)
         else:
             sl_pips = max(min_sl_pips_jpy if "JPY" in pair else min_sl_pips_std,
-                          round(atr_val / pip_cache[pair] * cfg_bot("ATR_SL_MULT", 2.0), 1))
+                        round(atr_val / pip_cache[pair] * cfg_bot("ATR_SL_MULT", 2.0), 1))
             sl_price = round(current - sl_pips * pip_cache[pair], dec) if direction == "BUY" else \
                        round(current + sl_pips * pip_cache[pair], dec)
         tp_price = round(current + smart_tp_pips * pip_cache[pair], dec) if direction == "BUY" else \
@@ -812,13 +786,12 @@ def main():
 
     # Summary
     if trade_lines:
-        summary = f"🤖 v6.8.3.3 {PROFILE_LABEL} RUN COMPLETE — {ACCOUNT_NAME}\n\n" + "\n".join(trade_lines.values())
+        summary = f"🤖 v6.8.4 {PROFILE_LABEL} RUN COMPLETE — {ACCOUNT_NAME}\n\n" + "\n".join(trade_lines.values())
         send_telegram_message(summary)
     else:
         logger.info("📋 No signals passed all filters")
 
-    logger.info(f"✅ v6.8.3.3 {PROFILE_LABEL} Run Complete — {ACCOUNT_NAME} — TREND+TP ACTIVE")
-
+    logger.info(f"✅ v6.8.4 {PROFILE_LABEL} Run Complete — {ACCOUNT_NAME} — TREND+TP ACTIVE")
 
 if __name__ == "__main__":
     from utils.utils import apply_jitter

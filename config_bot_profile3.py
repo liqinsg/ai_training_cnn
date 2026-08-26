@@ -6,11 +6,11 @@ from config_bot import *
 from config_oanda import OANDA_ACCOUNT_ID_3 as OANDA_ACCOUNT_ID
 
 # ─── Feature & ATR Settings ───
+# the same to the config_bot 
 USE_ATR = True
 ATR_SL_MULT = 2.0
 ATR_TP_MULT = 3.0
 ATR_PERIOD = 14
-
 USE_MACD = True
 USE_RSI = True
 USE_ADX = True
@@ -64,6 +64,15 @@ MC_MOMENTUM_BAND = 0.001
 
 # TREND_FILTER_ENABLED = True   # Set False → skip EMA10 slope + EMA100 checks entirely
 WEEK_EMA100_FILTER_ENABLED = True
+
+SLOPE_LOOKBACK = 3
+EMA_MIN_SLOP = 0.0003
+EMA_PERIOD = 5
+BASE_TP_PIPS = 50       # ✅ Custom base
+TP_MULT = 2.5            # ✅ Normal TP ×1.5
+TP_STRONG_MULT = 3.0     # ✅ Strong MC TP ×2.0
+MIN_SLOPE = 0.0003
+
 if __name__ == "__main__":
     from config_oanda import OANDA_ACCOUNT_ID_4 as OANDA_ACCOUNT_ID
     print(OANDA_ACCOUNT_ID)
