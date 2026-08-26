@@ -62,7 +62,7 @@ MC_BAND_PCT = 90
 MC_SIGNIFICANT_PCT = 60
 MC_MOMENTUM_BAND = 0.001
 
-# TREND_FILTER_ENABLED = True   # Set False → skip EMA10 slope + EMA100 checks entirely
+TREND_FILTER_ENABLED = True   # Set False → skip EMA10 slope + EMA100 checks entirely
 WEEK_EMA100_FILTER_ENABLED = True
 
 SLOPE_LOOKBACK = 3
