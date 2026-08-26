@@ -427,7 +427,7 @@ def open_oanda_order_simple(
         "order": {
             "type": "MARKET",
             "instrument": instrument,
-            "units": str(units if direction == "BUY" else -units),
+            "units": str(abs(units) if direction == "BUY" else -abs(units)),
             "positionFill": "DEFAULT",
         }
     }
@@ -436,7 +436,9 @@ def open_oanda_order_simple(
         logger.info(f"✅ OANDA accepted order for {instrument}")
         trade_id = ""
         if "orderFillTransaction" in resp:
-            trade_id = str(resp["orderFillTransaction"].get("id", ""))
+            fill = resp["orderFillTransaction"]
+            trade_opened = fill.get("tradeOpened") or {}
+            trade_id = str(trade_opened.get("tradeID", ""))
             logger.info(f"📦 Trade opened: TradeID={trade_id}")
         elif "orderCreateTransaction" in resp:
             trade_id = str(resp["orderCreateTransaction"].get("id", ""))
@@ -451,7 +453,7 @@ def open_oanda_order_simple(
                         "order": {
                             "type": "STOP_LOSS",
                             "tradeID": trade_id,
-                            "price": str(round(float(sl_price), dec)),
+                            "price": f"{float(sl_price):.{dec}f}",
                             "timeInForce": "GTC",
                         }
                     },
@@ -466,7 +468,7 @@ def open_oanda_order_simple(
                         "order": {
                             "type": "TAKE_PROFIT",
                             "tradeID": trade_id,
-                            "price": str(round(float(tp_price), dec)),
+                            "price": f"{tp_price:.{dec}f}",
                             "timeInForce": "GTC",
                         }
                     },
