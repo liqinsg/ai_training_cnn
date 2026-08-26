@@ -4,12 +4,12 @@
     Multi-Profile: Profile2/Account002 · Profile3/Account003
     ✅ RSI-FIXED | Consensus | ADX Boost | Monte Carlo | SL Zone Hierarchy
     ✅ TREND FILTER: Dynamic EMA Slope + Weekly EMA100 Counter-Trend Block
-    ✅ SMART TP: Fully unified config — TP_MULT + TP_STRONG_MULT (default=1.0)
+    ✅ SMART TP: Fully unified config — TP_MULT + TP_STRONG_MULT
     ✅ EMA100 Buffer: Configurable — TP never lands inside zone
     ✅ Account IDs from profile config only
     ✅ DUPLICATE-ORDER PROTECTION — Instrument + Run guards
     ✅ MARKET CLOSED = Silent Exit — No Telegram message
-    ✅ --test-trade REMOVED — ALL runs execute live
+    ✅ ALL runs execute live — No test-trade flag
 
 
     Usage:
@@ -45,18 +45,17 @@ from data_pipeline import FeatureConfig, FeatureEngine, ModelWrapper, DataFetche
 from fx_trade_bot_utils import (
     pip_size, load_cooldown, get_open_position, close_position, fetch_candles,
     open_oanda_order_simple as open_oanda_order, DynamicPositionManager, load_mc_legacy,
-    compute_sl_zone,
+    calculate_stop_loss,
 )
 from fx_trade_bot_mc import MCGenerator, MCConfig
 from fx_trade_bot_ml import ensure_model
-# from portfolio_balance import balance_from_config
-# from sl_zone_hierarchy import compute_sl_zone
 from config_oanda import api
 
 
 # ─── BASE SETUP ──────────────────────────────────────────────────────────────
 BASE_DIR = Path(__file__).resolve().parent
 sys.path.extend([str(BASE_DIR), str(BASE_DIR / "utils")])
+
 
 # ─── TREND HELPERS ──────────────────────────────────────────────────────────
 def calculate_ema(series, period):
@@ -82,38 +81,79 @@ def _price_to_pips(entry, tp_price, pip_value):
 
 
 def fetch_weekly_ema100(oanda_instrument, api):
-    """Fetch Weekly candles and compute EMA100 for trend filter"""
+    """Fetch Weekly candles and EMA100 for trend filter.
+
+    Safety guards:
+      - Missing / short / malformed data → return None (filter bypassed)
+      - Never return dummy values that could gate trades
+    """
     try:
         resp = api.request(InstrumentsCandles(
             instrument=oanda_instrument,
             params={"granularity": "W", "count": 105, "price": "M"}
         ))
-        candles = resp["candles"]
+        candles = resp.get("candles") or []
         if len(candles) < 100:
+            logger.warning(f"⚠️ Weekly EMA100 {oanda_instrument}: only {len(candles)} candles — filter bypassed")
             return None
-        closes = [float(c["mid"]["c"]) for c in candles]
+
+        closes = []
+        for c in candles:
+            try:
+                mid = c.get("mid") or {}
+                closes.append(float(mid["c"]))
+            except (KeyError, TypeError, ValueError):
+                continue
+        if len(closes) < 100:
+            logger.warning(f"⚠️ Weekly EMA100 {oanda_instrument}: not enough valid closes — filter bypassed")
+            return None
+
         series = pd.Series(closes)
-        return calculate_ema(series, 100).iloc[-1]
+        ema100 = float(calculate_ema(series, 100).iloc[-1])
+
+        closes_arr = np.asarray(closes, dtype=float)
+        mean_close = float(closes_arr.mean())
+        last_close = float(closes[-1])
+        flat_corrupt = (mean_close > 0 and float(closes_arr.std()) / mean_close < 1e-6)
+
+        # Plausibility guards
+        if not np.isfinite(ema100) or ema100 <= 0 or last_close <= 0:
+            logger.warning(f"⚠️ Weekly EMA100 {oanda_instrument}: invalid EMA={ema100:.5f} — filter bypassed")
+            return None
+        if flat_corrupt:
+            logger.warning(
+                f"⚠️ Weekly EMA100 {oanda_instrument}: flat/corrupt weekly series "
+                f"(std/mean={float(closes_arr.std()) / mean_close:.2e}) — filter bypassed"
+            )
+            return None
+        if abs(ema100 - last_close) / last_close > 0.25:
+            logger.warning(
+                f"⚠️ Weekly EMA100 {oanda_instrument}: implausible EMA={ema100:.5f} "
+                f"vs last weekly close={last_close:.5f} — filter bypassed"
+            )
+            return None
+
+        return ema100
     except Exception as e:
         logger.warning(f"⚠️ Cannot fetch Weekly EMA100 for {oanda_instrument}: {e}")
         return None
 
+
 def evaluate_trend_and_tp(profile_name, direction, mc_pct_up,
-                          entry_price, pip_value, df, weekly_ema100,
-                          timeframe="15m"):
+                           entry_price, pip_value, df, weekly_ema100,
+                           timeframe="15m"):
     """
     ENTRY FILTERS:
       A — Trend Alignment on specified timeframe
       B — No counter-trend vs Weekly EMA100
     TP LOGIC:
-      Profile-aware multipliers + Weekly EMA100 buffer
+      Profile-aware multipliers
     """
-
     cfg = TREND_TP_CONFIG  # profile-aware config
     ema_cross_filter = cfg_bot("TREND_FILTER_ENABLED", False)
-    logger.info(f"🔍 {timeframe} TREND FILTER: ema_cross_filter={ema_cross_filter} | profile={profile_name}")
+    logger.info(f"🔍 {timeframe} TREND FILTER: TREND_FILTER_ENABLED={ema_cross_filter} | profile={profile_name}")
 
-    # ─── RULE A: Trend Alignment on SPECIFIED timeframe ──────────────
+    # ─── RULE A: Trend Alignment ──────────────────────────────────────
     ema10 = calculate_ema(df["Close"], cfg["ema_period"])
     slope, ema_level = calculate_ema_slope(ema10, cfg["slope_lookback"])
     min_slope = cfg["min_slope"]
@@ -156,6 +196,7 @@ def evaluate_trend_and_tp(profile_name, direction, mc_pct_up,
         tp_pips = base_pips * cfg["tp_mult"]
 
     return True, tp_pips, f"TP={tp_pips:.1f}p"
+
 
 # ─── PROFILE SELECTION — HAPPENS FIRST ───────────────────────────────────────
 parser = argparse.ArgumentParser(add_help=False)
@@ -206,7 +247,6 @@ OANDA_ACCOUNT_ID = getattr(profile_cfg, "OANDA_ACCOUNT_ID", None)
 if not OANDA_ACCOUNT_ID:
     raise RuntimeError(f"OANDA_ACCOUNT_ID not found in {PROFILE_MODULE}. Please define it there.")
 
-
 # ─── CENTRAL CONFIG LOOKUP ──────────────────────────────────────────────────
 def cfg_bot(name, default):
     """Lookup priority: profile_cfg → config_bot → config → default"""
@@ -216,8 +256,9 @@ def cfg_bot(name, default):
 def cfg(name, default):
     return getattr(config, name, default)
 
+
 # ─── TREND FILTER + SMART TP CONFIGURATION ──────────────────────────────────
-# ✅ FULLY UNIFIED — cfg_bot() auto-loads Profile2 OR Profile3 values
+# ✅ Fully unified — cfg_bot() auto-loads Profile2 OR Profile3 values
 # ✅ TP_STRONG_MULT defaults to 1.0 = NO boost unless explicitly set
 _TREND_TP_CONFIG = {
     "base_tp_pips":         cfg_bot("BASE_TP_PIPS", 30),
@@ -225,12 +266,13 @@ _TREND_TP_CONFIG = {
     "weekly_ema_period":    cfg_bot("WEEKLY_EMA_PERIOD", 100),
     "ema100_buffer_pips":   cfg_bot("EMA100_BUFFER_PIPS", 30),
     "tp_mult":              cfg_bot("TP_MULT", 1.0),
-    "tp_strong_mult":       cfg_bot("TP_STRONG_MULT", 1.0),  # ✅ Default = no boost
+    "tp_strong_mult":       cfg_bot("TP_STRONG_MULT", 1.0),
     "ema_period":           cfg_bot("EMA_PERIOD", 10),
     "slope_lookback":       cfg_bot("SLOPE_LOOKBACK", 5),
     "min_slope":            cfg_bot("MIN_SLOPE", 0.001),
 }
 TREND_TP_CONFIG = _TREND_TP_CONFIG
+
 
 # ─── INIT FOLDERS & LOGGING ──────────────────────────────────────────────────
 RESULTS_DIR.mkdir(exist_ok=True)
@@ -248,7 +290,6 @@ logger = logging.getLogger(__name__)
 
 
 # ─── CONSOLIDATED STRATEGY CONSTANTS ─────────────────────────────────────────
-
 REQUIRE_DIRECTION_CONSENSUS = cfg_bot("REQUIRE_DIRECTION_CONSENSUS", True)
 CONSENSUS_THRESHOLD = cfg_bot("CONSENSUS_THRESHOLD", 2)
 XGB_BULLISH_THRESHOLD = cfg_bot("XGB_BULLISH_THRESHOLD", 0.55)
@@ -645,7 +686,10 @@ def main():
         # Get Model & MC
         sig = strat_engine.generate_signal(pair, oanda, pair_data[pair]["df"], mc_cache.get(pair),
                                             strength_scores, current, spread_pips)
-        prob_raw = getattr(sig,"probability",None) or getattr(sig,"model_prob",None) or getattr(sig,"prob",None) or 0.0
+        # FIX: Signal exposes P(up) as `model_p_up`
+        prob_raw = getattr(sig, "model_p_up", None)
+        if prob_raw is None:
+            prob_raw = 0.0
         mc_pct_up = mc_cache.get(pair, {}).get("p_up", 50.0)
 
         # Score
@@ -664,15 +708,12 @@ def main():
             f"M={w['M']:5.1f}×{W_M:.2f}={w['M']*W_M:4.1f}  | FINAL={w['FINAL']:5.1f}"
         )
 
-        # ─── ✅ TREND FILTER + SMART TP CALCULATION ───────────────────────
-        # weekly_ema100 = weekly_ema_cache.get(oanda) and cfg_bot("WEEK_EMA100_FILTER_ENABLED", False)
-        ema_cross_filter = cfg_bot("WEEK_EMA100_FILTER_ENABLED", False)
-        weekly_ema100_price = weekly_ema_cache.get(oanda)
-        
-        if ema_cross_filter:
-            weekly_ema100 = weekly_ema100_price   # Filter ON → pass real price
-        else:
-            weekly_ema100 = None                  # Filter OFF → pass None = skip entirely
+        # ─── ✅ TREND FILTER + SMART TP — CLEAN SEPARATION ────────
+        ema_cross_filter = cfg_bot("TREND_FILTER_ENABLED", False)  # 🔘 ON/OFF switch
+        weekly_ema100_price = weekly_ema_cache.get(oanda)            # 📈 Always fetched
+
+        # Pass price ONLY when filter is ON
+        weekly_ema100 = weekly_ema100_price if ema_cross_filter else None
 
         allow_entry, smart_tp_pips, tp_info = evaluate_trend_and_tp(
             PROFILE_NAME, direction, mc_pct_up,
@@ -684,16 +725,40 @@ def main():
         if not allow_entry:
             continue  # TREND FILTER REJECTED
 
-        # SL & TP — use SMART TP instead of fixed ATR multiplier
+        # SL & TP — SMART TP instead of fixed ATR multiplier
         dec = 3 if "JPY" in pair else 5
         if cfg_bot("SL_USE_ZONE_HIERARCHY", True):
-            sl_price, _ = compute_sl_zone(api, oanda, direction, current, pip_cache[pair], cfg_bot)
-            sl_price = round(sl_price, dec)
+            # ── SL Zone Hierarchy: closed H4 candles only + offset + cap ──
+            try:
+                h4_df = fetch_candles(api, oanda, "H4", count=5)
+                if h4_df is None or len(h4_df) < 5:
+                    raise ValueError(
+                        f"insufficient H4 candles ({0 if h4_df is None else len(h4_df)})"
+                    )
+                # ✅ Drop forming candle → use ONLY closed bars
+                h4_closed = [
+                    {"high": float(r["High"]), "low": float(r["Low"])}
+                    for _, r in h4_df.iloc[:-1].iterrows()
+                ]
+                sl_price, sl_pips, skip_trade = calculate_stop_loss(
+                    direction, current, h4_closed, pip_cache[pair]
+                )
+                if skip_trade:
+                    logger.warning(f"🚫 {pair}: SL distance > 200 pips — TRADE ABORTED")
+                    continue
+                sl_price = round(sl_price, dec)
+            except Exception as e:
+                logger.error(f"⚠️ {pair}: calculate_stop_loss failed ({e}) — falling back to ATR SL")
+                sl_pips = max(min_sl_pips_jpy if "JPY" in pair else min_sl_pips_std,
+                            round(atr_val / pip_cache[pair] * cfg_bot("ATR_SL_MULT", 2.0), 1))
+                sl_price = round(current - sl_pips * pip_cache[pair], dec) if direction == "BUY" else \
+                           round(current + sl_pips * pip_cache[pair], dec)
         else:
             sl_pips = max(min_sl_pips_jpy if "JPY" in pair else min_sl_pips_std,
                         round(atr_val / pip_cache[pair] * cfg_bot("ATR_SL_MULT", 2.0), 1))
             sl_price = round(current - sl_pips * pip_cache[pair], dec) if direction == "BUY" else \
                        round(current + sl_pips * pip_cache[pair], dec)
+
         tp_price = round(current + smart_tp_pips * pip_cache[pair], dec) if direction == "BUY" else \
                    round(current - smart_tp_pips * pip_cache[pair], dec)
 
@@ -704,16 +769,16 @@ def main():
     for i, (_, score, pair, _, dir, _, _, _, _, tp_pips) in enumerate(all_candidates, 1):
         logger.info(f"   #{i} — {pair} {dir} SCORE={score:.1f} SMART-TP={tp_pips:.1f}p")
 
-    # ✅ DUPLICATE GUARD: Track instruments executed THIS run
+    # ✅ DUPLICATE GUARD: Track instruments THIS run
     executed_in_this_run = set()
 
     for _, FINAL, pair, oanda, direction, current, sl_price, tp_price, dec, _ in all_candidates:
-        # ✅ Double-guard: already open OR already selected in THIS run
+        # ✅ Double guard: existing position OR already selected THIS run
         if open_pos_by_oanda.get(oanda, False):
             logger.info(f"⏭️ {pair} ({oanda}): position already open — SKIP DUPLICATE")
             continue
         if oanda in executed_in_this_run:
-            logger.info(f"⏭️ {pair} ({oanda}): already selected in THIS run — SKIP DUPLICATE")
+            logger.info(f"⏭️ {pair} ({oanda}): already selected THIS run — SKIP DUPLICATE")
             continue
 
         if open_pos_count >= MAX_OPEN:
