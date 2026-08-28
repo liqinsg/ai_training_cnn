@@ -91,7 +91,7 @@ YAHOO_TO_OANDA = {
 
 MIN_SL_PIPS = 25
 MIN_SL_PIPS_JPY = MIN_SL_PIPS + 10
-
+MIN_HOLD_BARS = 4
 
 # ─── Dynamic TP / Trailing ───
 DYNAMIC_TP = False
@@ -110,7 +110,7 @@ CONFLUENCE_REQUIRED_TFS = 2
 # ─── Currency Strength Filter ───
 STRENGTH_SIGNAL_BLOCK_THRESHOLD = 9.99  # Disabled
 
-
+USE_DYNAMIC_SL = 2
 # ─── Cooldown & Debug ───
 REMOVE_COOLDOWN = True
 DEBUG_MODE = False
