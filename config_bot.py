@@ -1,40 +1,15 @@
-# config_bot.py — v6.8.5.1 · UNIFIED SINGLE-FILE CONFIG
+# config_bot.py — v6.8.6 · UNIFIED STRATEGY CONFIG
 """
-Central configuration — ALL profiles in one file.
-Usage: fx_trade_bot.py --profile2 / --profile3
+ALL strategy/profile settings in ONE file.
+OANDA API/connection → config_oanda.py (KEPT SEPARATE)
+
+Purpose: Strategy & profile parameters ONLY.
+Connection tokens/env → config_oanda.py (runtime config)
 """
-import os
-from dotenv import load_dotenv
-
-load_dotenv()
 
 # ==========================================
-# 🔐 OANDA CONNECTION (Global)
+# GLOBAL DEFAULTS — shared across profiles
 # ==========================================
-OANDA_ENV = "practice"
-OANDA_API_TOKEN = os.getenv("OANDA_API_TOKEN", "")
-OANDA_ACCOUNT_ID_1 = os.getenv("OANDA_ACCOUNT_ID_1", "")
-OANDA_ACCOUNT_ID_2 = os.getenv("OANDA_ACCOUNT_ID_2", "")
-OANDA_ACCOUNT_ID_3 = os.getenv("OANDA_ACCOUNT_ID_3", "")
-OANDA_TOKEN = OANDA_API_TOKEN
-
-
-# ==========================================
-# ⚙️ BASE DEFAULTS / LEVEL10 PRESET
-# ==========================================
-CHECK_INTERVAL_MINUTES = 15
-TIMEFRAME = "15m"
-DEFAULT_LOT_SIZE = 10000
-MAX_SIMULTANEOUS_TRADES = 5
-MIN_CONVICTION_SCORE = 40.0
-MIN_REWARD_RISK = 1.001
-REQUIRE_DIRECTION_CONSENSUS = True
-CONSENSUS_THRESHOLD = 2
-CONSENSUS_REQUIRED_VOTES = 2
-ATR_PERIOD = 14
-BASE_TP_PIPS = 50
-EMA100_BUFFER_PIPS = 30
-# ——— 货币对 / 数据源 / 时间周期 / 风控阈值等全部保留 ———
 ALL_PAIRS = [
     "EURUSD=X", "GBPUSD=X", "EURJPY=X", "GBPJPY=X",
     "AUDUSD=X", "USDJPY=X", "GBPAUD=X", "USDCHF=X",
@@ -48,102 +23,194 @@ YAHOO_TO_OANDA = {
     "AUDJPY=X": "AUD_JPY", "EURGBP=X": "EUR_GBP",
     "NZDUSD=X": "NZD_USD", "CADJPY=X": "CAD_JPY",
 }
+
+# Data / MC defaults
 YF_INTERVAL = "4h"
 YF_PERIOD_FULL = "30d"
 YF_PERIOD_RESAMPLE = "60d"
 YF_INTERVAL_D = "1d"
+YF_PERIOD_FULL_D = "120d"
+YF_PERIOD_RESAMPLE_D = "180d"
+
 PERIODS_YEAR = 252
 MC_BAND_PCT = 90
-MC_SIGNIFICANT_PCT = 60
-MC_MOMENTUM_BAND = 0.001
-REENTRY_COOLDOWN_MINUTES = 0.001
-REENTRY_MIN_PULLBACK_PIPS = 8.0
+MC_MAX_AGE_HOURS = 24
+SIMULATIONS = 5000
+CONFIDENCE = MC_BAND_PCT / 100.0
+
+ATR_PERIOD = 14
+BASE_TP_PIPS = 50
+EMA100_BUFFER_PIPS = 30
+MIN_SL_PIPS = 35
+MIN_SL_PIPS_JPY = MIN_SL_PIPS + 10
+
+DEBUG_MODE = False
+REMOVE_COOLDOWN = True
+DEFAULT_LOT_SIZE = 10000
+
+# Confluence / multi-TF
+MULTI_TF_CONFLUENCE = False
+CONFLUENCE_REQUIRED_TFS = 2
+
+# Dynamic TP / Exit
 TRAILING_TP = True
 DYNAMIC_TP = False
 TP_RAISE_THRESHOLD_PIPS = 15
-MIN_SL_PIPS = 35
-MIN_SL_PIPS_JPY = MIN_SL_PIPS + 10
-REMOVE_COOLDOWN = True
-DEBUG_MODE = False
-DATA_SOURCE = "OANDA_WITH_YAHOO_FALLBACK"
-USE_OANDA_DATA = True
-USE_YFINANCE_DATA = False
-ENABLE_ML_CONFIRMATION = False
-ML_MIN_CONFIDENCE = 0.50
 
+# Lookback / Forecast
+H4_LOOKBACK = 90
+H4_FORECAST = 8
+DAILY_LOOKBACK = 90
+DAILY_FORECAST = 5
+
+# Feature / Model
+USE_ATR = True
+USE_MACD = True
+USE_RSI = True
+USE_ADX = True
+MODEL_TYPE = "xgboost"
+TARGET_HORIZON = 6
+TRAIN_LOOKBACK_BARS = 5000
 
 # ==========================================
-# 📊 PROFILE CONFIGURATION — ALL IN ONE PLACE
+# 🔑 ACCOUNT IDs ONLY — reference config_oanda connection
+# ==========================================
+# These map to accounts configured in config_oanda.py
+# NEVER put tokens/connection params here!
+OANDA_ACCOUNT_ID_PROFILE2 = "YOUR_ACCOUNT_ID_002"
+OANDA_ACCOUNT_ID_PROFILE3 = "YOUR_ACCOUNT_ID_003"
+
+# ==========================================
+# 📊 PROFILE STRATEGY CONFIG — ALL IN ONE
 # ==========================================
 PROFILE_CFG = {
     "profile2": {
         "LABEL": "PROFILE2",
         "ACCOUNT_NAME": "Account 002",
-        "OANDA_ACCOUNT_ID": OANDA_ACCOUNT_ID_2,
+        "OANDA_ACCOUNT_ID": OANDA_ACCOUNT_ID_PROFILE2,
         "COOLDOWN_FILE": "cooldown_profile2.json",
         "RESULTS_DIR": "daily_results_profile2",
 
-        # Weights: S=35 R=20 A=15 X=20 M=10
+        # ── Identity ──
+        "MODE": "LEVEL10",
+        "BASE_MIN_EDGE": 0.50,
+
+        # ── Weights: S=35 R=20 A=15 X=20 M=10 ──
         "WEIGHT_STRENGTH": 0.35,
         "WEIGHT_RSI": 0.20,
         "WEIGHT_ADX": 0.15,
         "WEIGHT_XGB": 0.20,
         "WEIGHT_MC": 0.10,
 
+        # ── Thresholds ──
         "MIN_CONVICTION_SCORE": 30.0,
+        "MIN_SCORE_GAP": 0.10,
         "MAX_OPEN_POSITIONS": 5,
         "XGB_BULLISH_THRESHOLD": 0.52,
         "MC_BULLISH_THRESHOLD_PCT": 52.0,
         "MC_STRONG_THRESHOLD": 0.60,
+        "REQUIRE_DIRECTION_CONSENSUS": True,
+        "CONSENSUS_THRESHOLD": 2,
+        "CONSENSUS_REQUIRED_VOTES": 2,
+        "REQUIRE_STRONG_MOMENTUM": False,
+        "ADX_SCALE_FACTOR": 2.0,
 
-        # Trend Filter — Profile2: OFF by default
+        # ── TREND FILTER: Profile2 = OFF ──
         "TREND_FILTER_ENABLED": False,
         "WEEK_EMA100_FILTER_ENABLED": False,
         "EMA_PERIOD_FAST": 20,
-        "EMA_PERIOD_SLOW": 60,
+        "EMA_PERIOD_SLOW": 40,
 
-        # ATR / TP / SL
+        # ── TP/SL multipliers ──
+        "TP_MULT": 2.0,
+        "TP_STRONG_MULT": 2.5,
         "ATR_SL_MULT": 2.0,
         "ATR_TP_MULT": 2.5,
-        "TP_MULT": 2.2,
-        "TP_STRONG_MULT": 2.8,
+
+        # ── Dynamic Exit ──
         "USE_DYNAMIC_SL": 2,
-        "DYNAMIC_SL_MULT": 1.3,
+        "DYNAMIC_SL_MULT": 1.5,
+        "BE_TRIGGER_ATR_MULT": 1.5,
+        "TRAIL_TRIGGER_ATR_MULT": 2.5,
+        "TRAIL_ATR_MULT": 1.5,
+        "MAX_HOLD_BARS": 12,
+
+        # ── SL Strategy ──
+        "SL_USE_ZONE_HIERARCHY": True,
+
+        # ── Pair Selection ──
+        "USE_TOP_PAIRS_ONLY": False,
+        "TOP_PAIRS_COUNT": 4,
+        "TOP_PAIRS_MIN_GAP": 0.25,
+
+        # ── MC ──
+        "SKIP_MC": False,
+    
+        # ── 排除高波动货币对：含 CHF 或 JPY 的全部跳过 ──
+        "EXCLUDE_CURRENCIES": ["JPY", "CHF"],
+        
     },
 
     "profile3": {
         "LABEL": "PROFILE3",
         "ACCOUNT_NAME": "Account 003",
-        "OANDA_ACCOUNT_ID": OANDA_ACCOUNT_ID_3,
+        "OANDA_ACCOUNT_ID": OANDA_ACCOUNT_ID_PROFILE3,
         "COOLDOWN_FILE": "cooldown_profile3.json",
         "RESULTS_DIR": "daily_results_profile3",
 
-        # Weights: S=40 R=15 A=15 X=20 M=10
+        # ── Identity ──
+        "MODE": "LEVEL10",
+        "BASE_MIN_EDGE": 0.50,
+
+        # ── Weights: S=40 R=15 A=15 X=20 M=10 ──
         "WEIGHT_STRENGTH": 0.40,
         "WEIGHT_RSI": 0.15,
         "WEIGHT_ADX": 0.15,
         "WEIGHT_XGB": 0.20,
         "WEIGHT_MC": 0.10,
 
+        # ── Thresholds ──
         "MIN_CONVICTION_SCORE": 20.0,
+        "MIN_SCORE_GAP": 0.10,
         "MAX_OPEN_POSITIONS": 4,
         "XGB_BULLISH_THRESHOLD": 0.55,
         "MC_BULLISH_THRESHOLD_PCT": 55.0,
         "MC_STRONG_THRESHOLD": 0.55,
+        "REQUIRE_DIRECTION_CONSENSUS": True,
+        "CONSENSUS_THRESHOLD": 2,
+        "CONSENSUS_REQUIRED_VOTES": 2,
         "REQUIRE_STRONG_MOMENTUM": False,
+        "ADX_SCALE_FACTOR": 2.0,
 
-        # Trend Filter — Profile3: ON by default + Weekly EMA100
+        # ── TREND FILTER: Profile3 = ON + Weekly EMA100 ──
         "TREND_FILTER_ENABLED": True,
         "WEEK_EMA100_FILTER_ENABLED": True,
         "EMA_PERIOD_FAST": 40,
         "EMA_PERIOD_SLOW": 80,
 
-        # ATR / TP / SL
-        "ATR_SL_MULT": 2.5,
-        "ATR_TP_MULT": 3.0,
+        # ── TP/SL multipliers ──
         "TP_MULT": 2.5,
         "TP_STRONG_MULT": 3.0,
-        "USE_DYNAMIC_SL": 3,
+        "ATR_SL_MULT": 2.5,
+        "ATR_TP_MULT": 3.0,
+
+        # ── Dynamic Exit ──
+        "USE_DYNAMIC_SL": 2,
         "DYNAMIC_SL_MULT": 1.5,
+        "BE_TRIGGER_ATR_MULT": 1.5,
+        "TRAIL_TRIGGER_ATR_MULT": 2.5,
+        "TRAIL_ATR_MULT": 1.5,
+        "MAX_HOLD_BARS": 12,
+
+        # ── SL Strategy ──
+        "SL_USE_ZONE_HIERARCHY": True,
+
+        # ── Pair Selection ──
+        "USE_TOP_PAIRS_ONLY": False,
+        "TOP_PAIRS_COUNT": 4,
+        "TOP_PAIRS_MIN_GAP": 0.25,
+
+        # ── MC ──
+        "SKIP_MC": False,
     }
 }

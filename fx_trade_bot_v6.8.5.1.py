@@ -376,6 +376,9 @@ def main():
     USE_TOP_PAIRS_ONLY = cfg(P, "USE_TOP_PAIRS_ONLY", False)
     TOP_PAIRS_COUNT = cfg(P, "TOP_PAIRS_COUNT", 4)
     TOP_PAIRS_MIN_GAP = cfg(P, "TOP_PAIRS_MIN_GAP", 0.25)
+    
+    EXCLUDE_CURRENCIES = cfg(P, "EXCLUDE_CURRENCIES", [])
+
     if USE_TOP_PAIRS_ONLY:
         selected_pairs, _ = build_top_pairs(strength_scores, ALL_PAIRS, TOP_PAIRS_COUNT, TOP_PAIRS_MIN_GAP)
         selected_pairs = selected_pairs or ALL_PAIRS[:]
@@ -383,6 +386,13 @@ def main():
     else:
         selected_pairs = ALL_PAIRS[:]
         logger.info(f"📋 SCAN ALL: {len(selected_pairs)} pairs")
+
+    # ─── APPLY EXCLUSION — BOTH BRANCHES ───────────────────────────────────────
+    if EXCLUDE_CURRENCIES:
+        before_count = len(selected_pairs)
+        selected_pairs = [p for p in selected_pairs if not any(skip in p for skip in EXCLUDE_CURRENCIES)]
+        skipped = sorted(set(ALL_PAIRS) - set(selected_pairs))
+        logger.info(f"🚫 EXCLUSION: Skipped {before_count - len(selected_pairs)} pairs containing {EXCLUDE_CURRENCIES}: {', '.join(skipped)}")
 
     # Step 2 — Fetch Data
     pair_data, weekly_ema_cache = {}, {}

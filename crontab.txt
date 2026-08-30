@@ -1,0 +1,44 @@
+(ai-sprint) nie@ansible81:~$ crontab -l
+###3,18,33,48 * * * * /home/nie/miniforge3/envs/ai-sprint/bin/python /home/nie/projects/gemini_api/scheduled_runner_v1.3.py >> /home/nie/projects/gemini_api/logs/scheduled_runner_v1.3.log 2>&1
+5 0 * * * /home/nie/projects/gemini_api/logs/rotate_logs.sh >> /home/nie/projects/gemini_api/logs/rotate.log 2>&1
+#5 0 * * * /home/nie/projects/ai_training_cnn/logs/rotate_logs.sh >> /home/nie/projects/ai_training_cnn/logs/rotate.log 2>&1
+
+# Daily MC report
+0 8 * * * cd /home/nie/projects/ai_training_cnn && /home/nie/miniforge3/envs/ai-sprint/bin/python fx_monte_carlo_v1.py --timeframe D >> logs/mc_daily.log 2>&1
+# H4 MC intraday
+0 */4 * * * cd /home/nie/projects/ai_training_cnn && /home/nie/miniforge3/envs/ai-sprint/bin/python fx_monte_carlo_v1.py --timeframe H4 >> logs/mc_h4.log 2>&1
+# Trading bot (every 15m)
+#*/15 * * * * cd /home/nie/projects/ai_training_cnn && /home/nie/miniforge3/envs/ai-sprint/bin/python fx_trade_bot_v3.py >> logs/bot_15m.log 2>&1
+#*/15 * * * * cd /home/nie/projects/ai_training_cnn && /home/nie/miniforge3/envs/ai-sprint/bin/python monte_carlo/position_monitor.py >> /tmp/mc_position_monitor.log 2>&1
+#*/15 * * * * cd /home/nie/projects/ai_training_cnn && /home/nie/miniforge3/envs/ai-sprint/bin/python fx_trade_bot_integrated_v4.py --timeframe 15m >> logs/bot_15m.log 2>&1
+# H4 Bot — every 4 hours at :02 past the hour
+#2 */4 * * * cd /home/nie/projects/ai_training_cnn && /home/nie/miniforge3/envs/ai-sprint/bin/python fx_trade_bot_integrated_v5.py --timeframe H4 >> logs/bot_h5.log 2>&1
+# 15m bot
+#*/15 * * * * cd /home/nie/projects/ai_training_cnn && /home/nie/miniforge3/envs/ai-sprint/bin/python fx_trade_bot_integrated_v6.4.py --timeframe 15m >> logs/bot_63_15m.log 2>&1
+#
+# updated on 20260813
+#Option A — Daily at 08:00 SGT (00:00 UTC)
+#0 0 * * * /home/nie/projects/ai_training_cnn/retrain_model.sh
+
+#Option B — Every 6 hours (fresh data + model more often)
+#0 */6 * * * /home/nie/projects/ai_training_cnn/retrain_model.sh
+
+#Option C — Every 4 hours (aggressive refresh)
+#0 */4 * * * /home/nie/projects/ai_training_cnn/retrain_model.sh
+
+# Log rotation — weekly
+0 0 * * 0 cd /home/nie/projects/ai_training_cnn && mv logs/bot_h4.log logs/bot_h4_$(date +\%Y\%m\%d).log && touch logs/bot_h4.log
+
+# MC JSON cleanup — daily 3 AM
+0 3 * * * find /home/nie/projects/ai_training_cnn/daily_results -name "*.json" -mtime +7 -delete
+
+# Retrain model daily at midnight
+0 0 * * * cd /home/nie/projects/ai_training_cnn && /home/nie/miniforge3/envs/ai-sprint/bin/python retrain_model.py >> logs/bot_cron.log 2>&1
+
+# v6.8.5 — Profile2 (Account002) — Aggressive — TREND FILTER OFF
+# Runs: 0,15,30,45 min
+*/15 * * * * /home/nie/miniforge3/envs/ai-sprint/bin/python /home/nie/projects/ai_training_cnn/fx_trade_bot_v6.8.5.py --profile2 --trend-filter-enabled false --timeframe 15m >> /home/nie/projects/ai_training_cnn/logs/fx_trade_bot_v6.8.5_profile2.log 2>&1
+
+# v6.8.5 — Profile3 (Account003) — Conservative — TREND FILTER ON
+# Runs: 7,22,37,52 min (offset to avoid API congestion)
+7-59/15 * * * * /home/nie/miniforge3/envs/ai-sprint/bin/python /home/nie/projects/ai_training_cnn/fx_trade_bot_v6.8.6.py --profile3 --trend-filter-enabled true --timeframe 15m >> /home/nie/projects/ai_training_cnn/logs/fx_trade_bot_v6.8.6_profile3.log 2>&1
