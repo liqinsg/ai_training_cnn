@@ -36,6 +36,9 @@ from fx_trade_bot_mc import MCGenerator, MCConfig
 from fx_trade_bot_ml import ensure_model
 from config_oanda import api
 
+# ─── ✅ 使用统一日志配置 ──────────────────────────────────────────────────────
+from utils.logging_utils import get_logger
+logger = get_logger()   # 全局 "fx_bot" 日志器，自动带文件+控制台双输出
 
 BASE_DIR = Path(__file__).resolve().parent
 sys.path.extend([str(BASE_DIR), str(BASE_DIR / "utils")])
@@ -51,6 +54,7 @@ def cfg(profile_dict, key, default=None):
 parser = argparse.ArgumentParser(description="FX Trading Bot v6.8.5.1 · Unified Config")
 parser.add_argument("--profile2", action="store_true", help="Use Profile2 / Account002")
 parser.add_argument("--profile3", action="store_true", help="Use Profile3 / Account003")
+parser.add_argument("--profile4", action="store_true", help="Use Profile4 / Account004 · DEMO")  # ✅ ADD
 parser.add_argument("--timeframe", type=str, default="15m", choices=["15m", "1H", "H4"])
 parser.add_argument("--trend-filter-enabled", type=str.lower, choices=["true","false","1","0"], default=None)
 parser.add_argument("--confluence", action="store_true", default=None)
@@ -61,7 +65,9 @@ args = parser.parse_args()
 
 
 # ─── ✅ LOAD SELECTED PROFILE — NO separate files ────────────────────────────
-if args.profile3:
+if args.profile4:
+    PROFILE_NAME = "profile4"
+elif args.profile3:
     PROFILE_NAME = "profile3"
 else:
     PROFILE_NAME = "profile2"
@@ -69,14 +75,19 @@ else:
 P = PROFILE_CFG[PROFILE_NAME]  # All profile settings in ONE dict
 
 # ─── Resolve core identity ──────────────────────────────────────────────────
-PROFILE_LABEL     = cfg(P, "LABEL", PROFILE_NAME.upper())
-ACCOUNT_NAME      = cfg(P, "ACCOUNT_NAME", "Unknown")
-OANDA_ACCOUNT_ID  = cfg(P, "OANDA_ACCOUNT_ID")
-COOLDOWN_FILE     = BASE_DIR / cfg(P, "COOLDOWN_FILE", f"cooldown_{PROFILE_NAME}.json")
-RESULTS_DIR       = BASE_DIR / cfg(P, "RESULTS_DIR", f"daily_results_{PROFILE_NAME}")
+OANDA_ACCOUNT_ID = cfg(P, "OANDA_ACCOUNT_ID")
+PROFILE_LABEL = cfg(P, "LABEL", PROFILE_NAME.upper())
+ACCOUNT_NAME = cfg(P, "ACCOUNT_NAME", "Unknown")
+COOLDOWN_FILE = BASE_DIR / cfg(P, "COOLDOWN_FILE", f"cooldown_{PROFILE_NAME}.json")
+RESULTS_DIR = BASE_DIR / cfg(P, "RESULTS_DIR", f"daily_results_{PROFILE_NAME}")
 
-if not OANDA_ACCOUNT_ID:
-    raise RuntimeError(f"OANDA_ACCOUNT_ID missing for profile {PROFILE_NAME}")
+if not OANDA_ACCOUNT_ID or len(OANDA_ACCOUNT_ID) < 10 or "-" not in OANDA_ACCOUNT_ID:
+    logger.critical(f"💥 FATAL: Invalid OANDA_ACCOUNT_ID = '{OANDA_ACCOUNT_ID}'")
+    logger.critical("💥 程序终止 — 请检查 Profile4 Account ID 配置！")
+    send_telegram_message(f"💥 FATAL ERROR: Invalid Account ID for {PROFILE_LABEL}")
+    exit(1)  # ❌ 直接退出，不跑后面所有逻辑
+
+logger.info(f"🔑 使用账户: {OANDA_ACCOUNT_ID}")
 
 RESULTS_DIR.mkdir(exist_ok=True)
 TODAY_STR = datetime.now(timezone.utc).strftime("%Y%m%d")
@@ -175,9 +186,9 @@ logging.basicConfig(
         logging.StreamHandler(sys.stdout),
     ],
 )
-logger = logging.getLogger(__name__)
-logger.info(logger_info_cli)
-logger.info(f"⚖️  {PROFILE_LABEL} WEIGHTS: S={W_S:.2f} R={W_R:.2f} A={W_A:.2f} X={W_X:.2f} M={W_M:.2f} | SUM=1.00")
+# logger = logging.getLogger(__name__)
+# logger.info(logger_info_cli)
+# logger.info(f"⚖️  {PROFILE_LABEL} WEIGHTS: S={W_S:.2f} R={W_R:.2f} A={W_A:.2f} X={W_X:.2f} M={W_M:.2f} | SUM=1.00")
 
 
 # ─── Weekly EMA100 & Trend Logic ────────────────────────────────────────────
@@ -490,11 +501,14 @@ def main():
 
     # Step 7 — Score, Trend Filter, Smart TP & Execute
     logger.info("[STEP 7] Scoring + TREND FILTER + SMART TP...")
-    trade_lines, pip_cache, pair_parts = {}, {p: pip_size(p) for p in selected_pairs}, {p: (p[:3], p[3:].replace("=X","")) for p in selected_pairs}
+    # _trade_lines, pip_cache, pair_parts = {}, {p: pip_size(p) for p in selected_pairs}, {p: (p[:3], p[3:].replace("=X","")) for p in selected_pairs}
+    pip_cache, pair_parts = {p: pip_size(p) for p in selected_pairs}, {p: (p[:3], p[3:].replace("=X","")) for p in selected_pairs}
+
     all_candidates = []
 
     for pair in selected_pairs:
-        if pair not in pair_data: continue
+        if pair not in pair_data:
+            continue
         oanda = pair_data[pair]["oanda"]
         atr_val, rsi_val, adx_val = pair_data[pair]["atr"], pair_data[pair]["rsi"], pair_data[pair]["adx"]
 
@@ -502,7 +516,8 @@ def main():
         if pair in last_closed:
             d, r = last_closed[pair]
             if r > 0: last_closed[pair] = (d, r-1); logger.info(f"⏳ COOLDOWN {pair}: {r-1} runs remaining — SKIP"); continue
-            else: del last_closed[pair]
+            else:
+                del last_closed[pair]
 
         # Already Open → SKIP DUPLICATE
         if open_pos_by_oanda.get(oanda, False):
@@ -513,7 +528,8 @@ def main():
             prices = get_live_prices(oanda)
             if prices and "bid" in prices and "ask" in prices:
                 current = prices["bid"]; spread_pips = abs(prices["ask"] - prices["bid"]) / pip_cache[pair]
-            else: raise ValueError()
+            else:
+                raise ValueError()
         except Exception:
             current = float(pair_data[pair]["df"].iloc[-1]["Close"]); spread_pips = 1.0
 
@@ -585,10 +601,39 @@ def main():
 
     executed_in_this_run = set()
     for _, FINAL, pair, oanda, direction, current, sl_price, tp_price, dec, tp_pips in all_candidates:
-        if open_pos_by_oanda.get(oanda, False): logger.info(f"⏭️ {pair}: already open — SKIP"); continue
-        if oanda in executed_in_this_run: logger.info(f"⏭️ {pair}: already selected THIS run — SKIP"); continue
+        if open_pos_by_oanda.get(oanda, False):
+            logger.info(f"⏭️ {pair}: already open — SKIP")
+            continue
+        if oanda in executed_in_this_run:
+            logger.info(f"⏭️ {pair}: already selected THIS run — SKIP")
+            continue
 
         logger.info(f"📤 EXECUTE: {pair} {direction} | SL={sl_price:.{dec}f} | TP={tp_price:.{dec}f} | TP={tp_pips:.1f}p")
         try:
             lot = DEFAULT_LOT_SIZE
-            result = open_oanda
+            result = open_oanda_order(
+                api, OANDA_ACCOUNT_ID, oanda,
+                direction, lot,
+                stop_loss_price=sl_price,
+                take_profit_price=tp_price,
+            )
+            executed_in_this_run.add(oanda)
+            if result.get("ok"):
+                logger.info(f"✅ ORDER OPENED: {pair} {direction} | SL={sl_price:.{dec}f} TP={tp_price:.{dec}f}")
+            else:
+                logger.error(f"❌ ORDER FAILED: {pair} — {result.get('error', 'Unknown error')}")
+        except Exception as e:
+            logger.error(f"❌ EXCEPTION opening {pair}: {e}")
+
+    logger.info(f"\n✅ {PROFILE_LABEL} RUN COMPLETE")
+
+
+# ─── ENTRY POINT ─────────────────────────────────────────────────────────────
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        logger.info("⏹️ Interrupted by user")
+    except Exception as e:
+        logger.critical(f"💥 FATAL ERROR: {e}", exc_info=True)
+        send_telegram_message(f"💥 FX BOT {PROFILE_LABEL} FATAL ERROR:\n{str(e)}")

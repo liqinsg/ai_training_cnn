@@ -1,9 +1,8 @@
-# utils/logger_config.py
+# utils/logging_utils.py
 import logging
 import sys
 from pathlib import Path
-from datetime import datetime
-from datetime import timezone
+from datetime import datetime, timezone
 
 # ─── Log Directory ───
 LOG_DIR = Path(__file__).resolve().parent.parent / "logs"
@@ -32,6 +31,15 @@ console_handler.setLevel(logging.INFO)
 # ─── Attach ───
 logger.addHandler(file_handler)
 logger.addHandler(console_handler)
+
+# ──────────────────────────────────────────────────────────
+# 🔇 静音第三方库 INFO 日志 — 只隐藏请求行，保留 WARNING+
+# ──────────────────────────────────────────────────────────
+for _lib in ["oandapyV20", "requests", "urllib3", "oandapyV20.endpoints"]:
+    _lib_log = logging.getLogger(_lib)
+    _lib_log.setLevel(logging.WARNING)
+    _lib_log.propagate = False
+
 
 def get_logger(name: str = None) -> logging.Logger:
     """Get a shared logger — use in every .py file"""

@@ -72,13 +72,16 @@ MODEL_TYPE = "xgboost"
 TARGET_HORIZON = 6
 TRAIN_LOOKBACK_BARS = 5000
 
+from config_oanda import OANDA_ACCOUNT_ID_2, OANDA_ACCOUNT_ID_3, OANDA_ACCOUNT_ID_4
+
 # ==========================================
 # 🔑 ACCOUNT IDs ONLY — reference config_oanda connection
 # ==========================================
 # These map to accounts configured in config_oanda.py
 # NEVER put tokens/connection params here!
-OANDA_ACCOUNT_ID_PROFILE2 = "YOUR_ACCOUNT_ID_002"
-OANDA_ACCOUNT_ID_PROFILE3 = "YOUR_ACCOUNT_ID_003"
+OANDA_ACCOUNT_ID_PROFILE2 = OANDA_ACCOUNT_ID_2
+OANDA_ACCOUNT_ID_PROFILE3 = OANDA_ACCOUNT_ID_3
+OANDA_ACCOUNT_ID_PROFILE4 = OANDA_ACCOUNT_ID_4
 
 # ==========================================
 # 📊 PROFILE STRATEGY CONFIG — ALL IN ONE
@@ -183,6 +186,70 @@ PROFILE_CFG = {
         "ADX_SCALE_FACTOR": 2.0,
 
         # ── TREND FILTER: Profile3 = ON + Weekly EMA100 ──
+        "TREND_FILTER_ENABLED": True,
+        "WEEK_EMA100_FILTER_ENABLED": True,
+        "EMA_PERIOD_FAST": 40,
+        "EMA_PERIOD_SLOW": 80,
+
+        # ── TP/SL multipliers ──
+        "TP_MULT": 2.5,
+        "TP_STRONG_MULT": 3.0,
+        "ATR_SL_MULT": 2.5,
+        "ATR_TP_MULT": 3.0,
+
+        # ── Dynamic Exit ──
+        "USE_DYNAMIC_SL": 2,
+        "DYNAMIC_SL_MULT": 1.5,
+        "BE_TRIGGER_ATR_MULT": 1.5,
+        "TRAIL_TRIGGER_ATR_MULT": 2.5,
+        "TRAIL_ATR_MULT": 1.5,
+        "MAX_HOLD_BARS": 12,
+
+        # ── SL Strategy ──
+        "SL_USE_ZONE_HIERARCHY": True,
+
+        # ── Pair Selection ──
+        "USE_TOP_PAIRS_ONLY": False,
+        "TOP_PAIRS_COUNT": 4,
+        "TOP_PAIRS_MIN_GAP": 0.25,
+
+        # ── MC ──
+        "SKIP_MC": False,
+    },
+    # ✅ ─── Profile4 / Account004 · DEMO 全新独立 ───
+    "profile4": {
+        "LABEL": "PROFILE4",
+        "ACCOUNT_NAME": "Account 004",
+        "OANDA_ACCOUNT_ID": OANDA_ACCOUNT_ID_PROFILE4,
+        "COOLDOWN_FILE": "cooldown_profile4.json",
+        "RESULTS_DIR": "daily_results_profile4",
+
+        # ── Identity ──
+        "MODE": "LEVEL10",
+        "BASE_MIN_EDGE": 0.50,
+        "DEFAULT_LOT_SIZE": 5000,                         # ✅ Added: Demo half-size
+
+        # ── Weights: S=40 R=15 A=15 X=20 M=10 ──
+        "WEIGHT_STRENGTH": 0.40,
+        "WEIGHT_RSI": 0.15,
+        "WEIGHT_ADX": 0.15,
+        "WEIGHT_XGB": 0.20,
+        "WEIGHT_MC": 0.10,
+
+        # ── Thresholds ──
+        "MIN_CONVICTION_SCORE": 45.0,                     # ✅ Fixed: 20 → 45
+        "MIN_SCORE_GAP": 0.10,
+        "MAX_OPEN_POSITIONS": 4,
+        "XGB_BULLISH_THRESHOLD": 0.55,
+        "MC_BULLISH_THRESHOLD_PCT": 55.0,
+        "MC_STRONG_THRESHOLD": 0.55,
+        "REQUIRE_DIRECTION_CONSENSUS": True,
+        "CONSENSUS_THRESHOLD": 2,
+        "CONSENSUS_REQUIRED_VOTES": 2,
+        "REQUIRE_STRONG_MOMENTUM": False,
+        "ADX_SCALE_FACTOR": 2.0,
+
+        # ── TREND FILTER: Profile4 = ON + Weekly EMA100 ──
         "TREND_FILTER_ENABLED": True,
         "WEEK_EMA100_FILTER_ENABLED": True,
         "EMA_PERIOD_FAST": 40,
