@@ -16,7 +16,7 @@ import oandapyV20.endpoints.accounts as oanda_accounts
 # ────────────────────────────────────────────────────────────────
 # Environment + Tokens
 # ────────────────────────────────────────────────────────────────
-OANDA_ENV_DEMO = "practice"
+OANDA_ENV = "practice"
 OANDA_ENV_LIVE = "live"
 
 load_dotenv()
@@ -27,6 +27,7 @@ OANDA_API_TOKEN_LIVE = os.getenv("OANDA_API_TOKEN_LIVE", "")
 # Account IDs (from .env with defaults)
 # ────────────────────────────────────────────────────────────────
 # Demo
+OANDA_ACCOUNT_ID = os.getenv("OANDA_ACCOUNT_ID_1", "101-003-39389016-001")
 OANDA_ACCOUNT_ID_1 = os.getenv("OANDA_ACCOUNT_ID_1", "101-003-39389016-001")
 OANDA_ACCOUNT_ID_2 = os.getenv("OANDA_ACCOUNT_ID_2", "101-003-39389016-002")
 OANDA_ACCOUNT_ID_3 = os.getenv("OANDA_ACCOUNT_ID_3", "101-003-39389016-003")
