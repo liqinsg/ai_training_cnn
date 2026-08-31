@@ -1,346 +1,206 @@
+# FX Trading Bot v6.6 — Workflow & Strategy Documentation
 
-# 🤖 FX Trading Bot v6.8 — System Architecture & Strategy Documentation
+## 📋 Overview
 
----
-
-## 📑 Table of Contents
-
-1. [System Overview](#1-system-overview)
-2. [Directory &amp; File Structure](#2-directory--file-structure)
-3. [Configuration Layer](#3-configuration-layer)
-4. [Data Pipeline](#4-data-pipeline)
-5. [Strategy Engine — 5 Signal Modules](#5-strategy-engine--5-signal-modules)
-6. [Weighted Scoring &amp; Consensus Logic](#6-weighted-scoring--consensus-logic)
-7. [Entry Conditions Workflow](#7-entry-conditions-workflow)
-8. [Exit &amp; Risk Management](#8-exit--risk-management)
-9. [Execution &amp; Safety Guards](#9-execution--safety-guards)
-10. [Tuning Guide &amp; Cheat Sheet](#10-tuning-guide--cheat-sheet)
+**Bot Version**: v6.6 (Centralized Config from `config_bot.py`)
+**Timeframe**: 15m / H4 / Daily (configurable)
+**Data Source**: OANDA Real-Time + Yahoo Finance
+**Model**: XGBoost Machine Learning + Technical Indicators + Monte Carlo Simulation
+**Execution**: OANDA API → Dynamic SL/TP + Telegram Alerts
 
 ---
 
-## 1. System Overview
-
-### Philosophy
-
-> **Currency Strength First → Confirm with Indicators → ML & MC Filter → Consensus Vote → Weighted Score → Hierarchical Exit**
-
-The bot combines **fundamental relative strength** (primary driver, 50% weight) with **technical indicators**, **XGBoost machine learning**, and **Monte Carlo probabilistic forecasting** into a unified, transparent scoring system. Decisions require **direction consensus** and **minimum conviction score** before execution.
-
-### Core Design Principles
-
-- ✅ **Modular & Configurable** — all knobs in `config_bot.py`
-- ✅ **Weighted Transparency** — every component contributes to a traceable FINAL score
-- ✅ **Defensive by Default** — multiple thresholds, position limits, duplicate protection
-- ✅ **Multi-Source Validation** — ≥2 of 3 signals must agree before trading
-- ✅ **OANDA-Native Execution** — SL/TP attached at order creation
-
----
-
-## 2. Directory & File Structure
+## 🔁 Full Workflow Pipeline
 
 ```
-ai_training_cnn/
-├── fx_trade_bot_v6.8.1.py      ← 🚀 MAIN BOT — orchestrates everything
-├── config_bot.py                ← ⚙️ STRATEGY CONFIG — ALL settings + validation
-├── config_oanda.py              ← 🔑 OANDA API credentials (separated)
-├── config.py                    ← Legacy fallbacks
-├── data_pipeline.py             ← 📊 Data fetching + Feature Engineering + ATR
-├── strategy_decision.py         ← 🧠 StrategyEngine, Direction, FilterMode
-├── fx_trade_bot_utils.py        ← 🛠️ Shared helpers: cooldown, positions, orders, SL/TP
-├── utils/
-│   ├── trading_core.py          ← Market hours, position checks
-│   └── strategy_helpers.py      ← Strength matrix, formatting
-├── telegram_message.py          ← ✉️ Telegram alerts
-├── trade_model_xgb.pkl          ← 🤖 Pre-trained XGBoost model
-├── close_all.py                 ← 🧹 Emergency close utility
-├── check_order_details.py       ← 📈 P&L reporting utility
-└── logs/
-    └── fx_trade_bot_v6.8.log    ← Runtime log
-```
-
----
-
-## 3. Configuration Layer (`config_bot.py`)
-
-### Centralized Settings Groups
-
-| Group               | Purpose                                   |
-| ------------------- | ----------------------------------------- |
-| Feature & ATR       | RSI/ADX enable, ATR periods & multipliers |
-| ML Model            | XGBoost horizon, lookback bars            |
-| Strategy Thresholds | Score, conviction, edge                   |
-| Data Sources        | Yahoo/OANDA intervals, periods            |
-| Monte Carlo         | Simulations, confidence, forecast bands   |
-| Risk & Execution    | Lot size, max positions, pairs list       |
-| Dynamic TP          | Trailing, breakeven trigger levels        |
-| Consensus           | Direction agreement rules                 |
-| Weights             | S/R/A/X/M contribution percentages        |
-| Portfolio Balance   | Long/Short ratio enforcement              |
-| Hierarchical SL     | Multi-timeframe stop-loss zones           |
-| Validation          | Auto-checks on import                     |
-
-### ✅ Built-In Validation
-
-- Weight sum must = **1.00 ± 0.005**
-- All thresholds within sane ranges
-- Warnings on unusual values
-- **Halts execution** on critical errors
-
----
-
-## 4. Data Pipeline
-
-### Sources & Intervals
-
-```
-Primary: Yahoo Finance 15m bars  ← matched to bot timeframe
-Fallback: OANDA API
-Lookback: 200 bars per pair
-```
-
-### Feature Engineering (`data_pipeline.py`)
-
-- **ATR(14)** — volatility normalization
-- **RSI(14)** — overbought/oversold
-- **ADX(14) + DI+/DI-** — trend strength detection
-- **MACD** — momentum confirmation
-- Normalization → 0–100 scale for consistent weighting
-
----
-
-## 5. Strategy Engine — 5 Signal Modules
-
-### 🟢 S — Currency Strength (50% Weight) — PRIMARY DRIVER
-
-```
-Logic: Rank all 7 currencies → find strongest vs weakest
-Gap = Strongest.Strength − Weakest.Strength
-BUY if gap ≥ +MIN_STRENGTH_GAP  (Strong Base / Weak Quote)
-SELL if gap ≤ −MIN_STRENGTH_GAP
-Score = normalize(gap) × 100
-```
-
-> **Why 50%?** Relative strength = fundamental flow — most reliable edge.
-
-### 🔵 R — RSI (15% Weight)
-
-```
-Logic: RSI aligned with direction
-BUY: RSI < 50 (bullish momentum)
-SELL: RSI > 50 (bearish momentum)
-Score = 100 − |RSI − 50|  (higher = more aligned)
-```
-
-### 🟣 A — ADX Trend Strength (15% Weight)
-
-```
-Logic: ADX = trend magnitude
-ADX ≥ 25 = trending
-ADX ≥ 30 = strong trend
-Floor: min(ADX, 20)  ← prevents zero-score crush
-Boost: ADX ≥ 30 → +10 points
-Score = ADX × 2.0  ← scaled contribution
-```
-
-### 🟠 X — XGBoost ML Prediction (12% Weight)
-
-```
-Logic: Pre-trained model predicts next 6 bars
-BUY if prob ≥ 0.55
-SELL if prob < 0.55
-Score = prob × 100
-```
-
-### 🎲 M — Monte Carlo Forecast (8% Weight)
-
-```
-Logic: 5,000 simulations → P_UP %
-BUY if P_UP ≥ 55%
-SELL if P_UP < 55%
-Regime: STRONG MOMENTUM / NEUTRAL
-Score = P_UP %
+START BOT RUN
+│
+├─► ① PRE-CHECKS
+│   ├─ Check forex market status → skip if closed
+│   ├─ Load/retrain XGBoost model (if missing)
+│   └─ Load config from config_bot.py → fallbacks to config.py
+│
+├─► ② CURRENCY STRENGTH ANALYSIS
+│   ├─ Calculate strength scores for 7 major currencies
+│   ├─ Rank: strongest → weakest
+│   └─ Compute gap between base & quote currency per pair
+│
+├─► ③ FETCH & PREPARE DATA
+│   ├─ Pull 200 latest candles from OANDA per pair
+│   ├─ Build features: ATR, MACD, RSI, ADX
+│   ├─ Clean: inf/NaN → forward-fill → zero-fill
+│   └─ Store ATR value per pair for SL/TP calculation
+│
+├─► ④ MONTE CARLO FORECAST
+│   ├─ 5,000 simulations per pair
+│   ├─ Output: regime (MOMENTUM/NEUTRAL/REVERSAL), 90% price range, P_up %
+│   ├─ Send MC summary to Telegram
+│   └─ Skip or load cached if SKIP_MC = True
+│
+├─► ⑤ MULTI-TIMEFRAME CONFLUENCE (Optional)
+│   ├─ Check signal alignment across 15m / 1H / H4
+│   └─ Require ≥2 agreeing timeframes to pass
+│
+├─► ⑥ POSITION MANAGEMENT
+│   ├─ Scan all open positions
+│   ├─ Update Dynamic TP / Trailing SL
+│   └─ Close positions by strength signal or trailing trigger
+│
+├─► ⑦ SIGNAL GENERATION & FILTERING
+│   ├─ Check cooldown → skip if active
+│   ├─ Skip if position already open
+│   ├─ Generate signal: XGBoost score + rules
+│   ├─ Apply STRENGTH GAP FILTER
+│   │   ├─ SELL blocked if base strong > threshold
+│   │   └─ BUY blocked if quote strong > threshold
+│   ├─ Apply confluence filter (if enabled)
+│   └─ Check MAX_SIMULTANEOUS_TRADES limit
+│
+├─► ⑧ RISK CALCULATION
+│   ├─ ATR × Multiplier → SL distance
+│   ├─ Enforce MIN_SL_PIPS (25) / MIN_SL_PIPS_JPY (35)
+│   ├─ TP = SL × (ATR_TP_MULT ÷ ATR_SL_MULT)
+│   └─ Attach SL/TP to order
+│
+├─► ⑨ EXECUTION
+│   ├─ TEST MODE → log only
+│   └─ LIVE MODE → send order to OANDA → create SL & TP orders
+│
+└─► ⑩ REPORT
+    ├─ Telegram: MC + Trade signals
+    ├─ Update cooldown state
+    └─ Log complete → END RUN
 ```
 
 ---
 
-## 6. Weighted Scoring & Consensus Logic
+## 🧠 Strategy Components
 
-### ⚖️ The Formula
+### 1. Currency Strength Ranking
+
+> **Core directional filter** — trades follow strength momentum
+
+- Calculates relative strength index for: **AUD, EUR, GBP, NZD, CHF, USD, JPY**
+- Each pair's **gap = base_strength − quote_strength**
+- **SELL** blocked if `gap > STRENGTH_SIGNAL_BLOCK_THRESHOLD (1.0)` → base too strong to sell
+- **BUY** blocked if `−gap > 1.0` → quote too strong to buy
+- **Goal**: avoid fighting the dominant strength trend
+
+### 2. XGBoost ML Model
+
+> **Confidence scoring engine**
+
+- **Features**: ATR, MACD, RSI, ADX + derived transforms
+- **Target**: Price direction TARGET_HORIZON (6) bars ahead
+- **Output**: Conviction Score (0–100) + Probability %
+- **Threshold**: MIN_CONVICTION_SCORE ≥ 40.0 (LEVEL10 mode)
+- **Model file**: `trade_model_xgb.pkl` auto-retrained if missing
+
+### 3. Monte Carlo Simulation
+
+> **Volatility & regime confirmation**
+
+- **Simulations**: 5,000 per pair
+- **Confidence**: 90% price envelope
+- **Regime detection**: STRONG MOMENTUM / NEUTRAL / REVERSAL
+- **P_up**: Probability price rises
+- **Used as**: penalty factor in signal scoring (FilterMode.PENALIZE)
+
+### 4. Technical Indicators
+
+> **Feature inputs + ATR risk basis**
+
+| Indicator | Setting   | Purpose                            |
+| --------- | --------- | ---------------------------------- |
+| ATR       | Period 14 | Volatility measure → SL/TP sizing |
+| MACD      | Standard  | Trend strength                     |
+| RSI       | Standard  | Overbought/Oversold                |
+| ADX       | Standard  | Trend strength filter              |
+
+### 5. ATR-Based Dynamic SL/TP
+
+> **Volatility-adaptive risk sizing**
 
 ```
-FINAL = (S × 0.50) + (R × 0.15) + (A × 0.15) + (X × 0.12) + (M × 0.08)
-         ↑           ↑           ↑           ↑           ↑
-    Strength      RSI         ADX       XGBoost    Monte Carlo
+SL Distance = MAX( ATR × 2.0 , MIN_SL_PIPS )
+TP Distance = SL × (3.0 ÷ 2.0) = SL × 1.5
 ```
 
-### 🗳️ Direction Consensus (≥ 2 of 3)
+- **ATR_SL_MULT = 2.0**, **ATR_TP_MULT = 3.0** → **Risk:Reward = 1 : 1.5**
+- **Minimum SL enforced**: 25 pips (non-JPY), 35 pips (JPY pairs) → avoids noise stop-outs
 
-```
-Voters: Strength  |  XGBoost  |  Monte Carlo
-        (BUY/SELL)  (BUY/SELL)   (BUY/SELL)
+### 6. Dynamic TP / Trailing Management
 
-✅ TRADE only if ≥ 2 agree
-❌ SKIP if split 1–1–1
-```
+> **In-progress trade optimization**
 
-> RSI & ADX are **scoring components only** — they boost/reduce confidence but do NOT vote on direction.
+- **Break-even trigger**: Price moves 1.5× ATR in favor → move SL to entry
+- **Trailing trigger**: Price moves 2.5× ATR → activate trailing SL
+- **Trailing step**: SL trails price by 1.5× ATR
+- **TP raise**: Every 15 pips gained → raise TP target
+- **Max hold**: Auto-close after 12 bars without hitting TP/SL
 
-### ✅ Passing Criteria
+### 7. Multi-Timeframe Confluence (Optional)
 
-```
-FINAL Score ≥ THRESHOLD_SCORE (30)
-AND Consensus ≥ 2/3
-AND Strength Gap ≥ MIN_STRENGTH_GAP (0.25)
-```
+> **Higher-confidence filter**
+
+- Require signals to align across ≥2 timeframes (15m / 1H / H4)
+- Reduces false signals → fewer but higher-quality entries
+
+### 8. Cooldown Filter
+
+> **Avoid over-trading after closed positions**
+
+- After a pair closes → skip for N runs
+- Resets automatically when cooldown expires
+
+### 9. Position Limit Enforcement
+
+> **Risk cap**
+
+- **MAX_SIMULTANEOUS_TRADES = 5** → never exceed 5 open positions
+- Prevents correlated over-exposure
 
 ---
 
-## 7. Entry Conditions Workflow
+## ⚙️ Strategy Configuration Reference (`config_bot.py`)
 
-```
-START
-  │
-  ▼
-STEP 1: Currency Strength Ranking
-  ├─ Rank 7 currencies
-  ├─ Calculate pairwise gaps
-  └─ Filter pairs with gap < MIN_GAP → SKIP
-  │
-  ▼
-STEP 2: Technical Indicators (RSI / ADX / ATR)
-  ├─ Fetch 200 bars
-  ├─ Compute RSI(14), ADX(14), ATR(14)
-  └─ Score alignment with direction
-  │
-  ▼
-STEP 3: Monte Carlo Forecast
-  ├─ 5,000 sims → P_UP %
-  ├─ Classify regime
-  └─ Score
-  │
-  ▼
-STEP 4: XGBoost Prediction
-  ├─ Load model
-  ├─ Generate features
-  └─ Predict bullish probability → Score
-  │
-  ▼
-STEP 5: Consensus Vote (Strength + XGB + MC)
-  ├─ ✅ ≥ 2 agree → proceed
-  └─ ❌ Split → SKIP
-  │
-  ▼
-STEP 6: Weighted FINAL Score Calculation
-  ├─ S×0.50 + R×0.15 + A×0.15 + X×0.12 + M×0.08
-  └─ Score < THRESHOLD (30) → SKIP
-  │
-  ▼
-STEP 7: Position & Cooldown Check
-  ├─ Already open → SKIP
-  ├─ In cooldown → SKIP
-  └─ MAX_OPEN reached → SKIP
-  │
-  ▼
-STEP 8: Rank → Select Top N → EXECUTE ✅
-END
-```
+| Category                  | Parameter                              | Value                 |
+| ------------------------- | -------------------------------------- | --------------------- |
+| **Mode**            | MODE                                   | LEVEL10               |
+| **Conviction**      | MIN_CONVICTION_SCORE                   | 40.0                  |
+| **ATR**             | ATR_SL_MULT / ATR_TP_MULT              | 2.0 / 3.0             |
+| **Min SL**          | MIN_SL_PIPS / MIN_SL_PIPS_JPY          | 25 / 35               |
+| **Strength Filter** | STRENGTH_SIGNAL_BLOCK_THRESHOLD        | 1.0                   |
+| **Limits**          | MAX_SIMULTANEOUS_TRADES                | 5                     |
+| **MC**              | SIMULATIONS / CONFIDENCE               | 5,000 / 90%           |
+| **Dynamic TP**      | BE_TRIGGER / TRAIL_TRIGGER / TRAIL_ATR | 1.5× / 2.5× / 1.5× |
+| **Lot Size**        | DEFAULT_LOT_SIZE                       | 10,000 units          |
 
 ---
 
-## 8. Exit & Risk Management
+## ✅ Signal Acceptance Checklist
 
-### 🛡️ Hierarchical Stop-Loss (Priority Order)
+A trade is ONLY opened when ALL pass:
 
-```
-1. H4 Zone Lookback  ← Higher timeframe support/resistance
-2. H8 Lookback Fallback
-3. Daily Lookback Fallback
-4. ATR × 2.0  ← Final volatility-based
-5. Fixed 35 pips absolute minimum
-└─ Buffer: ±25 pips from zone | Min distance: ≥20 pips
-```
-
-### 🎯 Take-Profit
-
-```
-ATR × 3.0  ← Fixed multiple by default
-TRAILING_TP = True → activates breakeven + trail
-  ├─ BE Trigger: ATR × 1.5
-  └─ Trail Trigger: ATR × 2.5 | Trail distance: ATR × 1.5
-```
-
-### 📊 Portfolio Balance (Optional)
-
-```
-ENFORCE_LONGS_SHORTS = True
-  ├─ MIN_PER_SIDE = 1         ← At least 1 LONG + 1 SHORT
-  └─ MAX_RATIO = 0.75         ← No more than 75% one side
-```
+1. ✅ Market is open
+2. ✅ Not in cooldown period
+3. ✅ No existing open position
+4. ✅ XGBoost conviction ≥ 40.0
+5. ✅ Strength gap ≤ 1.0 (direction consistent)
+6. ✅ Confluence requirement met (if enabled)
+7. ✅ < 5 open positions currently
+8. ✅ SL distance ≥ minimum pips
 
 ---
 
-## 9. Execution & Safety Guards
+## 📝 Example Signal Log Interpretation
 
-| Guard                 | Rule                            | Purpose               |
-| --------------------- | ------------------------------- | --------------------- |
-| Duplicate Protection  | Skip if position exists         | No double entry       |
-| MAX_OPEN Limit        | Never exceed 4 positions        | Cap exposure          |
-| Cooldown              | Skip recently traded pairs      | Prevent overtrading   |
-| Order ID Verification | Verify SL/TP attached correctly | OANDA order integrity |
-| Test Mode             | `--test-trade` = no orders    | Safe iteration        |
-| Position Check        | Query OANDA before every run    | Sync state            |
-| Telegram Logging      | All trades + P&L reported       | Audit trail           |
-
----
-
-## 10. Tuning Guide & Cheat Sheet
-
-### ⚙️ Quick Knobs — `config_bot.py`
-
-| Want More Trades | Want Fewer Trades | Setting                     |
-| ---------------- | ----------------- | --------------------------- |
-| ↓ 0.20          | ↑ 0.40+          | `MIN_STRENGTH_GAP`        |
-| ↓ 25            | ↑ 35+            | `THRESHOLD_SCORE`         |
-| False            | True              | `REQUIRE_STRONG_MOMENTUM` |
-| ↑ 0.60          | ↓ 0.40           | `WEIGHT_STRENGTH`         |
-
-### 📊 Weight Matrix
-
-| Component         | Symbol      | Weight        | Purpose                |
-| ----------------- | ----------- | ------------- | ---------------------- |
-| Currency Strength | **S** | **50%** | Primary driver         |
-| RSI               | R           | 15%           | Momentum alignment     |
-| ADX               | A           | 15%           | Trend confirmation     |
-| XGBoost           | X           | 12%           | ML prediction          |
-| Monte Carlo       | M           | 8%            | Probabilistic forecast |
-
-### 🧪 How to Test Safely
-
-```bash
-# Dry run — no orders sent
-python fx_trade_bot_v6.8.1.py --timeframe 15m --test-trade
-
-# Live — sends real orders
-python fx_trade_bot_v6.8.1.py --timeframe 15m --no-test-trade
-
-# Emergency stop
-python close_all.py --yes
+```
+📈 SIGNAL USDJPY=X | SELL | Score=84.9 | Prob=0.0% | SL=159.441 | TP=158.566
+✅ OANDA accepted order — TradeID=5220 @ 159.094
 ```
 
----
-
-## ✅ Summary
-
-> **Architecture:** Modular pipeline → Rank → Score → Vote → Execute
->
-> **Primary Edge:** Currency Strength (50%) → trades strongest vs weakest
->
-> **Confirmation:** RSI + ADX + XGBoost + Monte Carlo → filter noise
->
-> **Safety:** Consensus ≥2/3 + Score ≥30 + Hierarchical SL + Position Limits
->
-> **Philosophy:** Conservative by design — trades only when multiple independent signals align → patience over frequency
-
----
-
-Would you like me to save this as a proper PDF-ready Markdown file (`README_v6.8.md`) in your project directory? 📄
+- **Score 84.9** → high conviction
+- **SELL** → aligned with JPY being weakest currency
+- **SL/TP** → calculated from ATR 0.0747 × 2.0 = 0.1494 → capped to 35 JPY pips
+- **TradeID 5220** → reference for tracking
