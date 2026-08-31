@@ -102,7 +102,7 @@ class ATRModule:
 
 
         try:
-            import pandas_ta as ta
+            import pandas_ta_classic as ta
             atr_series = ta.atr(df["High"], df["Low"], df["Close"], length=self.period)
             if atr_series is None or atr_series.empty:
                 raise ValueError("ta.atr returned None/empty")
@@ -236,7 +236,7 @@ class FeatureEngine:
         # 5. RSI
         if self.cfg.use_rsi and n > self.cfg.rsi_period:
             try:
-                import pandas_ta as ta
+                import pandas_ta_classic as ta
                 df["rsi"] = ta.rsi(df["Close"], length=self.cfg.rsi_period)
                 if n > self.cfg.rsi_period + 3:
                     df["rsi_slope"] = df["rsi"].diff(3)
@@ -252,7 +252,7 @@ class FeatureEngine:
         # 7. MACD
         if self.cfg.use_macd and n > 26:
             try:
-                import pandas_ta as ta
+                import pandas_ta_classic as ta
                 macd = ta.macd(df["Close"])
                 if macd is not None and not macd.empty:
                     df = pd.concat([df, macd], axis=1)
