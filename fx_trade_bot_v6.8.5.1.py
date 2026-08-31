@@ -353,7 +353,8 @@ def calc_weighted_score(pair: str, gap: float, rsi_val: float, adx_val: float,
     R = max(0.0, min(100.0, (50.0 - rsi) * 2.0)) if direction == "BUY" else max(0.0, min(100.0, (rsi - 50.0) * 2.0))
     adx_normalized = min(adx_val * cfg(P, "ADX_SCALE_FACTOR", 2.0), 100.0)
     A = max(0.0, min(100.0, adx_normalized))
-    X = max(0.0, min(100.0, (xgb_prob or 0.0) * 100.0)) or max(0.0, min(100.0, S*0.3 + R*0.3))
+    # X = max(0.0, min(100.0, (xgb_prob or 0.0) * 100.0)) or max(0.0, min(100.0, S*0.3 + R*0.3))
+    X = max(0.0, min(100.0, (xgb_prob or 0.0) * 100.0)) or 50.0
     M = max(0.0, min(100.0, mc_pct_up if mc_pct_up is not None else 50.0))
     FINAL = S*W_S + R*W_R + A*W_A + X*W_X + M*W_M
     return direction, {

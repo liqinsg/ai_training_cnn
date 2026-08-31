@@ -72,16 +72,10 @@ MODEL_TYPE = "xgboost"
 TARGET_HORIZON = 6
 TRAIN_LOOKBACK_BARS = 5000
 
-from config_oanda import OANDA_ACCOUNT_ID_2, OANDA_ACCOUNT_ID_3, OANDA_ACCOUNT_ID_4
-
 # ==========================================
 # 🔑 ACCOUNT IDs ONLY — reference config_oanda connection
 # ==========================================
-# These map to accounts configured in config_oanda.py
-# NEVER put tokens/connection params here!
-OANDA_ACCOUNT_ID_PROFILE2 = OANDA_ACCOUNT_ID_2
-OANDA_ACCOUNT_ID_PROFILE3 = OANDA_ACCOUNT_ID_3
-OANDA_ACCOUNT_ID_PROFILE4 = OANDA_ACCOUNT_ID_4
+from config_oanda import OANDA_ACCOUNT_ID_2 as OANDA_ACCOUNT_ID_PROFILE2, OANDA_ACCOUNT_ID_3 as OANDA_ACCOUNT_ID_PROFILE3, OANDA_ACCOUNT_ID_4 as OANDA_ACCOUNT_ID_PROFILE4
 
 # ==========================================
 # 📊 PROFILE STRATEGY CONFIG — ALL IN ONE
@@ -150,7 +144,7 @@ PROFILE_CFG = {
         "SKIP_MC": False,
     
         # ── 排除高波动货币对：含 CHF 或 JPY 的全部跳过 ──
-        "EXCLUDE_CURRENCIES": ["JPY", "CHF"],
+        #"EXCLUDE_CURRENCIES": ["JPY", "CHF"],
         
     },
 
@@ -237,7 +231,7 @@ PROFILE_CFG = {
         "WEIGHT_MC": 0.10,
 
         # ── Thresholds ──
-        "MIN_CONVICTION_SCORE": 45.0,                     # ✅ Fixed: 20 → 45
+        "MIN_CONVICTION_SCORE": 20.0,                     # ✅ Fixed: 20 → 45
         "MIN_SCORE_GAP": 0.10,
         "MAX_OPEN_POSITIONS": 4,
         "XGB_BULLISH_THRESHOLD": 0.55,
