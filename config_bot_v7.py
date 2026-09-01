@@ -230,10 +230,10 @@ PROFILE_CFG = {
         "WEIGHT_XGB": 0.20,
         "WEIGHT_MC": 0.10,
 
-        # ── Thresholds (LOOSE · 档 A · 安全放宽) ──
-        "MIN_CONVICTION_SCORE": 15.0,                     # 20.0 → 15.0 · 捞回擦边球 (CADJPY 15.4 等)
-        "MIN_SCORE_GAP": 0.05,                            # 0.10 → 0.05 · EURJPY 0.09 也能参与共识
-        "MAX_OPEN_POSITIONS": 4,
+        # ── Thresholds (FINAL · 关 WEEKLY EMA100，留 TREND FILTER) ──
+        "MIN_CONVICTION_SCORE": 15.0,                     # 20.0 → 15.0 · 捞回擦边球
+        "MIN_SCORE_GAP": 0.05,                            # 0.10 → 0.05 · 低 gap 也能参与共识
+        "MAX_OPEN_POSITIONS": 6,                          # 4 → 6 · 候选多了开仓上限跟上
         "XGB_BULLISH_THRESHOLD": 0.52,                    # 0.55 → 0.52 · 减少 strength/XGB 分裂投票
         "MC_BULLISH_THRESHOLD_PCT": 52.0,                 # 55.0 → 52.0 · MC 信号更平衡
         "MC_STRONG_THRESHOLD": 0.55,
@@ -243,9 +243,9 @@ PROFILE_CFG = {
         "REQUIRE_STRONG_MOMENTUM": False,
         "ADX_SCALE_FACTOR": 2.0,
 
-        # ── TREND FILTER: 档 A 保留 EMA/WEEKLY EMA100，只把 EMA 调灵敏 ──
+        # ── TREND FILTER: 关周 EMA100（最大瓶颈），留 EMA crossover（这版本紧要之处） ──
         "TREND_FILTER_ENABLED": True,
-        "WEEK_EMA100_FILTER_ENABLED": True,
+        "WEEK_EMA100_FILTER_ENABLED": False,              # True → False · 🔴 周一亚盘挡了 6+ 单
         "EMA_PERIOD_FAST": 20,                            # 40 → 20 · 更敏捷
         "EMA_PERIOD_SLOW": 40,                            # 80 → 40 · 减少滞后挡单
 
