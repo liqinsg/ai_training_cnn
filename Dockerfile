@@ -15,9 +15,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy project code
 COPY . .
 
-# Create crontab: run every 15 min at 0,15,30,45
-echo '0/15 * * * * root cd /app && /usr/local/bin/python /app/fx_trade_bot_v7.py --profile4 >> /app/logs/fx_trade_bot_v7.log 2>&1' > /etc/cron.d/fx-bot
-# Fix crontab perms (required by cron)
+# Copy crontab entry (separate file is cleaner than echo inside RUN)
+COPY fx-bot.cron /etc/cron.d/fx-bot
 RUN chmod 0644 /etc/cron.d/fx-bot
 
 # Make sure logs dir exists
