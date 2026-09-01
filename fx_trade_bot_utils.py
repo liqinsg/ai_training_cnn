@@ -492,6 +492,161 @@ def open_oanda_order_simple(
     units: int,
     sl_price: float,
     tp_price: float,
+    tag: str = "",
+    client_id: str = "",
+    comment: str = "",
+) -> dict:
+    from oandapyV20.endpoints.orders import OrderCreate
+    from oandapyV20.endpoints.trades import TradeClientExtensions
+
+    dec = price_decimals(instrument)
+
+    client_extensions = {}
+
+    if client_id:
+        client_extensions["id"] = client_id
+
+    if tag:
+        client_extensions["tag"] = tag
+
+    if comment:
+        client_extensions["comment"] = comment
+
+    order_payload = {
+        "order": {
+            "type": "MARKET",
+            "instrument": instrument,
+            "units": str(
+                abs(units) if direction.upper() == "BUY" else -abs(units)
+            ),
+            "positionFill": "DEFAULT",
+        }
+    }
+
+    # Attach client extensions to order
+    if client_extensions:
+        order_payload["order"]["clientExtensions"] = client_extensions
+
+    try:
+        resp = api.request(
+            OrderCreate(
+                accountID=oanda_account_id,
+                data=order_payload,
+            )
+        )
+
+        logger.info(f"✅ OANDA accepted order for {instrument}")
+
+        trade_id = ""
+
+        if "orderFillTransaction" in resp:
+            fill = resp["orderFillTransaction"]
+
+            trade_opened = fill.get("tradeOpened", {})
+            trade_id = str(trade_opened.get("tradeID", ""))
+
+            logger.info(f"📦 Trade opened: TradeID={trade_id}")
+
+        elif "orderCreateTransaction" in resp:
+            trade_id = str(
+                resp["orderCreateTransaction"].get("id", "")
+            )
+
+            logger.info(f"📦 Order created: OrderID={trade_id}")
+
+        if not trade_id:
+            return {
+                "status": "ERROR",
+                "message": "TradeID missing",
+            }
+
+        # Attach tag directly to trade
+        if client_extensions:
+            try:
+                api.request(
+                    TradeClientExtensions(
+                        accountID=oanda_account_id,
+                        tradeID=trade_id,
+                        data={
+                            "clientExtensions": client_extensions
+                        },
+                    )
+                )
+
+                logger.info(
+                    f"🏷️ Trade tagged: "
+                    f"tag={tag}, id={client_id}, comment={comment}"
+                )
+
+            except Exception as ce:
+                logger.warning(
+                    f"⚠️ Failed to set trade metadata: {ce}"
+                )
+
+        # Stop Loss
+        if sl_price:
+            api.request(
+                OrderCreate(
+                    accountID=oanda_account_id,
+                    data={
+                        "order": {
+                            "type": "STOP_LOSS",
+                            "tradeID": trade_id,
+                            "price": f"{float(sl_price):.{dec}f}",
+                            "timeInForce": "GTC",
+                        }
+                    },
+                )
+            )
+
+            logger.info(f"✅ SL set at {sl_price}")
+
+        # Take Profit
+        if tp_price:
+            api.request(
+                OrderCreate(
+                    accountID=oanda_account_id,
+                    data={
+                        "order": {
+                            "type": "TAKE_PROFIT",
+                            "tradeID": trade_id,
+                            "price": f"{float(tp_price):.{dec}f}",
+                            "timeInForce": "GTC",
+                        }
+                    },
+                )
+            )
+
+            logger.info(f"✅ TP set at {tp_price}")
+
+        return {
+            "status": "OK",
+            "trade_id": trade_id,
+            "tag": tag,
+            "client_id": client_id,
+            "comment": comment,
+            "response": resp,
+        }
+
+    except Exception as e:
+        logger.error(
+            f"❌ FAILED {instrument}: "
+            f"{type(e).__name__}: {e}"
+        )
+
+        return {
+            "status": "ERROR",
+            "message": str(e),
+        }
+        
+def open_oanda_order_simple_old(
+    api,
+    oanda_account_id: str,
+    instrument: str,
+    direction: str,
+    units: int,
+    sl_price: float,
+    tp_price: float,
 ) -> dict:
     from oandapyV20.endpoints.orders import OrderCreate
 

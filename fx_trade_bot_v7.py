@@ -879,6 +879,10 @@ def main():
         )
         try:
             lot = DEFAULT_LOT_SIZE
+            run_ts = datetime.now(timezone.utc)
+            tag = "v7-bot"
+            client_id = f"{PROFILE_NAME}-{pair.replace('=X','')}-{direction}-{run_ts.strftime('%H%M%S')}"
+            comment = f"v7/{PROFILE_NAME} {pair} {direction} opened {run_ts.strftime('%Y-%m-%d %H:%M UTC')}"
             result = open_oanda_order(
                 api,
                 OANDA_ACCOUNT_ID,
@@ -887,6 +891,9 @@ def main():
                 lot,
                 sl_price=sl_price,
                 tp_price=tp_price,
+                tag=tag,
+                client_id=client_id,
+                comment=comment,
             )
             executed_in_this_run.add(oanda)
             if result.get("status") == "OK":
@@ -900,7 +907,7 @@ def main():
         except Exception as e:
             logger.error(f"❌ EXCEPTION opening {pair}: {e}")
 
-    logger.info(f"\n✅ {PROFILE_LABEL} RUN COMPLETE")
+            logger.info(f"\n✅ {PROFILE_LABEL} RUN COMPLETE")
 
 
 # ─── ENTRY POINT ─────────────────────────────────────────────────────────────

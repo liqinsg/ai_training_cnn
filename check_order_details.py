@@ -93,6 +93,12 @@ def get_position_win_loss_message(account_id: str) -> str:
             sl = orders_info.get("sl_price", sl)
             tp = orders_info.get("tp_price", tp)
 
+            # Client Extensions (bot tag/tracking)
+            ext = trade.get("clientExtensions", {})
+            ext_tag = ext.get("tag", "-")
+            ext_id = ext.get("id", "-")
+            ext_comment = ext.get("comment", "-")
+
             side_label = "LONG" if side == "long" else "SHORT"
 
             lines.append(f"\n➡️ {instr} {side_label}")
@@ -102,6 +108,8 @@ def get_position_win_loss_message(account_id: str) -> str:
             lines.append(f"   SL: {sl}  (orderID: {sl_id})")
             lines.append(f"   TP: {tp}  (orderID: {tp_id})")
             lines.append(f"   Unrealized P&L: {unrealized_pl:.2f}")
+            lines.append(f"   🏷️ Tag: {ext_tag}  |  ID: {ext_id}")
+            lines.append(f"   💬 Comment: {ext_comment}")
 
     lines.append("\n" + "=" * 120)
     lines.append(f"Summary: Positions = {positions_count}")
