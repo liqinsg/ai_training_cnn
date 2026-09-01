@@ -27,7 +27,7 @@ OANDA_API_TOKEN_LIVE = os.getenv("OANDA_API_TOKEN_LIVE", "")
 # Account IDs (from .env with defaults)
 # ────────────────────────────────────────────────────────────────
 # Demo
-OANDA_ACCOUNT_ID = os.getenv("OANDA_ACCOUNT_ID_1", "101-003-39389016-001")
+OANDA_ACCOUNT_ID = os.getenv("OANDA_ACCOUNT_ID", "")
 OANDA_ACCOUNT_ID_1 = os.getenv("OANDA_ACCOUNT_ID_1", "101-003-39389016-001")
 OANDA_ACCOUNT_ID_2 = os.getenv("OANDA_ACCOUNT_ID_2", "101-003-39389016-002")
 OANDA_ACCOUNT_ID_3 = os.getenv("OANDA_ACCOUNT_ID_3", "101-003-39389016-003")
@@ -44,10 +44,13 @@ OANDA_ACCOUNT_ID_4_LIVE = os.getenv("OANDA_ACCOUNT_ID_4_LIVE", "101-003-21515688
 # ────────────────────────────────────────────────────────────────
 def _collect_account_vars(var_regex: str):
     """Auto-collect account IDs matching pattern from this module."""
+
     out = []
-    for name, value in vars(sys.modules[__name__]).items():
-        if isinstance(name, str) and re.fullmatch(var_regex, name):
-            out.append((name, value))
+    out.extend(
+        (name, value)
+        for name, value in vars(sys.modules[__name__]).items()
+        if isinstance(name, str) and re.fullmatch(var_regex, name)
+    )
     out.sort(key=lambda x: x[0])
     return out
 
@@ -131,6 +134,7 @@ def _fetch_summary(acc, token, env_name):
         print(f"\n   ❌ {aid} — Summary failed: {str(e)[:120]}")
         return False
 
+api = oandapyV20.API(access_token=OANDA_API_TOKEN, environment=OANDA_ENV)
 
 # ────────────────────────────────────────────────────────────────
 # MAIN
