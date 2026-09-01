@@ -5,7 +5,6 @@ import json
 import logging
 from pathlib import Path
 from datetime import datetime, timezone
-from enum import Enum
 import numpy as np
 import pandas as pd
 from telegram_message import send_telegram_message
@@ -25,20 +24,28 @@ logger = logging.getLogger(__name__)
 #   BUY  → SL = min(4 closed H4 lows) - 20 pips
 #   MAX  → >200 pips → ABORT TRADE
 # ==================================================
-SL_OFFSET_PIPS        = 20    # Buffer from extreme levels — LOCKED
-SL_MAX_ALLOWED_PIPS  = 200   # Max allowed distance — adjust later if needed
-REQUIRED_H4_CANDLES  = 4     # Only fully closed H4 — LOCKED
+SL_OFFSET_PIPS = 20  # Buffer from extreme levels — LOCKED
+SL_MAX_ALLOWED_PIPS = 200  # Max allowed distance — adjust later if needed
+REQUIRED_H4_CANDLES = 4  # Only fully closed H4 — LOCKED
+
 
 # ──────────────────────────────────────────────────────────────────────
 # ✅ HYBRID SL: H4 PRIMARY + ATR GUARD — ALWAYS PICK CLOSER-TO-ENTRY
 # ──────────────────────────────────────────────────────────────────────
-def calculate_hybrid_sl(direction, entry_price, h4_closed, atr_value, pip_sz):
+def calculate_hybrid_sl(instrument, direction, entry_price, h4_closed, atr_value, pip_sz):
     """
     Unified Hybrid SL — same logic for NEW orders + EXISTING positions
     Returns: (final_sl_price, h4_sl, atr_sl, chosen_source, total_pips, skip_trade)
+
+    Args:
+        instrument: OANDA instrument name (e.g. 'EUR_USD', 'USD_JPY') — used for decimal detection
+        direction: 'BUY' or 'SELL'
+        entry_price: estimated entry price
+        h4_closed: list of fully closed H4 candles [{'high':x,'low':y}, ...]
+        atr_value: ATR value for ATR guard calculation
+        pip_sz: pip size (0.0001 non-JPY, 0.01 JPY, etc.)
     """
-    decimals = 3 if "JPY" in oanda_instr else 5
-    MAX_SL_PIPS = 200
+    decimals = price_decimals(instrument)
 
     # Step 1: Calculate H4 Zone Hierarchy SL
     try:
@@ -46,7 +53,8 @@ def calculate_hybrid_sl(direction, entry_price, h4_closed, atr_value, pip_sz):
             direction, entry_price, h4_closed, pip_sz
         )
         h4_sl = round(h4_sl, decimals)
-    except:
+    except Exception:
+        logger.exception("H4 SL calculation failed for %s — falling back to ATR guard", instrument)
         h4_sl = h4_pips = h4_skip = None
 
     # Step 2: Calculate ATR Guard SL (ATR × 2.0)
@@ -57,8 +65,9 @@ def calculate_hybrid_sl(direction, entry_price, h4_closed, atr_value, pip_sz):
         else:  # SELL
             atr_sl = round(entry_price + atr_offset, decimals)
         atr_pips = atr_offset / pip_sz
-        atr_skip = (atr_pips > MAX_SL_PIPS)
-    except:
+        atr_skip = atr_pips > SL_MAX_ALLOWED_PIPS
+    except Exception:
+        logger.exception("ATR guard SL calculation failed for %s — falling back to H4", instrument)
         atr_sl = atr_pips = atr_skip = None
 
     # Step 3: Fallback Logic — pick available
@@ -97,23 +106,26 @@ def calculate_hybrid_sl(direction, entry_price, h4_closed, atr_value, pip_sz):
                 final_sl = atr_sl
                 chosen = "ATR-GUARD"
                 final_pips = atr_pips
-        skip_trade = (final_pips > MAX_SL_PIPS)
+        skip_trade = final_pips > SL_MAX_ALLOWED_PIPS
 
     return final_sl, h4_sl, atr_sl, chosen, final_pips, skip_trade
 
-def calculate_stop_loss(side: str, entry_price: float, h4_candles, pip_size: float) -> tuple[float, float, bool]:
+
+def calculate_stop_loss(
+    side: str, entry_price: float, h4_candles, pip_size: float
+) -> tuple[float, float, bool]:
     """
     Calculate Stop-Loss per H4 Zone Hierarchy + Max SL Cap
-    
+
     ⚠️  CRITICAL: h4_candles must contain ONLY fully closed H4 candles
                  — ALWAYS exclude the current forming candle before calling
-    
+
     Args:
         side: 'BUY' or 'SELL'
         entry_price: estimated entry price
         h4_candles: list of dicts — [{"high":x, "low":y}, ...]
         pip_size: 0.0001 (non-JPY) / 0.01 (JPY)
-    
+
     Returns:
         (sl_price: float, sl_pips: float, skip_trade: bool)
     """
@@ -128,13 +140,13 @@ def calculate_stop_loss(side: str, entry_price: float, h4_candles, pip_size: flo
     # ─── Calculate SL per H4 Zone Hierarchy ───
     if side.upper() == "SELL":
         ref_level = max(c["high"] for c in h4_candles)
-        sl_price  = ref_level + (SL_OFFSET_PIPS * pip_size)
-        sl_pips   = (sl_price - entry_price) / pip_size  # positive value
+        sl_price = ref_level + (SL_OFFSET_PIPS * pip_size)
+        sl_pips = (sl_price - entry_price) / pip_size  # positive value
 
     elif side.upper() == "BUY":
         ref_level = min(c["low"] for c in h4_candles)
-        sl_price  = ref_level - (SL_OFFSET_PIPS * pip_size)
-        sl_pips   = (entry_price - sl_price) / pip_size  # positive value
+        sl_price = ref_level - (SL_OFFSET_PIPS * pip_size)
+        sl_pips = (entry_price - sl_price) / pip_size  # positive value
 
     else:
         raise ValueError(f"Invalid order side: '{side}' — use BUY or SELL")
@@ -142,20 +154,20 @@ def calculate_stop_loss(side: str, entry_price: float, h4_candles, pip_size: flo
     # ─── Enforce Max SL Cap ───
     if sl_pips > SL_MAX_ALLOWED_PIPS:
         skip_trade = True
-        logging.warning(
-            f"🚫 SL TOO LARGE — TRADE ABORTED | Side: {side} | Ref: {ref_level:.5f} | "
-            f"Entry: {entry_price:.5f} | SL: {sl_price:.5f} | "
-            f"Distance: {sl_pips:.1f} pips | MAX ALLOWED: {SL_MAX_ALLOWED_PIPS}"
+        logger.warning(
+            "SL TOO LARGE — TRADE ABORTED | Side: %s | Ref: %.5f | "
+            "Entry: %.5f | SL: %.5f | Distance: %.1f pips | MAX ALLOWED: %s",
+            side, ref_level, entry_price, sl_price, sl_pips, SL_MAX_ALLOWED_PIPS,
         )
     else:
         skip_trade = False
-        logging.info(
-            f"✅ SL ACCEPTED | Side: {side} | Ref: {ref_level:.5f} | "
-            f"Entry: {entry_price:.5f} | SL: {sl_price:.5f} | "
-            f"Distance: {sl_pips:.1f} pips"
+        logger.info(
+            "SL ACCEPTED | Side: %s | Ref: %.5f | Entry: %.5f | SL: %.5f | Distance: %.1f pips",
+            side, ref_level, entry_price, sl_price, sl_pips,
         )
 
     return sl_price, sl_pips, skip_trade
+
 
 # ✅ KEEP THIS — proper candle fetcher
 def fetch_candles(api, oanda_instrument: str, gran: str, count: int = 100):
@@ -216,34 +228,6 @@ def save_cooldown(cooldown_file: Path, state: dict):
 
 # ============================================================================
 # MARKET STATUS CHECK
-# ============================================================================
-# Add this inside fx_trade_bot_utils.py
-def update_order_tp(
-    api,
-    account_id: str,
-    trade_id: str,
-    instrument: str,
-    new_tp: float,
-    decimals: int = 5,
-    send_telegram=None,
-):
-    """✅ Update TP on an open trade via TradeCRCDO"""
-    try:
-        tp_data = {
-            "takeProfit": {"price": str(round(new_tp, decimals)), "timeInForce": "GTC"}
-        }
-        api.request(TradeCRCDO(accountID=account_id, tradeID=trade_id, data=tp_data))
-        logger.info(f"   🔄 Updated TP on trade {trade_id} → {round(new_tp, decimals)}")
-        if send_telegram:
-            send_telegram(
-                f"🎯 TP UPDATED {instrument} #{trade_id} → {round(new_tp, decimals)}"
-            )
-        return True
-    except Exception as e:
-        logger.error(f"   ❌ Failed to update TP on trade {trade_id}: {e}")
-        return False
-
-
 def forex_market_closed(api, oanda_account_id: str, oanda_granularity: str) -> bool:
     """Check if forex market is closed via recent candle availability."""
     try:
@@ -298,15 +282,15 @@ def attach_tp_to_open_positions(engine, instrument=None):
 
         # Calculate FIXED TP based on direction + ATR distance
         is_short = units < 0
-        pip_sizes = {"JPY": 0.01, "XAU": 0.1, "DEFAULT": 0.0001}
-        pip = pip_sizes["JPY"] if "JPY" in inst else pip_sizes["DEFAULT"]
+        pip = pip_size(inst)
+        dec = price_decimals(inst)
         dist = atr_dist_pips * pip
 
         if is_short:
-            tp_price = round(entry_price - dist, 5)
+            tp_price = round(entry_price - dist, dec)
             dir_label = "SHORT → TP BELOW"
         else:
-            tp_price = round(entry_price + dist, 5)
+            tp_price = round(entry_price + dist, dec)
             dir_label = "LONG → TP ABOVE"
 
         logger.info(
@@ -325,47 +309,11 @@ def attach_tp_to_open_positions(engine, instrument=None):
     logger.info(f"📋 TP Attach Summary: {attached_count} positions updated with TP")
     return attached_count
 
+
 def get_open_position(api, oanda_account_id: str, instrument: str):
-    from oandapyV20.endpoints.positions import PositionDetails
-    import logging
-
-    # ✅ TEMPORARILY RAISE THE LOGGER LEVEL TO SUPPRESS UPSTREAM ERROR
-    oanda_logger = logging.getLogger("oandapyV20")
-    original_level = oanda_logger.getEffectiveLevel()
-    oanda_logger.setLevel(logging.CRITICAL + 10)  # SILENCE
-
-    try:
-        resp = api.request(
-            PositionDetails(accountID=oanda_account_id, instrument=instrument)
-        )
-        pos = resp.get("position", {})
-        long_units = pos.get("long", {}).get("units", "0")
-        short_units = pos.get("short", {}).get("units", "0")
-
-        if long_units != "0":
-            return {"units": int(long_units), "side": "long"}
-        if short_units != "0":
-            return {"units": -int(short_units), "side": "short"}
-        return None
-
-    except Exception as e:
-        err_text = str(e)
-        if "NO_SUCH_POSITION" in err_text or "404" in err_text:
-            logger.info(f"✅ {instrument}: No open position")
-            return None  # ✅ RETURNS CLEANLY — NO EXCEPTION BUBBLES
-        logger.warning(f"⚠️ Position check failed for {instrument}: {err_text[:120]}")
-        return None
-
-    finally:
-        # ✅ RESTORE NORMAL LOGGING
-        oanda_logger.setLevel(original_level)
-        
-def a_get_open_position(api, oanda_account_id: str, instrument: str):
     """Get current open position for an instrument.
     Returns None if no position exists, else dict: {"units": int, "side": "long"/"short"}
     """
-    from oandapyV20.endpoints.positions import PositionDetails
-
     try:
         resp = api.request(
             PositionDetails(accountID=oanda_account_id, instrument=instrument)
@@ -378,78 +326,17 @@ def a_get_open_position(api, oanda_account_id: str, instrument: str):
             return {"units": int(long_units), "side": "long"}
         if short_units != "0":
             return {"units": -int(short_units), "side": "short"}
-        return None  # ✅ No open position
+        return None
 
     except Exception as e:
         err_text = str(e)
-        # ✅ 404 / NO_SUCH_POSITION = NORMAL → log as INFO, NOT ERROR
         if "NO_SUCH_POSITION" in err_text or "404" in err_text:
-            logger.info(f"  ✅ {instrument}: No open position")  # was DEBUG → now INFO
+            logger.info("%s: No open position", instrument)
             return None
-        # ⚠️ Actual API errors — keep as WARNING
-        logger.warning(f"  ⚠️ Position check failed for {instrument}: {err_text[:120]}")
+        logger.warning("Position check failed for %s: %s", instrument, err_text[:120])
         return None
 
-def b__get_open_position(api, oanda_account_id: str, instrument: str):
-    from oandapyV20.endpoints.positions import PositionDetails
 
-    try:
-        resp = api.request(
-            PositionDetails(accountID=oanda_account_id, instrument=instrument)
-        )
-        pos = resp.get("position", {})
-        long_units = pos.get("long", {}).get("units", "0")
-        short_units = pos.get("short", {}).get("units", "0")
-
-        if long_units != "0":
-            return {"units": int(long_units), "side": "long"}
-        if short_units != "0":
-            return {"units": -int(short_units), "side": "short"}
-        return None
-
-    except Exception as e:
-        err_text = str(e)
-        # ✅ 404 / NO_SUCH_POSITION = NORMAL — SILENCE THE ERROR COMPLETELY
-        if "NO_SUCH_POSITION" in err_text or "404" in err_text:
-            logger.info(f"✅ {instrument}: No open position")
-            return None  # ← Returns BEFORE any ERROR can bubble up!
-        # Real errors only
-        logger.error(f"❌ Position check failed for {instrument}: {err_text[:120]}")
-        return None
-
-def c_get_open_position(api, oanda_account_id: str, instrument: str):
-    """Get current open position for an instrument.
-    Returns None if no position exists, else dict: {"units": int, "side": "long"/"short"}
-    """
-    from oandapyV20.endpoints.positions import PositionDetails
-
-    try:
-        resp = api.request(
-            PositionDetails(accountID=oanda_account_id, instrument=instrument)
-        )
-        pos = resp.get("position", {})
-        long_units = pos.get("long", {}).get("units", "0")
-        short_units = pos.get("short", {}).get("units", "0")
-
-        if long_units != "0":
-            return {"units": int(long_units), "side": "long"}
-        if short_units != "0":
-            return {"units": -int(short_units), "side": "short"}
-        return None  # ✅ No open position
-
-    except Exception as e:
-        err_text = str(e)
-        err_str = str(err_text)
-        
-        # ✅ 404 / NO_SUCH_POSITION = NORMAL — CATCH COMPLETELY, NO BUBBLE
-        if "NO_SUCH_POSITION" in err_str or "404" in err_str:
-            logger.info(f"✅ {instrument}: No open position")
-            return None  # ← RETURNS CLEANLY — NO EXCEPTION TO BUBBLE UP!
-        
-        # ⚠️ ONLY actual API errors get logged
-        logger.warning(f"⚠️ Position check failed for {instrument}: {err_text[:120]}")
-        return None
-    
 def close_position(api, oanda_account_id: str, instrument: str, telegram_send=None):
     """Close existing position for instrument."""
     try:
@@ -516,9 +403,7 @@ def open_oanda_order_simple(
         "order": {
             "type": "MARKET",
             "instrument": instrument,
-            "units": str(
-                abs(units) if direction.upper() == "BUY" else -abs(units)
-            ),
+            "units": str(abs(units) if direction.upper() == "BUY" else -abs(units)),
             "positionFill": "DEFAULT",
         }
     }
@@ -548,9 +433,7 @@ def open_oanda_order_simple(
             logger.info(f"📦 Trade opened: TradeID={trade_id}")
 
         elif "orderCreateTransaction" in resp:
-            trade_id = str(
-                resp["orderCreateTransaction"].get("id", "")
-            )
+            trade_id = str(resp["orderCreateTransaction"].get("id", ""))
 
             logger.info(f"📦 Order created: OrderID={trade_id}")
 
@@ -567,24 +450,19 @@ def open_oanda_order_simple(
                     TradeClientExtensions(
                         accountID=oanda_account_id,
                         tradeID=trade_id,
-                        data={
-                            "clientExtensions": client_extensions
-                        },
+                        data={"clientExtensions": client_extensions},
                     )
                 )
 
                 logger.info(
-                    f"🏷️ Trade tagged: "
-                    f"tag={tag}, id={client_id}, comment={comment}"
+                    f"🏷️ Trade tagged: " f"tag={tag}, id={client_id}, comment={comment}"
                 )
 
             except Exception as ce:
-                logger.warning(
-                    f"⚠️ Failed to set trade metadata: {ce}"
-                )
+                logger.warning(f"⚠️ Failed to set trade metadata: {ce}")
 
         # Stop Loss
-        if sl_price:
+        if sl_price is not None:
             api.request(
                 OrderCreate(
                     accountID=oanda_account_id,
@@ -602,7 +480,7 @@ def open_oanda_order_simple(
             logger.info(f"✅ SL set at {sl_price}")
 
         # Take Profit
-        if tp_price:
+        if tp_price is not None:
             api.request(
                 OrderCreate(
                     accountID=oanda_account_id,
@@ -610,7 +488,7 @@ def open_oanda_order_simple(
                         "order": {
                             "type": "TAKE_PROFIT",
                             "tradeID": trade_id,
-                            "price": f"{float(tp_price):.{dec}f}",
+                            "price": f"{tp_price:.{dec}f}",
                             "timeInForce": "GTC",
                         }
                     },
@@ -629,218 +507,17 @@ def open_oanda_order_simple(
         }
 
     except Exception as e:
-        logger.error(
-            f"❌ FAILED {instrument}: "
-            f"{type(e).__name__}: {e}"
-        )
+        logger.error(f"❌ FAILED {instrument}: " f"{type(e).__name__}: {e}")
 
         return {
             "status": "ERROR",
             "message": str(e),
         }
-        
-def open_oanda_order_simple_old(
-    api,
-    oanda_account_id: str,
-    instrument: str,
-    direction: str,
-    units: int,
-    sl_price: float,
-    tp_price: float,
-) -> dict:
-    from oandapyV20.endpoints.orders import OrderCreate
-
-    dec = price_decimals(instrument)
-    order_payload = {
-        "order": {
-            "type": "MARKET",
-            "instrument": instrument,
-            "units": str(abs(units) if direction == "BUY" else -abs(units)),
-            "positionFill": "DEFAULT",
-        }
-    }
-    try:
-        resp = api.request(OrderCreate(accountID=oanda_account_id, data=order_payload))
-        logger.info(f"✅ OANDA accepted order for {instrument}")
-        trade_id = ""
-        if "orderFillTransaction" in resp:
-            fill = resp["orderFillTransaction"]
-            trade_opened = fill.get("tradeOpened") or {}
-            trade_id = str(trade_opened.get("tradeID", ""))
-            logger.info(f"📦 Trade opened: TradeID={trade_id}")
-        elif "orderCreateTransaction" in resp:
-            trade_id = str(resp["orderCreateTransaction"].get("id", ""))
-            logger.info(f"📦 Order created: OrderID={trade_id}")
-        if not trade_id:
-            return {"status": "ERROR", "message": "TradeID missing"}
-        if sl_price:
-            api.request(
-                OrderCreate(
-                    accountID=oanda_account_id,
-                    data={
-                        "order": {
-                            "type": "STOP_LOSS",
-                            "tradeID": trade_id,
-                            "price": f"{float(sl_price):.{dec}f}",
-                            "timeInForce": "GTC",
-                        }
-                    },
-                )
-            )
-            logger.info(f"   ✅ SL: {sl_price}")
-        if tp_price:
-            api.request(
-                OrderCreate(
-                    accountID=oanda_account_id,
-                    data={
-                        "order": {
-                            "type": "TAKE_PROFIT",
-                            "tradeID": trade_id,
-                            "price": f"{tp_price:.{dec}f}",
-                            "timeInForce": "GTC",
-                        }
-                    },
-                )
-            )
-            logger.info(f"   ✅ TP: {tp_price}")
-        return {"status": "OK", "trade_id": trade_id, "response": resp}
-    except Exception as e:
-        logger.error(f"❌ FAILED {instrument}: {type(e).__name__}: {e}")
-        return {"status": "ERROR", "message": str(e)}
 
 
 # ============================================================================
 # ORDER EXECUTION WITH SAFETY CHECKS
 # ============================================================================
-def _open_oanda_order(
-    signal: dict,
-    units: int,
-    current_price: float,
-    api,
-    oanda_account_id: str,
-    oanda_token: str,
-    trailing_tp: bool = False,
-    dynamic_tp: bool = False,
-    max_sl_pips: int = None,
-    max_sl_pct: float = 0.03,
-    telegram_send=None,
-    cfg=None,
-) -> dict:
-    """Open order with SL/TP logic and safety guards."""
-    if not oanda_account_id or not oanda_token:
-        return {"status": "ERROR", "message": "Missing OANDA credentials"}
-
-    pair_raw = signal.get("pair")
-    action = signal.get("action")
-    sl = signal.get("stop_loss")
-    tp = signal.get("take_profit")
-
-    if action not in {"BUY", "SELL"}:
-        return {"status": "ERROR", "message": f"Invalid action: {action}"}
-    if sl is None:
-        return {"status": "ERROR", "message": "SL missing"}
-    if current_price is None:
-        logger.error(f"❌ Cannot open {pair_raw}: entry price required")
-        return {"status": "ERROR", "message": "Entry price missing"}
-
-    entry = current_price
-    dec = price_decimals(pair_raw)
-    pip = pip_size(pair_raw)
-
-    is_jpy = "JPY" in pair_raw.upper()
-    if max_sl_pips is None:
-        max_sl_pips = 500 if is_jpy else 50
-
-    sl_distance = abs(entry - sl)
-    sl_pips = sl_distance / pip
-    sl_pct = sl_distance / entry
-
-    if sl_pips > max_sl_pips or sl_pct > max_sl_pct:
-        err = (
-            f"SL GUARD BLOCKED {pair_raw}: SL={sl} is {sl_pips:.0f} pips / {sl_pct:.1%} from entry. "
-            f"Max allowed: {max_sl_pips} pips / {max_sl_pct:.1%}"
-        )
-        logger.error(err)
-        if telegram_send:
-            telegram_send(f"🛡️ {err}")
-        return {"status": "ERROR", "message": err}
-
-    if action == "BUY" and sl >= entry:
-        err = f"SL GUARD BLOCKED {pair_raw}: SL {sl} >= entry {entry} for LONG"
-        logger.error(err)
-        return {"status": "ERROR", "message": err}
-    if action == "SELL" and sl <= entry:
-        err = f"SL GUARD BLOCKED {pair_raw}: SL {sl} <= entry {entry} for SHORT"
-        logger.error(err)
-        return {"status": "ERROR", "message": err}
-
-    order_payload = {
-        "order": {
-            "type": "MARKET",
-            "instrument": pair_raw,
-            "units": str(units if action == "BUY" else -units),
-            "timeInForce": "FOK",
-            "positionFill": "DEFAULT",
-            "stopLossOnFill": {
-                "price": str(round(float(sl), dec)),
-                "timeInForce": "GTC",
-            },
-        }
-    }
-
-    if not trailing_tp and tp is not None:
-        if (action == "BUY" and tp > entry) or (action == "SELL" and tp < entry):
-            order_payload["takeProfitOnFill"] = {
-                "price": str(round(float(tp), dec)),
-                "timeInForce": "GTC",
-            }
-            logger.info(f"   ✅ Fixed TP attached: {round(float(tp), dec)}")
-        else:
-            logger.warning(f"   ⚠️ TP {tp} invalid vs entry {entry} — omitted")
-    elif trailing_tp:
-        logger.info("   ℹ️ TRAILING_TP=True — using OANDA server-side trailing")
-    else:
-        logger.warning("   ⚠️ No TP value — sending SL only")
-
-    try:
-        resp = api.request(OrderCreate(accountID=oanda_account_id, data=order_payload))
-        logger.info(f"✅ OANDA accepted order for {pair_raw}")
-
-        # ✅ Store order details for Dynamic TP updates — NO undefined variables!
-        if dynamic_tp and tp is not None:
-            try:
-                direction = "BUY" if action == "BUY" else "SELL"
-                order_info = {
-                    "order_id": str(
-                        resp.get(
-                            "orderFillTransactionID",
-                            resp.get("orderCreateTransactionID", "?"),
-                        )
-                    ),
-                    "instrument": pair_raw,
-                    "entry_price": float(resp.get("price", current_price)),
-                    "initial_tp": float(tp),
-                    "direction": direction,
-                    "time_opened": datetime.utcnow().isoformat(),
-                }
-                tp_state_file = Path(__file__).parent / "tp_state.json"
-                tp_state = {}
-                if tp_state_file.exists():
-                    with open(tp_state_file) as f:
-                        tp_state = json.load(f)
-                tp_state[pair_raw] = order_info
-                with open(tp_state_file, "w") as f:
-                    json.dump(tp_state, f, indent=2)
-                logger.info(f"💾 TP STATE SAVED: {pair_raw} → TP={tp}")
-            except Exception as e:
-                logger.warning(f"⚠️ Could not save TP state: {e}")
-
-        return {"status": "OK", "response": resp}
-    except Exception as e:
-        logger.error(f"❌ OANDA order failed for {pair_raw}: {e}")
-        return {"status": "ERROR", "message": str(e)}
-
-
 def open_oanda_order(
     signal: dict,
     units: int,
@@ -991,7 +668,7 @@ def update_order_tp(
     account_id,
     trade_id,
     instrument,
-    new_tp_price,
+    new_tp_price: float,
     token=None,
     environment="practice",
     send_telegram=None,
@@ -1005,7 +682,7 @@ def update_order_tp(
 
     try:
         dec = price_decimals(instrument)
-        new_tp_str = f"{float(new_tp_price):.{dec}f}"
+        new_tp_str = f"{new_tp_price:.{dec}f}"
 
         # ✅ OANDA: Update TP on the TRADE (not the order — orders are immutable once filled)
         data = {"takeProfit": {"price": new_tp_str, "timeInForce": "GTC"}}
@@ -1131,7 +808,6 @@ def build_mc_telegram(
         "",
     ]
     for r in mc_results:
-        dec = price_decimals(r["pair"])
         lo, hi = r["range_90"]
         lines.extend(
             [
@@ -1160,36 +836,43 @@ def build_trade_telegram(trade_lines: list, mc_summary: list = None) -> str:
             lines.append(f"   {s}")
     return "\n".join(lines)
 
+
 def compute_sl_zone(api, oanda_instrument, direction, entry_price, pip_size, cfg_fn):
     """Hierarchical SL: H4 → H8 → Daily → ATR → Fixed"""
-    BUFFER_PIPS   = cfg_fn("SL_BUFFER_PIPS", 25)
+    BUFFER_PIPS = cfg_fn("SL_BUFFER_PIPS", 25)
     MIN_DIST_PIPS = cfg_fn("SL_MIN_DISTANCE_PIPS", 20)
-    ATR_MULT      = cfg_fn("ATR_SL_MULT", 2.0)
-    FIXED_PIPS    = cfg_fn("SL_FALLBACK_FIXED_PIPS", 35)
+    ATR_MULT = cfg_fn("ATR_SL_MULT", 2.0)
+    FIXED_PIPS = cfg_fn("SL_FALLBACK_FIXED_PIPS", 35)
 
     TF_LIST = [
-        ("H4",  "H4", cfg_fn("SL_H4_LOOKBACK_BARS", 6)),
-        ("H8",  "H8", cfg_fn("SL_H8_LOOKBACK_BARS", 4)),
-        ("DAILY","D", cfg_fn("SL_DAILY_LOOKBACK_BARS", 2)),
+        ("H4", "H4", cfg_fn("SL_H4_LOOKBACK_BARS", 6)),
+        ("H8", "H8", cfg_fn("SL_H8_LOOKBACK_BARS", 4)),
+        ("DAILY", "D", cfg_fn("SL_DAILY_LOOKBACK_BARS", 2)),
     ]
 
     def _fetch_zone(gran, count, dir):
         try:
-            resp = api.request(InstrumentsCandles(
-                instrument=oanda_instrument,
-                params={"granularity": gran, "count": count, "price": "M"}
-            ))
+            resp = api.request(
+                InstrumentsCandles(
+                    instrument=oanda_instrument,
+                    params={"granularity": gran, "count": count, "price": "M"},
+                )
+            )
             candles = resp.get("candles", [])
             if len(candles) < count * 0.5:
                 return None, 0
             highs = [float(c["mid"]["h"]) for c in candles]
-            lows  = [float(c["mid"]["l"]) for c in candles]
+            lows = [float(c["mid"]["l"]) for c in candles]
             closes = [float(c["mid"]["c"]) for c in candles]
             trs = []
             for i in range(1, len(candles)):
-                tr = max(highs[i]-lows[i], abs(highs[i]-closes[i-1]), abs(lows[i]-closes[i-1]))
+                tr = max(
+                    highs[i] - lows[i],
+                    abs(highs[i] - closes[i - 1]),
+                    abs(lows[i] - closes[i - 1]),
+                )
                 trs.append(tr)
-            atr = np.mean(trs[-14:]) if len(trs)>=14 else np.mean(trs) if trs else 0
+            atr = np.mean(trs[-14:]) if len(trs) >= 14 else np.mean(trs) if trs else 0
             if dir == "BUY":
                 return min(lows), atr
             else:
@@ -1211,10 +894,14 @@ def compute_sl_zone(api, oanda_instrument, direction, entry_price, pip_size, cfg
             sl_candidate = zone + buffer_amt
         dist = abs(entry_price - sl_candidate) / pip_size
         if dist >= MIN_DIST_PIPS:
-            logger.info(f"📏 SL {name}: Zone={zone:.5f} ±{BUFFER_PIPS}p → {sl_candidate:.5f} | Dist={dist:.1f}p")
+            logger.info(
+                f"📏 SL {name}: Zone={zone:.5f} ±{BUFFER_PIPS}p → {sl_candidate:.5f} | Dist={dist:.1f}p"
+            )
             return sl_candidate, f"{name} Zone {dist:.0f}p"
         else:
-            logger.info(f"⚠️ {name} too close ({dist:.1f}p < {MIN_DIST_PIPS}p) → stepping up")
+            logger.info(
+                f"⚠️ {name} too close ({dist:.1f}p < {MIN_DIST_PIPS}p) → stepping up"
+            )
 
     _, atr = _fetch_zone("H4", 14, direction)
     if atr and atr > 0:
@@ -1232,6 +919,7 @@ def compute_sl_zone(api, oanda_instrument, direction, entry_price, pip_size, cfg
         sl_fix = entry_price + FIXED_PIPS * pip_size
     logger.info(f"🚨 SL FIXED-{FIXED_PIPS}p: {sl_fix:.5f}")
     return sl_fix, f"FIXED-{FIXED_PIPS}p"
+
 
 # ============================================================================
 # 🎯 DYNAMIC POSITION MANAGER — Breakeven + Trailing Stop + ✅ DYNAMIC TP
@@ -1458,13 +1146,13 @@ class DynamicPositionManager_v2:
         api,
         account_id: str,
         timeframe: str,
-        be_trigger_atr_mult: float = 2.0,       # 提高门槛：默认从1.5改为2.0
-        trail_trigger_atr_mult: float = 3.0,    # 提高门槛：默认从2.5改为3.0
-        trail_atr_mult: float = 2.0,            # 提高容忍度：默认从1.5改为2.0 (JPY可设为2.5)
+        be_trigger_atr_mult: float = 2.0,  # 提高门槛：默认从1.5改为2.0
+        trail_trigger_atr_mult: float = 3.0,  # 提高门槛：默认从2.5改为3.0
+        trail_atr_mult: float = 2.0,  # 提高容忍度：默认从1.5改为2.0 (JPY可设为2.5)
         max_hold_bars: int = 12,
-        min_hold_bars: int = 4,                 # ✅ 新增：最少持仓Bar数（防止过早退出）
-        exit_on_close_only: bool = True,        # ✅ 新增：仅收盘价确认，忽略盘中影线
-        ratchet_exit: bool = True,              # ✅ 新增：止损只进不退（Ratchet）
+        min_hold_bars: int = 4,  # ✅ 新增：最少持仓Bar数（防止过早退出）
+        exit_on_close_only: bool = True,  # ✅ 新增：仅收盘价确认，忽略盘中影线
+        ratchet_exit: bool = True,  # ✅ 新增：止损只进不退（Ratchet）
         dynamic_tp: bool = True,
         tp_raise_thresh_pips: int = 15,
         telegram_send=None,
@@ -1517,7 +1205,9 @@ class DynamicPositionManager_v2:
             self.api.request(
                 TradeCRCDO(accountID=self.account_id, tradeID=trade_id, data=data)
             )
-            logger.info(f"   🔄 Updated SL on trade {trade_id} → {round(new_sl, decimals)}")
+            logger.info(
+                f"   🔄 Updated SL on trade {trade_id} → {round(new_sl, decimals)}"
+            )
             return True
         except Exception as e:
             logger.error(f"   ❌ Failed to update SL on trade {trade_id}: {e}")
@@ -1590,14 +1280,18 @@ class DynamicPositionManager_v2:
 
                 # ⏰ Time-based exit (需同时满足超过最小持仓 bar 数，防止过早被时间清仓)
                 if bars_held >= self.max_hold:
-                    logger.info(f"⏰ TIME EXIT: {pair} trade {tid} held {bars_held:.1f} bars")
+                    logger.info(
+                        f"⏰ TIME EXIT: {pair} trade {tid} held {bars_held:.1f} bars"
+                    )
                     if close_position_fn:
                         close_position_fn(instrument)
                     continue
 
                 # 🛡️ 保护机制：初期持仓保护（不满足最小持仓根数，跳过动态止损判定）
                 if bars_held < self.min_hold_bars:
-                    logger.debug(f"🛡️ {pair}: bars held {bars_held:.1f} < MIN_HOLD ({self.min_hold_bars}) — skip dynamic exit")
+                    logger.debug(
+                        f"🛡️ {pair}: bars held {bars_held:.1f} < MIN_HOLD ({self.min_hold_bars}) — skip dynamic exit"
+                    )
                     continue
 
                 # ── ✅ DYNAMIC TP ──
@@ -1605,12 +1299,20 @@ class DynamicPositionManager_v2:
                     atr_mult_tp = 3.0
                     if side == "long":
                         new_tp_candidate = current_price + (atr_mult_tp * atr_val)
-                        if current_tp is None or new_tp_candidate > current_tp + (self.tp_thresh_pips * pip):
-                            self._update_trade_tp(tid, instrument, new_tp_candidate, decimals)
+                        if current_tp is None or new_tp_candidate > current_tp + (
+                            self.tp_thresh_pips * pip
+                        ):
+                            self._update_trade_tp(
+                                tid, instrument, new_tp_candidate, decimals
+                            )
                     else:
                         new_tp_candidate = current_price - (atr_mult_tp * atr_val)
-                        if current_tp is None or new_tp_candidate < current_tp - (self.tp_thresh_pips * pip):
-                            self._update_trade_tp(tid, instrument, new_tp_candidate, decimals)
+                        if current_tp is None or new_tp_candidate < current_tp - (
+                            self.tp_thresh_pips * pip
+                        ):
+                            self._update_trade_tp(
+                                tid, instrument, new_tp_candidate, decimals
+                            )
 
                 # ── SL LOGIC → Breakeven → Trailing (Wider & Ratchet) ──
                 new_sl = action = None
@@ -1645,8 +1347,9 @@ class DynamicPositionManager_v2:
                 if new_sl and action:
                     if self.ratchet_exit:
                         # 严格保证止损只能朝着有利方向移动，绝不回退
-                        if (side == "long" and current_sl and new_sl < current_sl) or \
-                           (side == "short" and current_sl and new_sl > current_sl):
+                        if (side == "long" and current_sl and new_sl < current_sl) or (
+                            side == "short" and current_sl and new_sl > current_sl
+                        ):
                             continue
 
                     if self._update_trade_sl(tid, new_sl, decimals) and self.telegram:
