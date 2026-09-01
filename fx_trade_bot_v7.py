@@ -895,7 +895,7 @@ def main():
                 )
             else:
                 logger.error(
-                    f"❌ ORDER FAILED: {pair} — {result.get('error', 'Unknown error')}"
+                    f"❌ ORDER FAILED: {pair} — {result.get('message', 'Unknown error')}"
                 )
         except Exception as e:
             logger.error(f"❌ EXCEPTION opening {pair}: {e}")
