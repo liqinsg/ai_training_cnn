@@ -21,6 +21,15 @@ from oandapyV20.endpoints.trades import TradeDetails
 from oandapyV20.endpoints.orders import OrderList
 from telegram_message import send_telegram_message
 
+from config_oanda import OANDA_ACCOUNT_ID_1, OANDA_ACCOUNT_ID_2, OANDA_ACCOUNT_ID_3, OANDA_ACCOUNT_ID_4
+# All known accounts — default to checking every one
+ALL_ACCOUNTS = [
+    ("Profile1", OANDA_ACCOUNT_ID_1),
+    ("Profile2", OANDA_ACCOUNT_ID_2),
+    ("Profile3", OANDA_ACCOUNT_ID_3),
+    ("Profile4", OANDA_ACCOUNT_ID_4),
+]
+
 
 def get_position_win_loss_message(account_id: str) -> str:
     """Generate detailed position report for ONE account"""
@@ -58,6 +67,7 @@ def get_position_win_loss_message(account_id: str) -> str:
     lines.append(f"📊 OANDA OPEN POSITIONS — Account: {account_id}")
     lines.append(f"🕒 {now}")
     lines.append("=" * 120)
+
 
     grand_unrealized = 0.0
     positions_count = 0
