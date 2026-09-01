@@ -8,10 +8,7 @@ import os
 import sys
 from dotenv import load_dotenv
 import oandapyV20
-# from oandapyV20.endpoints.accounts import AccountSummary
-# from oandapyV20.endpoints.instruments import InstrumentsCandles
 import oandapyV20.endpoints as oanda_endpoint
-
 
 OANDA_ENV = "practice"
 
@@ -65,8 +62,8 @@ def validate_account(account_id, label="Account"):
 def parse_cli_accounts(argv):
     """
     Accepts:
-      - python config_oanda.py ac1 ac2
-      - python config_oanda.py "ac1,ac2"
+        - python config_oanda.py ac1 ac2
+        - python config_oanda.py "ac1,ac2"
     Returns list[str].
     """
     accounts = []
@@ -78,11 +75,13 @@ def parse_cli_accounts(argv):
         accounts.extend(parts)
     return accounts
 
-api = oandapyV20.API(access_token=OANDA_API_TOKEN, environment=OANDA_ENV)
 
 def oanda_tick(instrument):
     return api.request(oanda_endpoint.InstrumentsCandles(instrument=instrument,
     params={"count":1, "granularity":"M1", "price":"BA"}))["candles"][0]
+
+
+api = oandapyV20.API(access_token=OANDA_API_TOKEN, environment=OANDA_ENV)
 
 if __name__ == "__main__":
     print("=" * 60)
