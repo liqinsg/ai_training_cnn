@@ -78,7 +78,7 @@ def parse_cli_accounts(argv):
 
 def oanda_tick(instrument):
     return api.request(oanda_endpoint.InstrumentsCandles(instrument=instrument,
-    params={"count":1, "granularity":"M1", "price":"BA"}))["candles"][0]
+    params={"count": 1, "granularity": "M1", "price": "BA"}))["candles"][0]
 
 
 api = oandapyV20.API(access_token=OANDA_API_TOKEN, environment=OANDA_ENV)
