@@ -337,8 +337,11 @@ def get_open_position(api, oanda_account_id: str, instrument: str):
         return None
 
 
-def close_position(api, oanda_account_id: str, instrument: str, telegram_send=None):
+def close_position(api, oanda_account_id: str, instrument: str, telegram_send=None, dry_run=False):
     """Close existing position for instrument."""
+    if dry_run:
+        logger.info(f"🧊 DRY-RUN — would CLOSE: {instrument}")
+        return
     try:
         pos = api.request(
             PositionDetails(accountID=oanda_account_id, instrument=instrument)
@@ -382,7 +385,13 @@ def open_oanda_order_simple(
     tag: str = "",
     client_id: str = "",
     comment: str = "",
+    dry_run: bool = False,
 ) -> dict:
+    if dry_run:
+        dec = price_decimals(instrument)
+        logger.info(f"🧊 DRY-RUN — would OPEN: {instrument} {direction} | SL={sl_price:.{dec}f} TP={tp_price:.{dec}f}")
+        return {"status": "DRY_RUN", "instrument": instrument, "direction": direction}
+
     from oandapyV20.endpoints.orders import OrderCreate
     from oandapyV20.endpoints.trades import TradeClientExtensions
 
@@ -672,6 +681,7 @@ def update_order_tp(
     token=None,
     environment="practice",
     send_telegram=None,
+    dry_run: bool = False,
 ):
     """
     Update Take-Profit on an OPEN TRADE (OANDA Trade API — correct approach).
@@ -683,6 +693,10 @@ def update_order_tp(
     try:
         dec = price_decimals(instrument)
         new_tp_str = f"{new_tp_price:.{dec}f}"
+
+        if dry_run:
+            logger.info(f"🧊 DRY-RUN — would RAISE TP: {instrument} trade={trade_id} → {new_tp_str}")
+            return {"ok": True, "status": "DRY_RUN", "new_tp": new_tp_price}
 
         # ✅ OANDA: Update TP on the TRADE (not the order — orders are immutable once filled)
         data = {"takeProfit": {"price": new_tp_str, "timeInForce": "GTC"}}
@@ -937,6 +951,7 @@ class DynamicPositionManager:
         dynamic_tp: bool = True,
         tp_raise_thresh_pips: int = 15,
         telegram_send=None,
+        dry_run: bool = False,
     ):
         self.api = api
         self.account_id = account_id
@@ -948,6 +963,7 @@ class DynamicPositionManager:
         self.dynamic_tp = dynamic_tp
         self.tp_thresh_pips = tp_raise_thresh_pips
         self.telegram = telegram_send
+        self.dry_run = dry_run
 
     def _get_open_trades(self, instrument: str):
         try:
@@ -983,6 +999,9 @@ class DynamicPositionManager:
             return None
 
     def _update_trade_sl(self, trade_id: str, new_sl: float, decimals: int):
+        if self.dry_run:
+            logger.info(f"🧊 DRY-RUN — would MOVE SL: trade={trade_id} → {round(new_sl, decimals)}")
+            return True
         try:
             data = {
                 "stopLoss": {
@@ -1012,6 +1031,7 @@ class DynamicPositionManager:
             instrument,
             new_tp,
             send_telegram=self.telegram,
+            dry_run=self.dry_run,
         )
 
     def update_all(self, pair_data: dict, close_position_fn=None):

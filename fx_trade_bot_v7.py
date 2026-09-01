@@ -29,7 +29,7 @@ from utils.strategy_helpers import (
 )
 from telegram_message import send_telegram_message
 from oandapyV20.endpoints.instruments import InstrumentsCandles
-from strategy_decision import StrategyConfig, StrategyEngine, FilterMode, Direction
+from strategy_decision import StrategyConfig, StrategyEngine, FilterMode
 from data_pipeline import (
     FeatureConfig,
     FeatureEngine,
@@ -39,7 +39,6 @@ from data_pipeline import (
 )
 from fx_trade_bot_utils import (
     pip_size,
-    load_cooldown,
     get_open_position,
     close_position,
     fetch_candles,
@@ -50,7 +49,7 @@ from fx_trade_bot_utils import (
 )
 from fx_trade_bot_mc import MCGenerator, MCConfig
 from fx_trade_bot_ml import ensure_model
-from config_oanda import api
+from config_oanda import api, OANDA_ENV
 
 # ─── ✅ 使用统一日志配置 ──────────────────────────────────────────────────────
 from utils.logging_utils import get_logger
@@ -85,7 +84,33 @@ parser.add_argument("--confluence", action="store_true", default=None)
 parser.add_argument("--no-confluence", action="store_false", dest="confluence")
 parser.add_argument("--skip-mc", action="store_true")
 parser.add_argument("--mc-only", action="store_true")
+parser.add_argument("--dry-run", action="store_true", default=None, help="嘴炮模式：分析但不执行任何订单")
 args = parser.parse_args()
+
+# ─── 核按钮：run.env 优先于一切 ───────────────────────────────────────────────
+# run.env 存在且含 DRY_RUN=true/false → bot 自己说了算
+# run.env 不存在/空 → 让外部（命令行 flag / compose env / 默认）控制
+_run_env = {}
+_run_env_path = Path(__file__).parent / "run.env"
+if _run_env_path.exists():
+    for _line in _run_env_path.read_text().splitlines():
+        _line = _line.strip()
+        if _line and not _line.startswith("#") and "=" in _line:
+            _k, _v = _line.split("=", 1)
+            _run_env[_k.strip()] = _v.strip()
+
+if "DRY_RUN" in _run_env:
+    DRY_RUN = _run_env["DRY_RUN"].lower() in ("true", "1", "yes")
+    logger.info(f"🎯 核按钮生效 run.env: DRY_RUN={'true (嘴炮)' if DRY_RUN else 'false (真跑)'}")
+elif args.dry_run is not None:
+    DRY_RUN = args.dry_run
+else:
+    DRY_RUN = os.environ.get("DRY_RUN", "false").lower() in ("true", "1", "yes")
+
+if DRY_RUN:
+    logger.warning(f"🧊 DRY-RUN MODE — 嘴炮模式，不会执行任何订单 [{OANDA_ENV}账户]")
+else:
+    logger.warning(f"🔥 LIVE MODE — 真实下单 [{OANDA_ENV}账户] ⚠️")
 
 
 # ─── ✅ LOAD SELECTED PROFILE — NO separate files ────────────────────────────
@@ -102,7 +127,6 @@ P = PROFILE_CFG[PROFILE_NAME]  # All profile settings in ONE dict
 OANDA_ACCOUNT_ID = cfg(P, "OANDA_ACCOUNT_ID")
 PROFILE_LABEL = cfg(P, "LABEL", PROFILE_NAME.upper())
 ACCOUNT_NAME = cfg(P, "ACCOUNT_NAME", "Unknown")
-COOLDOWN_FILE = BASE_DIR / cfg(P, "COOLDOWN_FILE", f"cooldown_{PROFILE_NAME}.json")
 RESULTS_DIR = BASE_DIR / cfg(P, "RESULTS_DIR", f"daily_results_{PROFILE_NAME}")
 
 if not OANDA_ACCOUNT_ID or len(OANDA_ACCOUNT_ID) < 10 or "-" not in OANDA_ACCOUNT_ID:
@@ -195,7 +219,6 @@ DYNAMIC_TP = cfg(P, "DYNAMIC_TP", False)
 TP_RAISE_THRESHOLD_PIPS = cfg(P, "TP_RAISE_THRESHOLD_PIPS", 15)
 MIN_SL_PIPS = cfg(P, "MIN_SL_PIPS", 35)
 MIN_SL_PIPS_JPY = cfg(P, "MIN_SL_PIPS_JPY", MIN_SL_PIPS + 10)
-REMOVE_COOLDOWN = cfg(P, "REMOVE_COOLDOWN", True)
 DEBUG_MODE = cfg(P, "DEBUG_MODE", False)
 SKIP_MC = cfg(P, "SKIP_MC", False)
 MULTI_TF_CONFLUENCE = cfg(P, "MULTI_TF_CONFLUENCE", False)
@@ -203,20 +226,6 @@ CONFLUENCE_REQUIRED_TFS = cfg(P, "CONFLUENCE_REQUIRED_TFS", 2)
 
 if args.confluence is not None:
     MULTI_TF_CONFLUENCE = args.confluence
-
-
-# ─── Logging ─────────────────────────────────────────────────────────────────
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[
-        logging.FileHandler(BASE_DIR / f"bot_{PROFILE_NAME}.log"),
-        logging.StreamHandler(sys.stdout),
-    ],
-)
-# logger = logging.getLogger(__name__)
-# logger.info(logger_info_cli)
-# logger.info(f"⚖️  {PROFILE_LABEL} WEIGHTS: S={W_S:.2f} R={W_R:.2f} A={W_A:.2f} X={W_X:.2f} M={W_M:.2f} | SUM=1.00")
 
 
 # ─── Weekly EMA100 & Trend Logic ────────────────────────────────────────────
@@ -372,7 +381,6 @@ STRAT_CFG = StrategyConfig(
     adx_filter_mode=FilterMode.OFF,
     pivot_filter_mode=FilterMode.PENALIZE,
     strength_gap_filter_mode=FilterMode.PENALIZE,
-    cooldown_filter_mode=FilterMode.BLOCK,
 )
 
 fetcher = DataFetcher(
@@ -383,7 +391,7 @@ strat_engine = StrategyEngine(STRAT_CFG, model=None, feature_list=[])
 atr_mod = ATRModule(period=ATR_PERIOD)
 MODEL_PATH = BASE_DIR / "trade_model_xgb.pkl"
 model_wrapper = ModelWrapper(FEAT_CFG, model_path=MODEL_PATH)
-last_closed = {} if REMOVE_COOLDOWN else load_cooldown(COOLDOWN_FILE, Direction)
+
 
 
 # ─── Helper Functions ────────────────────────────────────────────────────────
@@ -474,7 +482,7 @@ def calc_weighted_score(
 def main():
     global model_wrapper, strat_engine
     logger.info(
-        f"\n🤖 RUN v6.8.6 {PROFILE_LABEL} — {ACCOUNT_NAME} | "
+        f"\n🤖 RUN v7.0 {PROFILE_LABEL} — {ACCOUNT_NAME} | "
         f"FILTERS={'ON' if TREND_FILTER_ENABLED else 'OFF'} | "
         f"EMA100_WK={'ON' if WEEK_EMA100_FILTER_ENABLED else 'OFF'} | "
         f"{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')} | MAX_OPEN={MAX_OPEN}"
@@ -631,7 +639,7 @@ def main():
     logger.info("[STEP 5] Dynamic Exit Manager...")
 
     def close_wrap(instr):
-        return close_position(api, OANDA_ACCOUNT_ID, instr, send_telegram_message)
+        return close_position(api, OANDA_ACCOUNT_ID, instr, send_telegram_message, dry_run=DRY_RUN)
 
     dyn_mgr = DynamicPositionManager(
         api,
@@ -644,6 +652,7 @@ def main():
         dynamic_tp=DYNAMIC_TP,
         tp_raise_thresh_pips=TP_RAISE_THRESHOLD_PIPS,
         telegram_send=send_telegram_message,
+        dry_run=DRY_RUN,
     )
     oanda_level = logging.getLogger("oandapyV20").level
     logging.getLogger("oandapyV20").setLevel(logging.CRITICAL)
@@ -692,16 +701,6 @@ def main():
             pair_data[pair]["rsi"],
             pair_data[pair]["adx"],
         )
-
-        # Cooldown
-        if pair in last_closed:
-            d, r = last_closed[pair]
-            if r > 0:
-                last_closed[pair] = (d, r - 1)
-                logger.info(f"⏳ COOLDOWN {pair}: {r-1} runs remaining — SKIP")
-                continue
-            else:
-                del last_closed[pair]
 
         # Already Open → SKIP DUPLICATE
         if open_pos_by_oanda.get(oanda, False):
@@ -894,9 +893,10 @@ def main():
                 tag=tag,
                 client_id=client_id,
                 comment=comment,
+                dry_run=DRY_RUN,
             )
             executed_in_this_run.add(oanda)
-            if result.get("status") == "OK":
+            if result.get("status") in ("OK", "DRY_RUN"):
                 logger.info(
                     f"✅ ORDER OPENED: {pair} {direction} | SL={sl_price:.{dec}f} TP={tp_price:.{dec}f}"
                 )
@@ -915,6 +915,7 @@ if __name__ == "__main__":
     from utils.utils import apply_jitter
     try:
         apply_jitter(1.0, 10.0)
+        main()
     except KeyboardInterrupt:
         logger.info("⏹️ Interrupted by user")
     except Exception as e:

@@ -1,5 +1,3 @@
-version: "3.8"
-
 services:
   fx-bot:
     build:
@@ -18,3 +16,4 @@ services:
     # Optional: sync container time with host
     environment:
       - TZ=UTC
+      - DRY_RUN=true   # 安全默认：嘴炮模式。真跑改 false 后 `docker compose up -d`
