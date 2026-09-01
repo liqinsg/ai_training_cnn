@@ -1,7 +1,5 @@
 pandas
 telebot
-ta-lib
-requests
 python-dotenv
 influxdb
 python-pptx
@@ -15,3 +13,7 @@ pydantic
 six
 schedule
 yfinance
+ta-lib>=0.6.5
+pandas
+numpy
+requests
