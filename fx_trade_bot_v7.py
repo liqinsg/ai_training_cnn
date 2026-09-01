@@ -912,8 +912,9 @@ def main():
 
 # ─── ENTRY POINT ─────────────────────────────────────────────────────────────
 if __name__ == "__main__":
+    from utils.utils import apply_jitter
     try:
-        main()
+        apply_jitter(1.0, 10.0)
     except KeyboardInterrupt:
         logger.info("⏹️ Interrupted by user")
     except Exception as e:

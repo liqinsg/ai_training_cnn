@@ -4,13 +4,17 @@ services:
   fx-bot:
     build:
       context: .
-      dockerfile: fx_trade_bot.Dockerfile
+      dockerfile: Dockerfile
     container_name: fx-trade-bot
     restart: unless-stopped
+    # Run cron in foreground (already set in Dockerfile CMD, but explicit here)
+    command: [ "cron", "-f" ]
     volumes:
-      - ./daily_results:/app/daily_results
       - ./logs:/app/logs
+      - ./state:/app/state
+      - ./data:/app/data
     env_file:
       - .env
-    # If running cron inside container:
-    # command: ["cron", "-f"]
+    # Optional: sync container time with host
+    environment:
+      - TZ=UTC
