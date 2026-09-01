@@ -13,8 +13,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy your existing requirement files and merge them (no new file needed)
-COPY requirementx.txt requirementx_1.txt ./
-RUN cat requirementx.txt requirementx_1.txt | sort -u | grep -v '^#' | grep -v '^
+COPY requirements.txt ./
+RUN cat requirements.txt | sort -u | grep -v '^#' | grep -v '^'
 
 # Copy project code
 COPY . .
@@ -29,7 +29,7 @@ RUN mkdir -p /app/logs /app/state
 # Run cron in foreground
 CMD ["cron", "-f"] > /tmp/requirements.txt \
     && pip install --no-cache-dir -r /tmp/requirements.txt \
-    && rm /tmp/requirements.txt requirementx.txt requirementx_1.txt
+    && rm /tmp/requirements.txt requirements.txt 
 
 # Copy project code
 COPY . .
