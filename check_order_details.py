@@ -15,13 +15,18 @@ from datetime import datetime, timezone
 # ─── PATH ADJUSTMENT ───
 # sys.path.insert(0, "/home/nie/projects/ai_training_cnn/utils")
 
-from utils.oanda_execution import api, OANDA_ACCOUNT_ID as DEFAULT_ACCOUNT
+from config_oanda import (
+    api,
+    OANDA_ACCOUNT_ID_1,
+    OANDA_ACCOUNT_ID_2,
+    OANDA_ACCOUNT_ID_3,
+    OANDA_ACCOUNT_ID_4,
+)
 from oandapyV20.endpoints.positions import OpenPositions
 from oandapyV20.endpoints.trades import TradeDetails
 from oandapyV20.endpoints.orders import OrderList
 from telegram_message import send_telegram_message
 
-from config_oanda import OANDA_ACCOUNT_ID_1, OANDA_ACCOUNT_ID_2, OANDA_ACCOUNT_ID_3, OANDA_ACCOUNT_ID_4
 # All known accounts — default to checking every one
 ALL_ACCOUNTS = [
     ("Profile1", OANDA_ACCOUNT_ID_1),
@@ -130,11 +135,14 @@ def get_position_win_loss_message(account_id: str) -> str:
 
 
 def parse_account_ids(args_list):
-    """Accept comma-separated OR space-separated IDs"""
+    """Accept comma-separated OR space-separated IDs.
+    Falls back to ALL_ACCOUNTS (every known account) when no args given."""
     ids = []
     for arg in args_list:
         ids.extend([aid.strip() for aid in arg.split(",") if aid.strip()])
-    return ids if ids else [DEFAULT_ACCOUNT]
+    if ids:
+        return [("CLI", aid) for aid in ids]
+    return ALL_ACCOUNTS
 
 
 if __name__ == "__main__":
@@ -153,7 +161,11 @@ if __name__ == "__main__":
     account_ids = parse_account_ids(args.accounts)
     full_report = []
 
-    for acct in account_ids:
+    for label, acct in account_ids:
+        if not acct:
+            print(f"⚠️  Skipping empty account ({label})")
+            continue
+        print(f"\n🔎 Checking [{label}] {acct} ...")
         report = get_position_win_loss_message(acct)
         full_report.append(report)
         print("\n" + report)
