@@ -246,8 +246,8 @@ PROFILE_CFG = {
         # ── TREND FILTER: 关周 EMA100（最大瓶颈），留 EMA crossover（这版本紧要之处） ──
         "TREND_FILTER_ENABLED": True,
         "WEEK_EMA100_FILTER_ENABLED": False,              # True → False · 🔴 周一亚盘挡了 6+ 单
-        "EMA_PERIOD_FAST": 20,                            # 40 → 20 · 更敏捷
-        "EMA_PERIOD_SLOW": 40,                            # 80 → 40 · 减少滞后挡单
+        "EMA_PERIOD_FAST": 15,                            # 40 → 20 · 更敏捷
+        "EMA_PERIOD_SLOW": 30,                            # 80 → 40 · 减少滞后挡单
 
         # ── TP/SL multipliers ──
         "TP_MULT": 2.5,
