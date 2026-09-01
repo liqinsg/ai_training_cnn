@@ -1,25 +1,25 @@
 #!/usr/bin/env python3
 """
-    fx_trade_bot_v6.8.5.1 — UNIFIED CONFIG · Single config_bot.py
+    fx_trade_bot_v7 — UNIFIED CONFIG · Single config_bot_v7.py
     Profile2/Account002 · Profile3/Account003
     ✅ All profiles in config_bot.py — NO separate profile config files
     ✅ CLI selects profile → auto-loads correct account + settings
     ✅ TREND_FILTER: Profile3=ON · Profile2=OFF — CLI can override
 
     Usage:
-        python fx_trade_bot_v6.8.5.1.py --profile2    # default, filters OFF
-        python fx_trade_bot_v6.8.5.1.py --profile3    # filters AUTO-ON
-        python fx_trade_bot_v6.8.5.1.py --profile3 --timeframe H4
-        python fx_trade_bot_v6.8.5.1.py --profile3 --trend-filter-enabled false
+        python fx_trade_bot_v7.py --profile2    # default, filters OFF
+        python fx_trade_bot_v7.py --profile3    # filters AUTO-ON
+        python fx_trade_bot_v7.py --profile3 --timeframe H4
+        python fx_trade_bot_v7.py --profile3 --trend-filter-enabled false
 """
-import contextlib, sys, os, logging, argparse
+import contextlib, sys, logging, argparse, os
 from pathlib import Path
 from datetime import datetime, timezone
 import numpy as np, pandas as pd
 
 # ─── ✅ ONLY ONE CONFIG IMPORT ───
-import config_bot as cfg_base
-from config_bot import PROFILE_CFG
+import config_bot_v7 as cfg_base
+from config_bot_v7 import PROFILE_CFG
 
 from utils.trading_core import forex_market_closed
 from utils.strategy_helpers import build_strength_matrix, format_strength_ranking, get_live_prices
@@ -51,7 +51,7 @@ def cfg(profile_dict, key, default=None):
 
 
 # ─── PARSE ARGS & SELECT PROFILE ─────────────────────────────────────────────
-parser = argparse.ArgumentParser(description="FX Trading Bot v6.8.5.1 · Unified Config")
+parser = argparse.ArgumentParser(description="FX Trading Bot v7 · Unified Config")
 parser.add_argument("--profile2", action="store_true", help="Use Profile2 / Account002")
 parser.add_argument("--profile3", action="store_true", help="Use Profile3 / Account003")
 parser.add_argument("--profile4", action="store_true", help="Use Profile4 / Account004 · DEMO")  # ✅ ADD
@@ -83,7 +83,7 @@ RESULTS_DIR = BASE_DIR / cfg(P, "RESULTS_DIR", f"daily_results_{PROFILE_NAME}")
 
 if not OANDA_ACCOUNT_ID or len(OANDA_ACCOUNT_ID) < 10 or "-" not in OANDA_ACCOUNT_ID:
     logger.critical(f"💥 FATAL: Invalid OANDA_ACCOUNT_ID = '{OANDA_ACCOUNT_ID}'")
-    logger.critical("💥 程序终止 — 请检查 Profile4 Account ID 配置！")
+    logger.critical(f"💥 程序终止 — 请检查 {PROFILE_LABEL} Account ID 配置！")
     send_telegram_message(f"💥 FATAL ERROR: Invalid Account ID for {PROFILE_LABEL}")
     exit(1)  # ❌ 直接退出，不跑后面所有逻辑
 
@@ -102,7 +102,7 @@ if args.trend_filter_enabled is not None:
     logger_info_cli = f"🔧 CLI OVERRIDE: TREND_FILTER_ENABLED={TREND_FILTER_ENABLED}"
 else:
     logger_info_cli = (f"🔍 AUTO: TREND_FILTER_ENABLED={TREND_FILTER_ENABLED} | "
-                       f"WEEK_EMA100={WEEK_EMA100_FILTER_ENABLED} | profile={PROFILE_NAME}")
+                       f"WEEK_EMA100={WEEK_EMA100_FILTER_ENABLED} | profile={PROFILE_LABEL}")
 
 
 # ─── Resolve all strategy parameters ────────────────────────────────────────
@@ -112,29 +112,29 @@ OANDA_GRANULARITY_MAP = {"15m": "M15", "1H": "H1", "H4": "H4", "D": "D"}
 OANDA_GRANULARITY = OANDA_GRANULARITY_MAP.get(TIMEFRAME, "H4")
 
 MIN_CONVICTION_SCORE = cfg(P, "MIN_CONVICTION_SCORE", 30.0)
-BASE_MIN_EDGE        = cfg(P, "BASE_MIN_EDGE", 0.50)
-MAX_OPEN             = cfg(P, "MAX_OPEN_POSITIONS", 4)
-DEFAULT_LOT_SIZE     = cfg(P, "DEFAULT_LOT_SIZE", 10000)
+BASE_MIN_EDGE = cfg(P, "BASE_MIN_EDGE", 0.50)
+MAX_OPEN_POSITIONS = cfg(P, "MAX_OPEN_POSITIONS", 4)
+DEFAULT_LOT_SIZE = cfg(P, "DEFAULT_LOT_SIZE", 10000)
 
-ATR_SL_MULT   = cfg(P, "ATR_SL_MULT", 2.0)
-ATR_TP_MULT   = cfg(P, "ATR_TP_MULT", 3.0)
-ATR_PERIOD    = cfg(P, "ATR_PERIOD", 14)
-BASE_TP_PIPS  = cfg(P, "BASE_TP_PIPS", 50)
-TP_MULT       = cfg(P, "TP_MULT", 2.0)
-TP_STRONG_MULT= cfg(P, "TP_STRONG_MULT", 2.5)
+ATR_SL_MULT = cfg(P, "ATR_SL_MULT", 2.0)
+ATR_TP_MULT = cfg(P, "ATR_TP_MULT", 3.0)
+ATR_PERIOD = cfg(P, "ATR_PERIOD", 14)
+BASE_TP_PIPS = cfg(P, "BASE_TP_PIPS", 50)
+TP_MULT = cfg(P, "TP_MULT", 2.0)
+TP_STRONG_MULT = cfg(P, "TP_STRONG_MULT", 2.5)
 MC_STRONG_THRESHOLD = cfg(P, "MC_STRONG_THRESHOLD", 0.55)
-EMA_PERIOD_FAST     = cfg(P, "EMA_PERIOD_FAST", 40)
-EMA_PERIOD_SLOW     = cfg(P, "EMA_PERIOD_SLOW", 80)
-EMA100_BUFFER_PIPS  = cfg(P, "EMA100_BUFFER_PIPS", 30)
+EMA_PERIOD_FAST = cfg(P, "EMA_PERIOD_FAST", 40)
+EMA_PERIOD_SLOW = cfg(P, "EMA_PERIOD_SLOW", 80)
+EMA100_BUFFER_PIPS = cfg(P, "EMA100_BUFFER_PIPS", 30)
 
-XGB_BULLISH_THRESHOLD  = cfg(P, "XGB_BULLISH_THRESHOLD", 0.55)
-MC_BULLISH_THRESHOLD   = cfg(P, "MC_BULLISH_THRESHOLD_PCT", 55.0)
-REQUIRE_STRONG_MOMENTUM= cfg(P, "REQUIRE_STRONG_MOMENTUM", False)
+XGB_BULLISH_THRESHOLD = cfg(P, "XGB_BULLISH_THRESHOLD", 0.55)   
+MC_BULLISH_THRESHOLD = cfg(P, "MC_BULLISH_THRESHOLD_PCT", 55.0)
+REQUIRE_STRONG_MOMENTUM = cfg(P, "REQUIRE_STRONG_MOMENTUM", False)
 
 # Weights — auto-normalize if sum ≠ 1.0
 W_S = cfg(P, "WEIGHT_STRENGTH", 0.40)
 W_R = cfg(P, "WEIGHT_RSI", 0.15)
-W_A = cfg(P, "WEIGHT_ADX", 0.15)
+W_A = cfg(P, "WEIGHT_ADX", 0.15) 
 W_X = cfg(P, "WEIGHT_XGB", 0.20)
 W_M = cfg(P, "WEIGHT_MC", 0.10)
 _WEIGHT_SUM = W_S + W_R + W_A + W_X + W_M
@@ -142,12 +142,12 @@ if abs(_WEIGHT_SUM - 1.00) > 0.001:
     logging.warning(f"⚠️ Weight sum = {_WEIGHT_SUM:.4f} ≠ 1.00 — normalizing")
     W_S, W_R, W_A, W_X, W_M = [w / _WEIGHT_SUM for w in [W_S, W_R, W_A, W_X, W_M]]
 
-CONSENSUS_THRESHOLD        = cfg(P, "CONSENSUS_THRESHOLD", 2)
-CONSENSUS_REQUIRED_VOTES   = cfg(P, "CONSENSUS_REQUIRED_VOTES", 2)
-REQUIRE_DIRECTION_CONSENSUS= cfg(P, "REQUIRE_DIRECTION_CONSENSUS", True)
-MIN_STRENGTH_GAP           = cfg(P, "MIN_SCORE_GAP", 0.10)
+CONSENSUS_THRESHOLD = cfg(P, "CONSENSUS_THRESHOLD", 2)
+CONSENSUS_REQUIRED_VOTES = cfg(P, "CONSENSUS_REQUIRED_VOTES", 2)
+REQUIRE_DIRECTION_CONSENSUS = cfg(P, "REQUIRE_DIRECTION_CONSENSUS", True)
+MIN_STRENGTH_GAP = cfg(P, "MIN_SCORE_GAP", 0.10)
 
-USE_DYNAMIC_SL   = cfg(P, "USE_DYNAMIC_SL", 2)
+USE_DYNAMIC_SL   = cfg(P, "USE_DYNAMIC_SL", True)
 DYNAMIC_SL_MULT = cfg(P, "DYNAMIC_SL_MULT", 1.5)
 
 # Global base fallbacks
@@ -194,6 +194,7 @@ logging.basicConfig(
 # ─── Weekly EMA100 & Trend Logic ────────────────────────────────────────────
 def calculate_ema(series, period):
     return series.ewm(span=period, adjust=False).mean()
+
 
 def fetch_weekly_ema100(oanda_instrument, api):
     """Returns None if filter OFF or data invalid → filter bypassed"""

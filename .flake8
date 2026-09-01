@@ -1,6 +1,6 @@
 [flake8]
 #ignore = E302
-ignore = E302,E305,W503,F841,F211
+ignore = E302,E303,E305,W503,F841,F211,F401
 max-line-length = 500
 ignore = E305,W503
 exclude =

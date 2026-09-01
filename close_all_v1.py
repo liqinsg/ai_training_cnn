@@ -17,12 +17,14 @@ from config_oanda import (
     OANDA_ACCOUNT_ID_1,
     OANDA_ACCOUNT_ID_2,
     OANDA_ACCOUNT_ID_3,
+    OANDA_ACCOUNT_ID_4,
 )
 
 ACCOUNTS = {
     "1": OANDA_ACCOUNT_ID_1,
     "2": OANDA_ACCOUNT_ID_2,
     "3": OANDA_ACCOUNT_ID_3,
+    "4": OANDA_ACCOUNT_ID_4,
 }
 
 oanda_client = API(
@@ -36,6 +38,7 @@ def select_account():
     print(f"1: {OANDA_ACCOUNT_ID_1}")
     print(f"2: {OANDA_ACCOUNT_ID_2}")
     print(f"3: {OANDA_ACCOUNT_ID_3}")
+    print(f"4: {OANDA_ACCOUNT_ID_4}")
     print("0: Exit")
 
     while True:
@@ -227,6 +230,10 @@ def show_menu():
 
     print(f"3: {OANDA_ACCOUNT_ID_3}")
     show_account_summary(OANDA_ACCOUNT_ID_3)
+    print()
+
+    print(f"4: {OANDA_ACCOUNT_ID_4}")
+    show_account_summary(OANDA_ACCOUNT_ID_4)
     print()
 
     print("0: Exit")
