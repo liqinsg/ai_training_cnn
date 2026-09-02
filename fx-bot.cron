@@ -1,1 +1,19 @@
-0/15 * * * * root cd /app && /usr/local/bin/python /app/fx_trade_bot_v7.py --profile4 --dry-run >> /app/logs/fx_trade_bot_v7.log 2>&1
+(ai-sprint) nie@ansible81:~$ crontab -l
+# Daily MC report
+0 8 * * * cd /home/nie/projects/ai_training_cnn && /home/nie/miniforge3/envs/ai-sprint/bin/python fx_monte_carlo_v1.py --timeframe D >> logs/mc_daily.log 2>&1
+# H4 MC intraday
+0 */4 * * * cd /home/nie/projects/ai_training_cnn && /home/nie/miniforge3/envs/ai-sprint/bin/python fx_monte_carlo_v1.py --timeframe H4 >> logs/mc_h4.log 2>&1
+
+# Log rotation — weekly
+0 0 * * 0 cd /home/nie/projects/ai_training_cnn && mv logs/bot_h4.log logs/bot_h4_$(date +\%Y\%m\%d).log && touch logs/bot_h4.log
+
+# MC JSON cleanup — daily 3 AM
+0 3 * * * find /home/nie/projects/ai_training_cnn/daily_results -name "*.json" -mtime +7 -delete
+
+# Retrain model daily at midnight
+0 0 * * * cd /home/nie/projects/ai_training_cnn && /home/nie/miniforge3/envs/ai-sprint/bin/python retrain_model.py >> logs/bot_cron.log 2>&1
+
+#*/15 * * * *    $HOME/miniforge3/envs/ai-sprint/bin/python $HOME/projects/ai_training_cnn/fx_trade_bot_v6.8.2_profile2.py >> $HOME/projects/ai_training_cnn/logs/fx_trade_bot_v6.8.2_profile2.log 2>&1
+#7-59/15 * * * * $HOME/miniforge3/envs/ai-sprint/bin/python $HOME/projects/ai_training_cnn/fx_trade_bot_v6.8.2_profile3.py >> $HOME/projects/ai_training_cnn/logs/fx_trade_bot_v6.8.2_profile3.log 2>&1
+11-59/15 * * * * $HOME/miniforge3/envs/ai-sprint/bin/python $HOME/projects/ai_training_cnn/fx_trade_bot_v7.py --profile4 >> $HOME/projects/ai_training_cnn/logs/fx_trade_bot_v7.log 2>&1
+

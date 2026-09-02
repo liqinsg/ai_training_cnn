@@ -221,3 +221,4 @@ logs/
 .vscode*
 utils/trading_core_OLD*.py
 tmp/
+*tar
