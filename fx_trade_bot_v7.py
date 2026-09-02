@@ -12,7 +12,7 @@ Usage:
     python fx_trade_bot_v7.py --profile3 --timeframe H4
     python fx_trade_bot_v7.py --profile3 --trend-filter-enabled false
 """
-import contextlib, sys, argparse, os
+import contextlib, sys, argparse, os, csv
 from pathlib import Path
 import numpy as np, pandas as pd
 import time
@@ -142,6 +142,28 @@ logger.info(f"🔑 使用账户: {OANDA_ACCOUNT_ID}")
 
 RESULTS_DIR.mkdir(exist_ok=True)
 TODAY_STR = today_str()
+
+# ─── AUDIT & ML LOGGING — CSV INIT ───────────────────────────────────────────
+TRADE_LOG_PATH = RESULTS_DIR / f"{TODAY_STR}_trade_log.csv"
+SIGNAL_LOG_PATH = RESULTS_DIR / f"{TODAY_STR}_signal_log.csv"
+TRADE_LOG_HEADER = [
+    "timestamp", "profile", "account", "pair", "trade_id",
+    "direction", "entry_price", "sl_price", "tp_price", "score_final",
+    "score_s", "score_r", "score_a", "score_x", "score_m",
+    "pips", "profit_usd", "exit_reason", "exit_time",
+]
+SIGNAL_LOG_HEADER = [
+    "timestamp", "profile", "pair", "strength_gap",
+    "consensus_buy_votes", "consensus_sell_votes", "score_final",
+    "passed_threshold", "action_taken", "reason",
+]
+for _p, _h in [(TRADE_LOG_PATH, TRADE_LOG_HEADER), (SIGNAL_LOG_PATH, SIGNAL_LOG_HEADER)]:
+    try:
+        if not _p.exists():
+            with open(_p, "w", newline="") as _f:
+                csv.DictWriter(_f, fieldnames=_h).writeheader()
+    except Exception as _e:
+        logger.error(f"📝 CSV init failed {_p}: {_e}")
 
 # ─── ✅ TREND FILTER: Profile3=ON · Profile2=OFF — CLI can override ──────────
 TREND_FILTER_ENABLED = cfg(P, "TREND_FILTER_ENABLED", False)
@@ -420,6 +442,179 @@ def build_top_pairs(strength_scores, all_pairs, top_n=4, min_gap=0.25):
     return [p[0] for p in candidates[:top_n]], candidates
 
 
+def append_to_csv(filepath, row_dict, fieldnames):
+    """Append 1 row dict to CSV; auto-creates file with header if missing.
+    Silent-fail on error — never crashes the trading loop.
+    """
+    try:
+        if not filepath.exists():
+            with open(filepath, "w", newline="") as f:
+                csv.DictWriter(f, fieldnames=fieldnames).writeheader()
+        with open(filepath, "a", newline="") as f:
+            csv.DictWriter(f, fieldnames=fieldnames).writerow(row_dict)
+    except Exception as e:
+        logger.error(f"📝 CSV append failed {filepath.name}: {e}")
+
+
+def update_trade_on_close(oanda_instrument, exit_reason="DYNAMIC_EXIT"):
+    """
+    平仓后回填 trade_log.csv: pips / profit_usd / exit_reason / exit_time
+    匹配策略：先在 CSV 里找 pair + exit_time 为空的未平仓行 → 用 trade_id 调 TradeDetails
+    全部用 PROFILE_NAME / TRADE_LOG_PATH globals —— 无硬编码 profile
+    """
+    if DRY_RUN:
+        return
+    try:
+        if not TRADE_LOG_PATH.exists():
+            logger.warning(f"📝 AUDIT: {TRADE_LOG_PATH.name} not found — cannot backfill")
+            return
+
+        df = pd.read_csv(TRADE_LOG_PATH)
+        yahoo_pair = next(
+            (k for k, v in YAHOO_TO_OANDA.items() if v == oanda_instrument), None
+        )
+        if yahoo_pair is None:
+            return
+
+        open_mask = (
+            (df["profile"] == PROFILE_NAME)
+            & (df["pair"] == yahoo_pair)
+            & (pd.isna(df["exit_time"]) | (df["exit_time"] == ""))
+        )
+        if open_mask.sum() == 0:
+            logger.info(f"📝 AUDIT: no open row for {oanda_instrument} — nothing to backfill")
+            return
+
+        idx = df[open_mask].index[0]
+        trade_id = str(df.at[idx, "trade_id"])
+
+        if trade_id.startswith("DRY_RUN_"):
+            df.loc[idx, "exit_reason"] = exit_reason
+            df.loc[idx, "exit_time"] = now().strftime("%Y-%m-%d %H:%M:%S")
+            df.to_csv(TRADE_LOG_PATH, index=False)
+            return
+
+        from oandapyV20.endpoints.trades import TradeDetails
+        try:
+            resp = api.request(
+                TradeDetails(accountID=OANDA_ACCOUNT_ID, tradeID=trade_id)
+            )
+            trade = resp.get("trade", {})
+        except Exception as te:
+            logger.warning(f"📝 AUDIT: TradeDetails failed for {trade_id}: {te}")
+            trade = {}
+
+        realized_pnl = float(trade.get("realizedPL", 0.0))
+        pip_val = pip_size(oanda_instrument)
+        entry_price = float(df.at[idx, "entry_price"])
+        direction = str(df.at[idx, "direction"]).upper()
+
+        close_price_raw = trade.get("price")
+        if close_price_raw is not None and pip_val > 0:
+            close_price = float(close_price_raw)
+            _diff = (close_price - entry_price) if direction == "BUY" else (entry_price - close_price)
+            pips = round(_diff / pip_val, 1)
+        else:
+            pips = round(realized_pnl / (abs(float(trade.get("currentUnits", 1))) * pip_val), 1) if pip_val > 0 else 0.0
+
+        df.loc[idx, "pips"] = pips
+        df.loc[idx, "profit_usd"] = round(realized_pnl, 2)
+        df.loc[idx, "exit_reason"] = exit_reason
+        df.loc[idx, "exit_time"] = now().strftime("%Y-%m-%d %H:%M:%S")
+        df.to_csv(TRADE_LOG_PATH, index=False)
+
+        logger.info(
+            f"📒 AUDIT CLOSE: {oanda_instrument} tid={trade_id} | "
+            f"P/L={realized_pnl:.2f}USD | {pips:.1f}p | reason={exit_reason}"
+        )
+    except Exception as e:
+        logger.error(f"❌ AUDIT backfill failed {oanda_instrument}: {e}")
+
+
+def _update_trade_on_close(oanda_instrument, exit_reason="DYNAMIC_EXIT"):
+    """
+    平仓后回填 trade_log.csv: pips / profit_usd / exit_reason / exit_time
+    用 pandas 按 profile + pair + profit_usd 为空 → 匹配第一条未平仓记录
+    DRY_RUN trades (trade_id 以 DRY_RUN_ 开头) 跳过，因为没有真实盈亏
+    """
+    if DRY_RUN:
+        return  # 嘴炮模式不回填 — 没有真实盈亏数据
+    try:
+        if not TRADE_LOG_PATH.exists():
+            logger.warning(f"📝 AUDIT: {TRADE_LOG_PATH.name} not found — cannot backfill")
+            return
+
+        # 1. 从 OANDA 拉已平仓交易详情（取最后一条，因为可能同 instrument 多次进出）
+        from oandapyV20.endpoints.trades import TradesList
+        resp = api.request(
+            TradesList(accountID=OANDA_ACCOUNT_ID, params={"instrument": oanda_instrument})
+        )
+        closed_trades = [
+            t for t in resp.get("trades", [])
+            if t.get("instrument") == oanda_instrument and t.get("state") == "CLOSED"
+        ]
+        if not closed_trades:
+            logger.info(f"📝 AUDIT: no CLOSED trade found for {oanda_instrument} — skip")
+            return
+
+        trade = closed_trades[-1]  # 最新平仓的那条
+        entry = float(trade["price"])
+        units = float(trade.get("currentUnits") or trade.get("units", 0))
+        pip_val = pip_size(oanda_instrument)
+
+        # 2. 用 pandas 匹配 CSV 里对应的开仓行
+        df = pd.read_csv(TRADE_LOG_PATH)
+        # pair 列存的是 Yahoo 格式 (EURUSD=X)，需要转换成 OANDA 格式比对
+        # 反过来：trade_log.pair 是 Yahoo 格式 → 去掉 =X，再找 OANDA_TO_YAHOO 映射回来
+        # 但更简单：直接用 trade_id 匹配！因为 LOG 1 已经把 trade_id 写进去了
+        trade_id = str(trade.get("id", ""))
+        mask = (df["profile"] == PROFILE_NAME) & (df["trade_id"].astype(str) == trade_id)
+        if mask.sum() == 0:
+            # fallback: 匹配 pair + profit_usd isna()
+            yahoo_pair = next(
+                (k for k, v in YAHOO_TO_OANDA.items() if v == oanda_instrument), None
+            )
+            mask = (
+                (df["profile"] == PROFILE_NAME)
+                & (df["pair"] == yahoo_pair)
+                & (pd.isna(df["profit_usd"]) | (df["profit_usd"] == ""))
+            )
+        if mask.sum() == 0:
+            logger.warning(
+                f"📝 AUDIT: cannot find open row for {oanda_instrument} (trade_id={trade_id})"
+            )
+            return
+
+        idx = df[mask].index[0]
+        is_long = units > 0
+        close_price = exit_price  # 下面计算
+
+        # 3. 从 OANDA trade 本身拿 close price（如果有）
+        # closed trades 里有 'closeTime' 和 final price；我们也可以自己算
+        # 最可靠的方式：用盈亏反推
+        realized_pnl = float(trade.get("realizedPL", 0.0))
+        pips = realized_pnl  # 下面重新算
+        # 直接用 pnl 和 units 算 pips：pips = pnl / (abs(units) * pip_value)
+        if pip_val > 0 and units != 0:
+            pips = round(realized_pnl / (abs(units) * pip_val), 1)
+        else:
+            pips = 0.0
+
+        # 4. 回填
+        df.loc[idx, "pips"] = pips
+        df.loc[idx, "profit_usd"] = round(realized_pnl, 2)
+        df.loc[idx, "exit_reason"] = exit_reason
+        df.loc[idx, "exit_time"] = now().strftime("%Y-%m-%d %H:%M:%S")
+
+        df.to_csv(TRADE_LOG_PATH, index=False)
+        logger.info(
+            f"📒 AUDIT CLOSE: {oanda_instrument} trade_id={trade_id} | "
+            f"P/L={realized_pnl:.2f}USD | {pips:.1f}p | reason={exit_reason}"
+        )
+    except Exception as e:
+        logger.error(f"❌ AUDIT backfill failed {oanda_instrument}: {e}")
+
+
 def calc_weighted_score(
     pair: str,
     gap: float,
@@ -505,6 +700,37 @@ def main():
         YAHOO_TO_OANDA,
         lambda k, d: cfg(P, k, d),  # ← unified lookup
     )
+
+    # ─── [AUDIT] SL/TP 自动关仓检测 — bot 停跑期间 OANDA 自动打的 SL/TP ───
+    # 扫今天 trade_log.csv 里 exit_time 为空的行 → 用 trade_id 去 OANDA 查
+    #   → trade 已 closed / 不存在 = 被 SL/TP 打掉了 → 回填 SL_OR_TP_HIT
+    try:
+        if TRADE_LOG_PATH.exists() and not DRY_RUN:
+            _df = pd.read_csv(TRADE_LOG_PATH)
+            _open_rows = _df[
+                (_df["profile"] == PROFILE_NAME)
+                & (pd.isna(_df["exit_time"]) | (_df["exit_time"] == ""))
+                & (~_df["trade_id"].astype(str).str.startswith("DRY_RUN_"))
+            ]
+            for _, _row in _open_rows.iterrows():
+                _tid = str(_row["trade_id"])
+                _yahoo_pair = str(_row["pair"])
+                _oanda_inst = YAHOO_TO_OANDA.get(_yahoo_pair)
+                if not _oanda_inst:
+                    continue
+                try:
+                    from oandapyV20.endpoints.trades import TradeDetails
+                    _tr = api.request(
+                        TradeDetails(accountID=OANDA_ACCOUNT_ID, tradeID=_tid)
+                    ).get("trade", {})
+                    # OANDA 404 / 已 CLOSED → 就是自动关的
+                    if not _tr or _tr.get("state") == "CLOSED":
+                        update_trade_on_close(_oanda_inst, exit_reason="SL_OR_TP_HIT")
+                except Exception:
+                    # TradeDetails 404 也说明 tradeID 不存在 → 已关
+                    update_trade_on_close(_oanda_inst, exit_reason="SL_OR_TP_HIT")
+    except Exception as _e:
+        logger.warning(f"📝 AUDIT SL/TP reconciliation skipped: {_e}")
 
     # Step 1 — Currency Strength
     logger.info("[STEP 1] Currency Strength...")
@@ -640,8 +866,12 @@ def main():
     # Step 5 — Dynamic Exit Manager
     logger.info("[STEP 5] Dynamic Exit Manager...")
 
-    def close_wrap(instr):
-        return close_position(api, OANDA_ACCOUNT_ID, instr, send_telegram_message, dry_run=DRY_RUN)
+    def close_wrap(instr, exit_reason="DYNAMIC_EXIT"):
+        ret = close_position(
+            api, OANDA_ACCOUNT_ID, instr, send_telegram_message, dry_run=DRY_RUN
+        )
+        update_trade_on_close(instr, exit_reason=exit_reason)
+        return ret
 
     dyn_mgr = DynamicPositionManager(
         api,
@@ -719,7 +949,7 @@ def main():
 
             for score, pair, oanda_inst, dir in to_close:
                 logger.warning(f"🔪 AUTO-CLOSE: {pair} {dir} SCORE={score:.1f} 太低了，平仓让路")
-                close_wrap(oanda_inst)
+                close_wrap(oanda_inst, exit_reason="AUTO_ROTATION")
                 # ✅ 写入冷却 2轮
                 JUST_CLOSED_PAIRS[pair] = 2
                 save_cooldown(COOLDOWN_FILE, JUST_CLOSED_PAIRS)
@@ -804,6 +1034,40 @@ def main():
         direction, w = calc_weighted_score(
             pair, gap, rsi_val, adx_val, prob_raw, mc_pct_up
         )
+
+        # ─── LOG 2: signal_log.csv — every pair passing MIN_STRENGTH_GAP ───
+        try:
+            _strength_dir = "BUY" if gap >= MIN_STRENGTH_GAP else (
+                "SELL" if gap <= -MIN_STRENGTH_GAP else "NEUTRAL"
+            )
+            _xgb_dir = "BUY" if (prob_raw or 0.0) >= XGB_BULLISH_THRESHOLD else "SELL"
+            _mc_dir = "BUY" if (mc_pct_up or 50.0) >= MC_BULLISH_THRESHOLD else "SELL"
+            _buy_votes = sum(1 for d in (_strength_dir, _xgb_dir, _mc_dir) if d == "BUY")
+            _sell_votes = sum(1 for d in (_strength_dir, _xgb_dir, _mc_dir) if d == "SELL")
+            if direction is None:
+                _action_taken = "NO_CONSENSUS"
+                _reason = f"NO CONSENSUS ({_buy_votes}B/{_sell_votes}S)"
+            elif w and not w["PASS"]:
+                _action_taken = "SKIP_LOW_SCORE"
+                _reason = f"FINAL {w['FINAL']:.1f} < {w['THRESHOLD']}"
+            else:
+                _action_taken = "PASS_GATE"
+                _reason = f"FINAL {w['FINAL']:.1f} >= {w['THRESHOLD']}"
+            append_to_csv(SIGNAL_LOG_PATH, {
+                "timestamp": now().strftime("%Y-%m-%d %H:%M:%S"),
+                "profile": PROFILE_NAME,
+                "pair": pair,
+                "strength_gap": round(abs(gap), 4),
+                "consensus_buy_votes": _buy_votes,
+                "consensus_sell_votes": _sell_votes,
+                "score_final": w["FINAL"] if w else 0,
+                "passed_threshold": w["PASS"] if w else False,
+                "action_taken": _action_taken,
+                "reason": _reason,
+            }, SIGNAL_LOG_HEADER)
+        except Exception as _e:
+            logger.error(f"📝 signal_log.csv failed {pair}: {_e}")
+
         if not (direction and w and w["PASS"]):
             if w and not w["PASS"]:
                 logger.info(f"➖ REASON: FINAL {w['FINAL']:.1f} < {w['THRESHOLD']}")
@@ -955,6 +1219,32 @@ def main():
                 logger.info(
                     f"✅ ORDER OPENED: {pair} {direction} | SL={sl_price:.{dec}f} TP={tp_price:.{dec}f}"
                 )
+                # trade_id: real from OANDA response, or DRY_RUN_ prefix in嘴炮模式
+                _tid = result.get("trade_id", "")
+                if not _tid and result.get("status") == "DRY_RUN":
+                    _tid = f"DRY_RUN_{run_ts.strftime('%H%M%S')}"
+                # ─── LOG 1: trade_log.csv ───
+                append_to_csv(TRADE_LOG_PATH, {
+                    "timestamp": run_ts.strftime("%Y-%m-%d %H:%M:%S"),
+                    "profile": PROFILE_NAME,
+                    "account": OANDA_ACCOUNT_ID,
+                    "pair": pair,
+                    "trade_id": _tid,
+                    "direction": direction,
+                    "entry_price": current,
+                    "sl_price": sl_price,
+                    "tp_price": tp_price,
+                    "score_final": FINAL,
+                    "score_s": w["S"],
+                    "score_r": w["R"],
+                    "score_a": w["A"],
+                    "score_x": w["X"],
+                    "score_m": w["M"],
+                    "pips": "",
+                    "profit_usd": "",
+                    "exit_reason": "",
+                    "exit_time": "",
+                }, TRADE_LOG_HEADER)
             else:
                 logger.error(
                     f"❌ ORDER FAILED: {pair} — {result.get('message', 'Unknown error')}"
