@@ -7,7 +7,7 @@ from pathlib import Path
 from lightgbm import LGBMClassifier
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score, roc_auc_score
-import pandas_ta as ta
+import pandas_ta_classic as ta
 from utils.oanda_execution import is_forex_market_open
 
 # Exit immediately if market is closed

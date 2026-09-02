@@ -6,7 +6,6 @@ numpy==2.5.2
 oandapyv20==0.7.2
 openai==3.7.0
 pandas==3.0.5
-pandas_ta==0.4.71b0
 pandas_ta_classic==0.6.52
 protobuf==7.36.1
 pydantic==2.13.5
