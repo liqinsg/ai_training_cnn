@@ -12,11 +12,10 @@ Usage:
     python fx_trade_bot_v7.py --profile3 --timeframe H4
     python fx_trade_bot_v7.py --profile3 --trend-filter-enabled false
 """
-import contextlib, sys, logging, argparse, os
+import contextlib, sys, argparse, os
 from pathlib import Path
-from datetime import datetime, timezone
 import numpy as np, pandas as pd
-
+import time
 # ─── ✅ ONLY ONE CONFIG IMPORT ───
 import config_bot_v7 as cfg_base
 from config_bot_v7 import PROFILE_CFG
@@ -52,11 +51,14 @@ from fx_trade_bot_ml import ensure_model
 from config_oanda import api, OANDA_ENV
 
 # ─── ✅ 使用统一日志配置 ──────────────────────────────────────────────────────
-from utils.logging_utils import get_logger
+from utils.logging_utils import get_logger, now, today_str, fmt
+from utils.utils import load_cooldown, save_cooldown, COOLDOWN_FILE, BASE_DIR, apply_jitter
 
 logger = get_logger()  # 全局 "fx_bot" 日志器，自动带文件+控制台双输出
 
-BASE_DIR = Path(__file__).resolve().parent
+JUST_CLOSED_PAIRS = load_cooldown(COOLDOWN_FILE)  # 全局
+
+# BASE_DIR = Path(__file__).resolve().parent
 sys.path.extend([str(BASE_DIR), str(BASE_DIR / "utils")])
 
 
@@ -86,6 +88,7 @@ parser.add_argument("--skip-mc", action="store_true")
 parser.add_argument("--mc-only", action="store_true")
 parser.add_argument("--dry-run", action="store_true", default=None, help="嘴炮模式：分析但不执行任何订单")
 args = parser.parse_args()
+
 
 # ─── 核按钮：run.env 优先于一切 ───────────────────────────────────────────────
 # run.env 存在且含 DRY_RUN=true/false → bot 自己说了算
@@ -138,8 +141,7 @@ if not OANDA_ACCOUNT_ID or len(OANDA_ACCOUNT_ID) < 10 or "-" not in OANDA_ACCOUN
 logger.info(f"🔑 使用账户: {OANDA_ACCOUNT_ID}")
 
 RESULTS_DIR.mkdir(exist_ok=True)
-TODAY_STR = datetime.now(timezone.utc).strftime("%Y%m%d")
-
+TODAY_STR = today_str()
 
 # ─── ✅ TREND FILTER: Profile3=ON · Profile2=OFF — CLI can override ──────────
 TREND_FILTER_ENABLED = cfg(P, "TREND_FILTER_ENABLED", False)
@@ -191,7 +193,7 @@ W_X = cfg(P, "WEIGHT_XGB", 0.20)
 W_M = cfg(P, "WEIGHT_MC", 0.10)
 _WEIGHT_SUM = W_S + W_R + W_A + W_X + W_M
 if abs(_WEIGHT_SUM - 1.00) > 0.001:
-    logging.warning(f"⚠️ Weight sum = {_WEIGHT_SUM:.4f} ≠ 1.00 — normalizing")
+    logger.warning(f"⚠️ Weight sum = {_WEIGHT_SUM:.4f} ≠ 1.00 — normalizing")
     W_S, W_R, W_A, W_X, W_M = [w / _WEIGHT_SUM for w in [W_S, W_R, W_A, W_X, W_M]]
 
 CONSENSUS_THRESHOLD = cfg(P, "CONSENSUS_THRESHOLD", 2)
@@ -485,7 +487,7 @@ def main():
         f"\n🤖 RUN v7.0 {PROFILE_LABEL} — {ACCOUNT_NAME} | "
         f"FILTERS={'ON' if TREND_FILTER_ENABLED else 'OFF'} | "
         f"EMA100_WK={'ON' if WEEK_EMA100_FILTER_ENABLED else 'OFF'} | "
-        f"{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')} | MAX_OPEN={MAX_OPEN}"
+        f"{fmt()} | MAX_OPEN={MAX_OPEN}"
     )
     logger.info(f"🔑 OANDA Account ID: {OANDA_ACCOUNT_ID}")
 
@@ -654,10 +656,11 @@ def main():
         telegram_send=send_telegram_message,
         dry_run=DRY_RUN,
     )
-    oanda_level = logging.getLogger("oandapyV20").level
-    logging.getLogger("oandapyV20").setLevel(logging.CRITICAL)
+    # oanda_level = logging.getLogger("oandapyV20").level
+    # logging.getLogger("oandapyV20").setLevel(logging.CRITICAL)
+    # logging.getLogger("oandapyV20").setLevel(oanda_level)
+
     dyn_mgr.update_all(pair_data, close_wrap)
-    logging.getLogger("oandapyV20").setLevel(oanda_level)
 
     # Step 6 — Scan Open Positions
     open_pos_by_oanda, open_pos_count = {}, 0
@@ -683,6 +686,49 @@ def main():
         f"📊 Open positions: {open_pos_count}/{MAX_OPEN} | OPEN: {', '.join(open_list) or 'None'} | READY: {', '.join(ready_list) or 'None'}"
     )
 
+    # ─── AUTO ROTATION: 平低分开高分 ─────────────────────────────────────────────
+    if open_pos_count >= MAX_OPEN:
+        logger.warning(f"⚠️ 仓位已满 {open_pos_count}/{MAX_OPEN} — 启动自动换仓检查")
+
+        scored_positions = []
+        for oanda_inst, is_open in open_pos_by_oanda.items(): # 1. has_pos -> is_open
+            if not is_open:
+                continue
+
+            pair = next((k for k,v in YAHOO_TO_OANDA.items() if v == oanda_inst), None)
+            if not pair or pair not in pair_data:  # 2. pari_data -> pair_data
+                continue
+
+            # 用同样的打分逻辑给现有仓位算分
+            base, quote = pair[:3], pair[3:].replace("=X","")
+            gap = strength_scores.get(base, 0) - strength_scores.get(quote, 0)
+
+            prob_raw = 0.5  # 现有仓位没有新信号，用0.5
+            mc_pct_up = mc_cache.get(pair, {}).get("p_up", 50.0)
+            direction, w = calc_weighted_score(pair, gap, pair_data[pair]["rsi"], pair_data[pair]["adx"], prob_raw, mc_pct_up)
+
+            if w and "FINAL" in w:
+                scored_positions.append((w["FINAL"], pair, oanda_inst, direction))
+
+        if not scored_positions:
+            logger.warning("⚠️ 无法给现有仓位打分，跳过换仓")
+        else:
+            scored_positions.sort() # 分数从低到高
+            need_to_free = open_pos_count - MAX_OPEN + 1 # 至少要空出1个位置
+            to_close = scored_positions[:need_to_free]
+
+            for score, pair, oanda_inst, dir in to_close:
+                logger.warning(f"🔪 AUTO-CLOSE: {pair} {dir} SCORE={score:.1f} 太低了，平仓让路")
+                close_wrap(oanda_inst)
+                # ✅ 写入冷却 2轮
+                JUST_CLOSED_PAIRS[pair] = 2
+                save_cooldown(COOLDOWN_FILE, JUST_CLOSED_PAIRS)
+                open_pos_by_oanda[oanda_inst] = False  # 立刻标记为已平
+                open_pos_count -= 1
+                time.sleep(1)  # OANDA限频
+
+            logger.info(f"✅ 换仓完成，当前可用仓位: {MAX_OPEN - open_pos_count}")
+
     # Step 7 — Score, Trend Filter, Smart TP & Execute
     logger.info("[STEP 7] Scoring + TREND FILTER + SMART TP...")
     # _trade_lines, pip_cache, pair_parts = {}, {p: pip_size(p) for p in selected_pairs}, {p: (p[:3], p[3:].replace("=X","")) for p in selected_pairs}
@@ -706,6 +752,15 @@ def main():
         if open_pos_by_oanda.get(oanda, False):
             logger.info(f"⏭️ {pair}: position already open — SKIP")
             continue
+
+        # Cooldown Check
+        if JUST_CLOSED_PAIRS.get(pair, 0) > 0:
+            JUST_CLOSED_PAIRS[pair] -= 1  # 每轮-1
+            logger.info(f"⏳ COOLDOWN {pair}: {JUST_CLOSED_PAIRS[pair]}轮剩余 — SKIP")
+            save_cooldown(COOLDOWN_FILE, JUST_CLOSED_PAIRS)
+            continue
+        elif pair in JUST_CLOSED_PAIRS:  # 到0了就删掉key
+            del JUST_CLOSED_PAIRS[pair]
 
         # Current Price
         try:
@@ -878,10 +933,10 @@ def main():
         )
         try:
             lot = DEFAULT_LOT_SIZE
-            run_ts = datetime.now(timezone.utc)
+            run_ts = now()
             tag = "v7-bot"
             client_id = f"{PROFILE_NAME}-{pair.replace('=X','')}-{direction}-{run_ts.strftime('%H%M%S')}"
-            comment = f"v7/{PROFILE_NAME} {pair} {direction} opened {run_ts.strftime('%Y-%m-%d %H:%M UTC')}"
+            comment = f"v7/{PROFILE_NAME} {pair} {direction} opened {fmt(run_ts, '%Y-%m-%d %H:%M')}"
             result = open_oanda_order(
                 api,
                 OANDA_ACCOUNT_ID,
@@ -912,8 +967,8 @@ def main():
 
 # ─── ENTRY POINT ─────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    from utils.utils import apply_jitter
     try:
+        # from utils.utils import apply_jitter
         apply_jitter(1.0, 10.0)
         main()
     except KeyboardInterrupt:

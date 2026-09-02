@@ -1,16 +1,46 @@
 import random
 import time
 import datetime
+import sys
+import os
+import json
+from pathlib import Path
+
+BASE_DIR = Path(__file__).resolve().parent
+COOLDOWN_FILE = BASE_DIR / "cooldown.json"
+COOLDOWN_PERIODS = 2  # 默认冷却2轮 = 30分钟
 
 GREEN = "\033[92m"
 RED = "\033[91m"
 YELLOW = "\033[93m"
 RESET = "\033[0m"
 
+sys.path.extend([str(BASE_DIR), str(BASE_DIR / "utils")])
+
+# ─── H4 SL 参数 ───
+REQUIRED_H4_CANDLES = 4
+SL_OFFSET_PIPS = 20
+SL_MAX_ALLOWED_PIPS = 200
+
+
+def load_cooldown(path):
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text())
+    except:
+        return {}
+
+
+def save_cooldown(path, data):
+    path.write_text(json.dumps(data))
+
+
 def apply_jitter(min_sec: float = 1.0, max_sec: float = 8.0) -> None:
     """在脚本主逻辑开始前增加抖动延迟，避免并发请求撞车"""
     delay = random.uniform(min_sec, max_sec)
-    time.sleep(delay)    
+    time.sleep(delay)
+
 
 def forex_market_closed():
     from datetime import datetime
@@ -18,7 +48,6 @@ def forex_market_closed():
 
     now = datetime.now(ZoneInfo("Europe/London"))
     wd = now.weekday()
-
     return (
         wd == 5  # Saturday
         or (wd == 6 and now.hour < 21)  # Sunday before open
@@ -27,45 +56,33 @@ def forex_market_closed():
 
 
 def format_oanda_time(ts):
-    dt = datetime.datetime.fromisoformat(ts)
+    dt = datetime.datetime.fromisoformat(ts.replace("Z", "+00:00"))  # OANDA有Z
     return dt.strftime("%Y-%m-%d %H:%M UTC")
 
+
+def calculate_sl_zone(side: str, entry_price: float, h4_candles: list, pip_size: float):
     """
     Calculate Stop-Loss per H4 Zone Hierarchy Rules + Max SL Cap
-    ────────────────────────────────────────────────────────────
     SELL: SL = max(H4 highs of last 4 CLOSED candles) + 20 pips
     BUY:  SL = min(H4 lows of last 4 CLOSED candles)  - 20 pips
     Cap:  If SL distance > 200 pips → abort trade (return skip=True)
-    
-    IMPORTANT: h4_candles MUST contain ONLY fully closed H4 candles
-               — EXCLUDE the current forming candle always
-    
-    Args:
-        side: 'BUY' or 'SELL'
-        entry_price: Opening execution price
-        h4_candles: List of H4 candle dicts [{"high":x,"low":y}, ...]
-        pip_size: 0.0001 for non-JPY pairs, 0.01 for JPY pairs
-    
-    Returns:
-        (sl_price: float, sl_pips: float, skip_trade: bool)
     """
     # ─── Validate Input ───
     if len(h4_candles) < REQUIRED_H4_CANDLES:
         raise ValueError(
-            f"Insufficient H4 candles: need ≥{REQUIRED_H4_CANDLES}, got {len(h4_candles)} — "
-            "Ensure forming candle was removed before calling this function"
+            f"Insufficient H4 candles: need ≥{REQUIRED_H4_CANDLES}, got {len(h4_candles)}"
         )
 
     # ─── Calculate SL per H4 Zone Hierarchy ───
     if side.upper() == "SELL":
         ref_level = max(c["high"] for c in h4_candles)
-        sl_price  = ref_level + (SL_OFFSET_PIPS * pip_size)
-        sl_pips   = (sl_price - entry_price) / pip_size  # Always positive
+        sl_price = ref_level + (SL_OFFSET_PIPS * pip_size)
+        sl_pips = (sl_price - entry_price) / pip_size
 
     elif side.upper() == "BUY":
         ref_level = min(c["low"] for c in h4_candles)
-        sl_price  = ref_level - (SL_OFFSET_PIPS * pip_size)
-        sl_pips   = (entry_price - sl_price) / pip_size  # Always positive
+        sl_price = ref_level - (SL_OFFSET_PIPS * pip_size)
+        sl_pips = (entry_price - sl_price) / pip_size
 
     else:
         raise ValueError(f"Invalid order side: '{side}' — must be 'BUY' or 'SELL'")
@@ -74,16 +91,10 @@ def format_oanda_time(ts):
     if sl_pips > SL_MAX_ALLOWED_PIPS:
         skip_trade = True
         print(
-            f"🚫 SL TOO LARGE — TRADE ABORTED | Side: {side} | Ref: {ref_level:.5f} | "
-            f"Entry: {entry_price:.5f} | SL: {sl_price:.5f} | "
-            f"Distance: {sl_pips:.1f} pips | MAX ALLOWED: {SL_MAX_ALLOWED_PIPS}"
+            f"{RED}🚫 SL TOO LARGE — ABORT | {side} | Distance: {sl_pips:.1f} pips > {SL_MAX_ALLOWED_PIPS}{RESET}"
         )
     else:
         skip_trade = False
-        print(
-            f"✅ SL ACCEPTED | Side: {side} | Ref: {ref_level:.5f} | "
-            f"Entry: {entry_price:.5f} | SL: {sl_price:.5f} | "
-            f"Distance: {sl_pips:.1f} pips"
-        )
+        print(f"{GREEN}✅ SL ACCEPTED | {side} | Distance: {sl_pips:.1f} pips{RESET}")
 
     return sl_price, sl_pips, skip_trade

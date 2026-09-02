@@ -12,8 +12,8 @@ services:
       - ./state:/app/state
       - ./data:/app/data
     env_file:
-      - .env
+      - run.env
     # Optional: sync container time with host
     environment:
-      - TZ=UTC
+      - TZ=Asia/Singapore
       - DRY_RUN=true   # 安全默认：嘴炮模式。真跑改 false 后 `docker compose up -d`
