@@ -531,90 +531,6 @@ def update_trade_on_close(oanda_instrument, exit_reason="DYNAMIC_EXIT"):
         logger.error(f"❌ AUDIT backfill failed {oanda_instrument}: {e}")
 
 
-def _update_trade_on_close(oanda_instrument, exit_reason="DYNAMIC_EXIT"):
-    """
-    平仓后回填 trade_log.csv: pips / profit_usd / exit_reason / exit_time
-    用 pandas 按 profile + pair + profit_usd 为空 → 匹配第一条未平仓记录
-    DRY_RUN trades (trade_id 以 DRY_RUN_ 开头) 跳过，因为没有真实盈亏
-    """
-    if DRY_RUN:
-        return  # 嘴炮模式不回填 — 没有真实盈亏数据
-    try:
-        if not TRADE_LOG_PATH.exists():
-            logger.warning(f"📝 AUDIT: {TRADE_LOG_PATH.name} not found — cannot backfill")
-            return
-
-        # 1. 从 OANDA 拉已平仓交易详情（取最后一条，因为可能同 instrument 多次进出）
-        from oandapyV20.endpoints.trades import TradesList
-        resp = api.request(
-            TradesList(accountID=OANDA_ACCOUNT_ID, params={"instrument": oanda_instrument})
-        )
-        closed_trades = [
-            t for t in resp.get("trades", [])
-            if t.get("instrument") == oanda_instrument and t.get("state") == "CLOSED"
-        ]
-        if not closed_trades:
-            logger.info(f"📝 AUDIT: no CLOSED trade found for {oanda_instrument} — skip")
-            return
-
-        trade = closed_trades[-1]  # 最新平仓的那条
-        entry = float(trade["price"])
-        units = float(trade.get("currentUnits") or trade.get("units", 0))
-        pip_val = pip_size(oanda_instrument)
-
-        # 2. 用 pandas 匹配 CSV 里对应的开仓行
-        df = pd.read_csv(TRADE_LOG_PATH)
-        # pair 列存的是 Yahoo 格式 (EURUSD=X)，需要转换成 OANDA 格式比对
-        # 反过来：trade_log.pair 是 Yahoo 格式 → 去掉 =X，再找 OANDA_TO_YAHOO 映射回来
-        # 但更简单：直接用 trade_id 匹配！因为 LOG 1 已经把 trade_id 写进去了
-        trade_id = str(trade.get("id", ""))
-        mask = (df["profile"] == PROFILE_NAME) & (df["trade_id"].astype(str) == trade_id)
-        if mask.sum() == 0:
-            # fallback: 匹配 pair + profit_usd isna()
-            yahoo_pair = next(
-                (k for k, v in YAHOO_TO_OANDA.items() if v == oanda_instrument), None
-            )
-            mask = (
-                (df["profile"] == PROFILE_NAME)
-                & (df["pair"] == yahoo_pair)
-                & (pd.isna(df["profit_usd"]) | (df["profit_usd"] == ""))
-            )
-        if mask.sum() == 0:
-            logger.warning(
-                f"📝 AUDIT: cannot find open row for {oanda_instrument} (trade_id={trade_id})"
-            )
-            return
-
-        idx = df[mask].index[0]
-        is_long = units > 0
-        close_price = exit_price  # 下面计算
-
-        # 3. 从 OANDA trade 本身拿 close price（如果有）
-        # closed trades 里有 'closeTime' 和 final price；我们也可以自己算
-        # 最可靠的方式：用盈亏反推
-        realized_pnl = float(trade.get("realizedPL", 0.0))
-        pips = realized_pnl  # 下面重新算
-        # 直接用 pnl 和 units 算 pips：pips = pnl / (abs(units) * pip_value)
-        if pip_val > 0 and units != 0:
-            pips = round(realized_pnl / (abs(units) * pip_val), 1)
-        else:
-            pips = 0.0
-
-        # 4. 回填
-        df.loc[idx, "pips"] = pips
-        df.loc[idx, "profit_usd"] = round(realized_pnl, 2)
-        df.loc[idx, "exit_reason"] = exit_reason
-        df.loc[idx, "exit_time"] = now().strftime("%Y-%m-%d %H:%M:%S")
-
-        df.to_csv(TRADE_LOG_PATH, index=False)
-        logger.info(
-            f"📒 AUDIT CLOSE: {oanda_instrument} trade_id={trade_id} | "
-            f"P/L={realized_pnl:.2f}USD | {pips:.1f}p | reason={exit_reason}"
-        )
-    except Exception as e:
-        logger.error(f"❌ AUDIT backfill failed {oanda_instrument}: {e}")
-
-
 def calc_weighted_score(
     pair: str,
     gap: float,
@@ -1219,10 +1135,10 @@ def main():
                 logger.info(
                     f"✅ ORDER OPENED: {pair} {direction} | SL={sl_price:.{dec}f} TP={tp_price:.{dec}f}"
                 )
-                # trade_id: real from OANDA response, or DRY_RUN_ prefix in嘴炮模式
+                # trade_id: real from OANDA response, or DRY_RUN_ + client_id in嘴炮模式
                 _tid = result.get("trade_id", "")
                 if not _tid and result.get("status") == "DRY_RUN":
-                    _tid = f"DRY_RUN_{run_ts.strftime('%H%M%S')}"
+                    _tid = f"DRY_RUN_{client_id}"
                 # ─── LOG 1: trade_log.csv ───
                 append_to_csv(TRADE_LOG_PATH, {
                     "timestamp": run_ts.strftime("%Y-%m-%d %H:%M:%S"),
