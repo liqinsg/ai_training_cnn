@@ -229,3 +229,13 @@ utils/daily_results_profile4/
 utils/daily_results_profile4/
 trade_model_xgb.pkl
 utils/trade_model_xgb.features.json
+
+# 运行数据 & 模型
+trade_model_xgb.pkl
+trade_model_xgb.pkl.bak
+trade_model_xgb.features.json
+trade_model_xgb_backup_*.pkl
+daily_results_profile*/
+daily_results/
+*.log
+cooldown_*.json
