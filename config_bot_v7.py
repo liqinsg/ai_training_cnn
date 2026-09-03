@@ -234,21 +234,26 @@ PROFILE_CFG = {
         # ── Thresholds (FINAL · 关 WEEKLY EMA100，留 TREND FILTER) ──
         "MIN_CONVICTION_SCORE": 15.0,                     # 20.0 → 15.0 · 捞回擦边球
         "MIN_SCORE_GAP": 0.05,                            # 0.10 → 0.05 · 低 gap 也能参与共识
+
         # ── Position Limits ──
         "MAX_OPEN_POSITIONS": 6,
-        "MAX_OPEN_HIGH_VOL": 4,                           # JPY 组
-        "MAX_OPEN_MID_VOL": 1,                            # 交叉盘 (GBPAUD/EURGBP)
-        "MAX_OPEN_LOW_VOL": 1,                            # 直盘 (EURUSD/GBPUSD/AUDUSD)
+        "MAX_OPEN_HIGH_VOL": 4,
+        "MAX_OPEN_MID_VOL": 1,
+        "MAX_OPEN_LOW_VOL": 1,
 
         # ── JPY 方向共识 ──
-        "JPY_CONSENSUS_MIN": 2,                           # 至少 2 个 JPY 同方向才开
-        "JPY_MAX_OPEN_PER_RUN": 2,                        # 同方向最多开 2 个 JPY
+        "JPY_CONSENSUS_MIN": 2,
+        "JPY_MAX_OPEN_PER_RUN": 2,
 
         # ── SL caps ──
         "MIN_SL_PIPS": 35,
         "MIN_SL_PIPS_JPY": 60,
-        "SL_MAX_ALLOWED_PIPS": 200,                       # 非 JPY
-        "SL_MAX_ALLOWED_PIPS_JPY": 500,                   # JPY 波动大放宽
+        "SL_MAX_ALLOWED_PIPS": 200,
+        "SL_MAX_ALLOWED_PIPS_JPY": 500,
+
+        # ── Pair Exclusion ──
+        "EXCLUDE_CURRENCIES": ["NZD", "CAD", "CHF"],
+
         "XGB_BULLISH_THRESHOLD": 0.52,                    # 0.55 → 0.52 · 减少 strength/XGB 分裂投票
         "MC_BULLISH_THRESHOLD_PCT": 52.0,                 # 55.0 → 52.0 · MC 信号更平衡
         "MC_STRONG_THRESHOLD": 0.55,
