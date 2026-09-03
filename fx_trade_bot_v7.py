@@ -177,6 +177,7 @@ else:
         f"🔍 AUTO: TREND_FILTER_ENABLED={TREND_FILTER_ENABLED} | "
         f"WEEK_EMA100={WEEK_EMA100_FILTER_ENABLED} | profile={PROFILE_LABEL}"
     )
+logger.info(logger_info_cli)
 
 
 # ─── Resolve all strategy parameters ────────────────────────────────────────
@@ -214,6 +215,11 @@ W_A = cfg(P, "WEIGHT_ADX", 0.15)
 W_X = cfg(P, "WEIGHT_XGB", 0.20)
 W_M = cfg(P, "WEIGHT_MC", 0.10)
 _WEIGHT_SUM = W_S + W_R + W_A + W_X + W_M
+if _WEIGHT_SUM <= 0:
+    raise ValueError(
+        f"All weights are zero or negative (sum={_WEIGHT_SUM}). "
+        "Check WEIGHT_STRENGTH/RSI/ADX/XGB/MC in your config."
+    )
 if abs(_WEIGHT_SUM - 1.00) > 0.001:
     logger.warning(f"⚠️ Weight sum = {_WEIGHT_SUM:.4f} ≠ 1.00 — normalizing")
     W_S, W_R, W_A, W_X, W_M = [w / _WEIGHT_SUM for w in [W_S, W_R, W_A, W_X, W_M]]
@@ -247,6 +253,11 @@ DEBUG_MODE = cfg(P, "DEBUG_MODE", False)
 SKIP_MC = cfg(P, "SKIP_MC", False)
 MULTI_TF_CONFLUENCE = cfg(P, "MULTI_TF_CONFLUENCE", False)
 CONFLUENCE_REQUIRED_TFS = cfg(P, "CONFLUENCE_REQUIRED_TFS", 2)
+NO_COOLDOWN = cfg(P, "NO_COOLDOWN", True)
+CLOSE_COOLDOWN_SECONDS = cfg(P, "CLOSE_COOLDOWN_SECONDS", 3600)  # 平仓后冷却多久才能重入（秒）
+if NO_COOLDOWN:
+    JUST_CLOSED_PAIRS = {}  # 全局重置 — 彻底忽略 cooldown
+    logger.warning("🧊 NO_COOLDOWN=ON — cooldown 文件已清空，所有货币对均可重入")
 
 if args.confluence is not None:
     MULTI_TF_CONFLUENCE = args.confluence
@@ -314,7 +325,6 @@ def evaluate_trend_and_tp(
     tp_mult,
     tp_strong_mult,
     ema100_buffer_pips=30,
-    timeframe="15m",
 ):
     current_price = entry_price
     # Rule A — EMA Crossover
@@ -756,7 +766,7 @@ def main():
             dirs = []
             for gran in {"H4": "H4", "1H": "H1", "15m": "M15"}.values():
                 with contextlib.suppress(Exception):
-                    raw_tf = fetch_candles(pair_data[pair]["oanda"], gran)
+                    raw_tf = fetch_candles(api, pair_data[pair]["oanda"], gran)
                     if len(raw_tf) < 5:
                         continue
                     sig = strat_engine.generate_signal(
@@ -866,9 +876,10 @@ def main():
             for score, pair, oanda_inst, dir in to_close:
                 logger.warning(f"🔪 AUTO-CLOSE: {pair} {dir} SCORE={score:.1f} 太低了，平仓让路")
                 close_wrap(oanda_inst, exit_reason="AUTO_ROTATION")
-                # ✅ 写入冷却 2轮
-                JUST_CLOSED_PAIRS[pair] = 2
-                save_cooldown(COOLDOWN_FILE, JUST_CLOSED_PAIRS)
+                # ✅ 写入冷却时间戳（NO_COOLDOWN=True 时跳过）
+                if not NO_COOLDOWN:
+                    JUST_CLOSED_PAIRS[pair] = time.time()
+                    save_cooldown(COOLDOWN_FILE, JUST_CLOSED_PAIRS)
                 open_pos_by_oanda[oanda_inst] = False  # 立刻标记为已平
                 open_pos_count -= 1
                 time.sleep(1)  # OANDA限频
@@ -899,14 +910,19 @@ def main():
             logger.info(f"⏭️ {pair}: position already open — SKIP")
             continue
 
-        # Cooldown Check
-        if JUST_CLOSED_PAIRS.get(pair, 0) > 0:
-            JUST_CLOSED_PAIRS[pair] -= 1  # 每轮-1
-            logger.info(f"⏳ COOLDOWN {pair}: {JUST_CLOSED_PAIRS[pair]}轮剩余 — SKIP")
-            save_cooldown(COOLDOWN_FILE, JUST_CLOSED_PAIRS)
-            continue
-        elif pair in JUST_CLOSED_PAIRS:  # 到0了就删掉key
-            del JUST_CLOSED_PAIRS[pair]
+        # Cooldown Check（NO_COOLDOWN=True 时彻底跳过）
+        if NO_COOLDOWN:
+            pass  # 🧊 Cooldown ignored — all pairs eligible
+        else:
+            _close_ts = JUST_CLOSED_PAIRS.get(pair)
+            if _close_ts is not None:
+                _elapsed = time.time() - _close_ts
+                if _elapsed < CLOSE_COOLDOWN_SECONDS:
+                    _remain = int(CLOSE_COOLDOWN_SECONDS - _elapsed)
+                    logger.info(f"⏳ COOLDOWN {pair}: {_remain}s 剩余 — SKIP")
+                    continue
+                else:
+                    del JUST_CLOSED_PAIRS[pair]  # 过期自动清理
 
         # Current Price
         try:
@@ -1015,7 +1031,6 @@ def main():
             tp_mult=TP_MULT,
             tp_strong_mult=TP_STRONG_MULT,
             ema100_buffer_pips=EMA100_BUFFER_PIPS,
-            timeframe=TIMEFRAME,
         )
         if not allow_entry:
             continue
@@ -1066,7 +1081,7 @@ def main():
         )
         all_candidates.append(
             (
-                -w["FINAL"],
+                -w["FINAL"],       # 负分用于升序排序 = 真分数降序
                 w["FINAL"],
                 pair,
                 oanda,
@@ -1076,21 +1091,29 @@ def main():
                 tp_price,
                 dec,
                 smart_tp_pips,
+                w,                  # ✅ 存完整分数分量，避免外层循环残留引用
             )
         )
 
+    # ✅ 排序：按真实分数降序
+    all_candidates.sort(key=lambda t: t[0])
+
     # Execute Top Candidates
+    open_slot_count = sum(1 for v in open_pos_by_oanda.values() if v)
+    slots_available = max(MAX_OPEN - open_slot_count, 0)
     logger.info(
-        f"🏆 RANKED: {len(all_candidates)} passed → opening top {min(MAX_OPEN, len(all_candidates))}"
+        f"🏆 RANKED: {len(all_candidates)} passed → opening top {min(slots_available, len(all_candidates))} | "
+        f"slots={slots_available} (MAX_OPEN={MAX_OPEN}, occupied={open_slot_count})"
     )
-    for i, (_, score, pair, _, dir, _, _, _, _, tp_pips) in enumerate(
+    for i, (_, score, pair, _, dir, _, _, _, _, tp_pips, _w) in enumerate(
         all_candidates, 1
     ):
         logger.info(f"   #{i} — {pair} {dir} SCORE={score:.1f} SMART-TP={tp_pips:.1f}p")
 
     executed_in_this_run = set()
+    open_count_this_run = 0
     for (
-        _,
+        _neg_score,
         FINAL,
         pair,
         oanda,
@@ -1100,7 +1123,12 @@ def main():
         tp_price,
         dec,
         tp_pips,
+        trade_w,
     ) in all_candidates:
+        # ✅ MAX_OPEN guard — 执行层面硬性限制
+        if open_count_this_run >= slots_available:
+            logger.info(f"⏸️ slots exhausted ({open_count_this_run}/{slots_available}) — stopping")
+            break
         if open_pos_by_oanda.get(oanda, False):
             logger.info(f"⏭️ {pair}: already open — SKIP")
             continue
@@ -1140,6 +1168,7 @@ def main():
                 if not _tid and result.get("status") == "DRY_RUN":
                     _tid = f"DRY_RUN_{client_id}"
                 # ─── LOG 1: trade_log.csv ───
+                # ✅ 使用当前 candidate 对应的 trade_w，而不是外层循环残留的 w
                 append_to_csv(TRADE_LOG_PATH, {
                     "timestamp": run_ts.strftime("%Y-%m-%d %H:%M:%S"),
                     "profile": PROFILE_NAME,
@@ -1151,16 +1180,17 @@ def main():
                     "sl_price": sl_price,
                     "tp_price": tp_price,
                     "score_final": FINAL,
-                    "score_s": w["S"],
-                    "score_r": w["R"],
-                    "score_a": w["A"],
-                    "score_x": w["X"],
-                    "score_m": w["M"],
+                    "score_s": trade_w["S"],
+                    "score_r": trade_w["R"],
+                    "score_a": trade_w["A"],
+                    "score_x": trade_w["X"],
+                    "score_m": trade_w["M"],
                     "pips": "",
                     "profit_usd": "",
                     "exit_reason": "",
                     "exit_time": "",
                 }, TRADE_LOG_HEADER)
+                open_count_this_run += 1
             else:
                 logger.error(
                     f"❌ ORDER FAILED: {pair} — {result.get('message', 'Unknown error')}"
