@@ -117,12 +117,12 @@ else:
 
 
 # ─── ✅ LOAD SELECTED PROFILE — NO separate files ────────────────────────────
-if args.profile4:
-    PROFILE_NAME = "profile4"
+if args.profile2:
+    PROFILE_NAME = "profile2"
 elif args.profile3:
     PROFILE_NAME = "profile3"
 else:
-    PROFILE_NAME = "profile2"
+    PROFILE_NAME = "profile4"
 
 P = PROFILE_CFG[PROFILE_NAME]  # All profile settings in ONE dict
 

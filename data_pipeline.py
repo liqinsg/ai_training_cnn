@@ -197,6 +197,20 @@ class FeatureEngine:
         self.cfg = cfg
         self.atr_mod = ATRModule(period=cfg.atr_period)
 
+    @staticmethod
+    def _manual_rsi(close: pd.Series, period: int = 14) -> pd.Series:
+        """Wilder 经典 RSI 计算 —— 不依赖 pandas_ta，保证不返回全 NaN。"""
+        delta = close.diff()
+        gain = delta.clip(lower=0.0)
+        loss = (-delta).clip(lower=0.0)
+        avg_gain = gain.ewm(alpha=1.0 / period, min_periods=period, adjust=False).mean()
+        avg_loss = loss.ewm(alpha=1.0 / period, min_periods=period, adjust=False).mean()
+        rs = avg_gain / avg_loss.replace(0, np.nan)
+        rsi = 100.0 - (100.0 / (1.0 + rs))
+        rsi = rsi.fillna(50.0)  # 0 损失 → RSI=100；都 0 → 50
+        rsi.loc[avg_loss == 0] = 100.0
+        return rsi
+
     def build(self, df: pd.DataFrame) -> pd.DataFrame:
         if df.empty:
             raise ValueError("Empty DataFrame passed to FeatureEngine")
@@ -248,10 +262,15 @@ class FeatureEngine:
                 import pandas_ta_classic as ta
 
                 df["rsi"] = ta.rsi(df["Close"], length=self.cfg.rsi_period)
+                # Fallback: ta.rsi 返回全 NaN 时手动计算
+                if df["rsi"].isna().all():
+                    logger.warning("ta.rsi returned all NaN — falling back to manual RSI")
+                    df["rsi"] = self._manual_rsi(df["Close"], self.cfg.rsi_period)
                 if n > self.cfg.rsi_period + 3:
                     df["rsi_slope"] = df["rsi"].diff(3)
             except Exception as e:
-                logger.warning(f"RSI failed: {e}")
+                logger.warning(f"RSI failed: {e} — falling back to manual RSI")
+                df["rsi"] = self._manual_rsi(df["Close"], self.cfg.rsi_period)
 
         # ─── 6. ADX ✅ FIXED: self.config → self.cfg + bar guard ───
         if self.cfg.use_adx and n > self.cfg.adx_period:

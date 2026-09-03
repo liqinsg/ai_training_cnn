@@ -6,7 +6,7 @@ import os
 import json
 from pathlib import Path
 
-BASE_DIR = Path(__file__).resolve().parent
+BASE_DIR = Path(__file__).resolve().parent.parent  # 项目根目录，不是 utils/ 本身
 COOLDOWN_FILE = BASE_DIR / "cooldown.json"
 COOLDOWN_PERIODS = 2  # 默认冷却2轮 = 30分钟
 
