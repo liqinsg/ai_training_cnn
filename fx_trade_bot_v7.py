@@ -210,7 +210,7 @@ def _vol_group(pair: str) -> str:
     if base in HIGH_VOL: return "high"
     if base in MID_VOL:  return "mid"
     if base in LOW_VOL:  return "low"
-    return "mid"
+    return None
 
 DEFAULT_LOT_SIZE = cfg(P, "DEFAULT_LOT_SIZE", 10000)
 
@@ -1182,6 +1182,21 @@ def main():
         if open_count_this_run >= slots_available:
             logger.info(f"⏸️ slots exhausted ({open_count_this_run}/{slots_available}) — stopping")
             break
+
+        # 🎯 JPY 方向共识白名单
+        if "JPY" in pair and pair not in jpy_allowed:
+            logger.info(f"⏭️ {pair}: JPY 不在允许名单（共识不足或超限额） — SKIP")
+            continue
+        # 🎯 分组限仓
+        _g = _vol_group(pair)
+        if _g is None:
+            logger.info(f"⏭️ {pair}: 被 EXCLUDE_CURRENCIES 排除 — SKIP")
+            continue
+        _g_cap = {"high": MAX_OPEN_HIGH_VOL, "mid": MAX_OPEN_MID_VOL, "low": MAX_OPEN_LOW_VOL}[_g]
+        if vol_open[_g] >= _g_cap:
+            logger.info(f"⏭️ {pair}: {_g}-vol 组已满 {vol_open[_g]}/{_g_cap} — SKIP")
+            continue
+
         if open_pos_by_oanda.get(oanda, False):
             logger.info(f"⏭️ {pair}: already open — SKIP")
             continue
@@ -1244,6 +1259,7 @@ def main():
                     "exit_time": "",
                 }, TRADE_LOG_HEADER)
                 open_count_this_run += 1
+                vol_open[_g] += 1
             else:
                 logger.error(
                     f"❌ ORDER FAILED: {pair} — {result.get('message', 'Unknown error')}"
