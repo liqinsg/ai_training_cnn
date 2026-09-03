@@ -191,6 +191,27 @@ BASE_MIN_EDGE = cfg(P, "BASE_MIN_EDGE", 0.50)
 MAX_OPEN_POSITIONS = cfg(P, "MAX_OPEN_POSITIONS", 4)
 MAX_OPEN = MAX_OPEN_POSITIONS  # alias — used in log messages & execution guard
 
+# ── 分组限仓 ──
+MAX_OPEN_HIGH_VOL = cfg(P, "MAX_OPEN_HIGH_VOL", 4)   # JPY
+MAX_OPEN_MID_VOL = cfg(P, "MAX_OPEN_MID_VOL", 1)     # crosses
+MAX_OPEN_LOW_VOL = cfg(P, "MAX_OPEN_LOW_VOL", 1)     # majors
+
+# ── JPY 方向共识 ──
+JPY_CONSENSUS_MIN = cfg(P, "JPY_CONSENSUS_MIN", 2)
+JPY_MAX_OPEN_PER_RUN = cfg(P, "JPY_MAX_OPEN_PER_RUN", 2)
+
+# ── 货币对波动分组（已排除 NZD/CAD/CHF） ──
+HIGH_VOL = {"EURJPY", "GBPJPY", "USDJPY", "AUDJPY"}
+MID_VOL  = {"GBPAUD", "EURGBP"}
+LOW_VOL  = {"EURUSD", "GBPUSD", "AUDUSD"}
+
+def _vol_group(pair: str) -> str:
+    base = pair.replace("=X", "")
+    if base in HIGH_VOL: return "high"
+    if base in MID_VOL:  return "mid"
+    if base in LOW_VOL:  return "low"
+    return "mid"
+
 DEFAULT_LOT_SIZE = cfg(P, "DEFAULT_LOT_SIZE", 10000)
 
 ATR_SL_MULT = cfg(P, "ATR_SL_MULT", 2.0)
@@ -1055,7 +1076,7 @@ def main():
                     for _, r in h4_df.iloc[:-1].iterrows()
                 ]
                 sl_price, sl_pips, skip_trade = calculate_stop_loss(
-                    direction, current, h4_closed, pip_cache[pair]
+                    direction, current, h4_closed, pip_cache[pair], instrument=oanda
                 )
                 if skip_trade:
                     logger.warning(f"🚫 {pair}: SL distance > 200pips — ABORT")
@@ -1105,6 +1126,30 @@ def main():
 
     # ✅ 排序：按真实分数降序
     all_candidates.sort(key=lambda t: t[0])
+
+    # ── 🎯 JPY 方向共识 + 限额决策 ──
+    jpy_buy = sorted(
+        [(fin, pair) for _, fin, pair, _, d, *_ in all_candidates if "JPY" in pair and d and "BUY" in d.upper()],
+        reverse=True
+    )
+    jpy_sell = sorted(
+        [(fin, pair) for _, fin, pair, _, d, *_ in all_candidates if "JPY" in pair and d and "SELL" in d.upper()],
+        reverse=True
+    )
+    jpy_buy_n = min(len(jpy_buy) - 1, JPY_MAX_OPEN_PER_RUN) if len(jpy_buy) >= JPY_CONSENSUS_MIN else 0
+    jpy_sell_n = min(len(jpy_sell) - 1, JPY_MAX_OPEN_PER_RUN) if len(jpy_sell) >= JPY_CONSENSUS_MIN else 0
+    jpy_allowed = set()
+    for _, p in jpy_buy[:jpy_buy_n]: jpy_allowed.add(p)
+    for _, p in jpy_sell[:jpy_sell_n]: jpy_allowed.add(p)
+    logger.info(f"🎯 JPY 共识: BUY={len(jpy_buy)}(开{jpy_buy_n})  SELL={len(jpy_sell)}(开{jpy_sell_n})  允许={jpy_allowed or '无'}")
+
+    # ── 分组开仓计数（已有持仓） ──
+    oanda_to_yahoo_rev = {v: k for k, v in YAHOO_TO_OANDA.items()}
+    vol_open = {"high": 0, "mid": 0, "low": 0}
+    for _oanda, _is_open in open_pos_by_oanda.items():
+        if _is_open and _oanda in oanda_to_yahoo_rev:
+            vol_open[_vol_group(oanda_to_yahoo_rev[_oanda])] += 1
+    logger.info(f"📊 分组: high={vol_open['high']}/{MAX_OPEN_HIGH_VOL}  mid={vol_open['mid']}/{MAX_OPEN_MID_VOL}  low={vol_open['low']}/{MAX_OPEN_LOW_VOL}")
 
     # Execute Top Candidates
     open_slot_count = sum(1 for v in open_pos_by_oanda.values() if v)

@@ -112,7 +112,7 @@ def calculate_hybrid_sl(instrument, direction, entry_price, h4_closed, atr_value
 
 
 def calculate_stop_loss(
-    side: str, entry_price: float, h4_candles, pip_size: float
+    side: str, entry_price: float, h4_candles, pip_size: float, instrument: str = ""
 ) -> tuple[float, float, bool]:
     """
     Calculate Stop-Loss per H4 Zone Hierarchy + Max SL Cap
@@ -152,12 +152,13 @@ def calculate_stop_loss(
         raise ValueError(f"Invalid order side: '{side}' — use BUY or SELL")
 
     # ─── Enforce Max SL Cap ───
-    if sl_pips > SL_MAX_ALLOWED_PIPS:
+    _cap = _sl_cap_for(instrument)
+    if sl_pips > _cap:
         skip_trade = True
         logger.warning(
             "SL TOO LARGE — TRADE ABORTED | Side: %s | Ref: %.5f | "
             "Entry: %.5f | SL: %.5f | Distance: %.1f pips | MAX ALLOWED: %s",
-            side, ref_level, entry_price, sl_price, sl_pips, SL_MAX_ALLOWED_PIPS,
+            side, ref_level, entry_price, sl_price, sl_pips, _cap,
         )
     else:
         skip_trade = False
@@ -1121,8 +1122,11 @@ class DynamicPositionManager:
 
                 # ── SL LOGIC → Breakeven → Trailing ──
                 new_sl = action = None
-                be_pips = self.be_trigger * atr_val / pip
-                trail_pips = self.trail_trigger * atr_val / pip
+                _jpy = "JPY" in instrument
+                _trig_mult = 2.0 if _jpy else 1.0   # JPY 门槛 ×2
+                _trail_mult = 1.5 if _jpy else 1.0  # JPY TRAIL 宽度 ×1.5
+                be_pips = self.be_trigger * _trig_mult * atr_val / pip
+                trail_pips = self.trail_trigger * _trig_mult * atr_val / pip
 
                 # Breakeven SL
                 if profit_pips >= be_pips:
@@ -1137,9 +1141,9 @@ class DynamicPositionManager:
                 # Trailing SL (overrides BE)
                 if profit_pips >= trail_pips:
                     trail_sl = (
-                        current_price - self.trail_mult * atr_val
+                        current_price - self.trail_mult * _trail_mult * atr_val
                         if side == "long"
-                        else current_price + self.trail_mult * atr_val
+                        else current_price + self.trail_mult * _trail_mult * atr_val
                     )
                     if (
                         current_sl is None
