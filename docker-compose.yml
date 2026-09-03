@@ -1,9 +1,10 @@
 services:
-  fx-bot:
+  ai-training-cnn:
+    image: ai-training-cnn:v20260903
     build:
       context: .
-      dockerfile: Dockerfile
-    container_name: fx-trade-bot
+      dockerfile: Dockerfile_main
+    container_name: ai-training-cnn
     restart: unless-stopped
     # Run cron in foreground (already set in Dockerfile CMD, but explicit here)
     command: [ "cron", "-f" ]
