@@ -5,7 +5,7 @@ lightgbm==4.7.0
 # matplotlib==3.11.1
 numpy==2.5.2
 oandapyv20==0.7.2
-# openai==3.7.0
+openai==3.7.0
 telebot
 pandas==3.0.5
 pandas_ta_classic==0.6.52
