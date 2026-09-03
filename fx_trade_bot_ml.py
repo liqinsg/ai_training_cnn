@@ -64,13 +64,19 @@ def ensure_model(
                 f"Scaler feature count ({scaler_n}) != model features "
                 f"({len(model_wrapper.feature_names)}) — forcing retrain"
             )
+            # 删掉坏 pickle，fall through 到训练分支
+            try:
+                MODEL_PATH.unlink()
+                json_path = MODEL_PATH.with_suffix('.features.json')
+                if json_path.exists():
+                    json_path.unlink()
+            except Exception:
+                pass
             needs_train = True
-            # 递归一次重训
-            return ensure_model(
-                MODEL_PATH, FEAT_CFG, model_wrapper, strat_engine,
-                fetcher, feat_engine, DEFAULT_PAIRS, YAHOO_TO_OANDA, cfg,
-            )
-        logger.info(f"Loaded model from {MODEL_PATH}")
+        else:
+            logger.info(f"Loaded model from {MODEL_PATH}")
+
+    if needs_train:
 
     strat_engine.model = model_wrapper.model
     strat_engine.features = model_wrapper.feature_names
