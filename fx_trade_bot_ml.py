@@ -7,6 +7,12 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+# fx_trade_bot_ml.py — MODEL & TRAINING (RARELY CHANGES)
+# Contains: ensure_model(), globals needed for training
+
+from utils.logging_utils import setup_logger
+logger = setup_logger()
+
 
 def ensure_model(
     MODEL_PATH: Path,
@@ -25,12 +31,32 @@ def ensure_model(
         needs_train = True
         logger.info("Model not found. Training...")
     else:
-        age_days = (Path(__file__).parent.joinpath(MODEL_PATH).stat().st_mtime - MODEL_PATH.stat().st_mtime) / 86400
         age_days = (pd.Timestamp.now(tz="UTC").timestamp() - MODEL_PATH.stat().st_mtime) / 86400
         if age_days > getattr(FEAT_CFG, "retrain_every_n_days", 30):
             needs_train = True
             logger.info(f"Model stale ({age_days:.1f} days). Retraining...")
 
+    # 尝试加载 —— 如果 scaler 不匹配则删掉 pickle 并标记重训
+    if not needs_train:
+        model_wrapper.load()
+        scaler_n = getattr(model_wrapper.scaler, 'n_features_in_', None)
+        if scaler_n is not None and scaler_n != len(model_wrapper.feature_names):
+            logger.warning(
+                f"Scaler feature count ({scaler_n}) != model features "
+                f"({len(model_wrapper.feature_names)}) — forcing retrain"
+            )
+            try:
+                MODEL_PATH.unlink()
+                json_path = MODEL_PATH.with_suffix('.features.json')
+                if json_path.exists():
+                    json_path.unlink()
+            except Exception:
+                pass
+            needs_train = True
+        else:
+            logger.info(f"Loaded model from {MODEL_PATH}")
+
+    # 训练分支（首次训练 or 重训）
     if needs_train:
         train_dfs = []
         for pair in DEFAULT_PAIRS:
@@ -55,29 +81,8 @@ def ensure_model(
         logger.info(f"Training complete: {metrics}")
         top_features = model_wrapper.feature_importance().head(10)
         logger.info("Top features:\n" + top_features.to_string(index=False))
-    else:
-        model_wrapper.load()
-        # Guard: 检查 scaler 特征数是否和 feature_names 匹配
-        scaler_n = getattr(model_wrapper.scaler, 'n_features_in_', None)
-        if scaler_n is not None and scaler_n != len(model_wrapper.feature_names):
-            logger.warning(
-                f"Scaler feature count ({scaler_n}) != model features "
-                f"({len(model_wrapper.feature_names)}) — forcing retrain"
-            )
-            # 删掉坏 pickle，fall through 到训练分支
-            try:
-                MODEL_PATH.unlink()
-                json_path = MODEL_PATH.with_suffix('.features.json')
-                if json_path.exists():
-                    json_path.unlink()
-            except Exception:
-                pass
-            needs_train = True
-        else:
-            logger.info(f"Loaded model from {MODEL_PATH}")
 
-    if needs_train:
-
+    # 统一设置 strat_engine
     strat_engine.model = model_wrapper.model
     strat_engine.features = model_wrapper.feature_names
     strat_engine.scaler = model_wrapper.scaler
