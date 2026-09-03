@@ -102,7 +102,7 @@ PROFILE_CFG = {
         # ── Thresholds ──
         "MIN_CONVICTION_SCORE": 30.0,
         "MIN_SCORE_GAP": 0.10,
-        "MAX_OPEN_POSITIONS": 3,
+        "MAX_OPEN_POSITIONS": 2,
         "XGB_BULLISH_THRESHOLD": 0.52,
         "MC_BULLISH_THRESHOLD_PCT": 52.0,
         "MC_STRONG_THRESHOLD": 0.60,
@@ -139,14 +139,10 @@ PROFILE_CFG = {
         "USE_TOP_PAIRS_ONLY": False,
         "TOP_PAIRS_COUNT": 4,
         "TOP_PAIRS_MIN_GAP": 0.25,
-        "EXCLUDE_CURRENCIES": ["NZD", "CAD", "CHF"],   # 🚫 不碰 NZD/CAD/CHF
-
         # ── MC ──
         "SKIP_MC": False,
-    
-        # ── 排除高波动货币对：含 CHF 或 JPY 的全部跳过 ──
-        #"EXCLUDE_CURRENCIES": ["JPY", "CHF"],
-        
+        "EXCLUDE_CURRENCIES": ["NZD", "CAD", "CHF", "JPY"],   # 🚫 不碰 NZD/CAD/CHF
+
     },
 
     "profile3": {
@@ -210,6 +206,9 @@ PROFILE_CFG = {
 
         # ── MC ──
         "SKIP_MC": False,
+        "SL_ZONE_TRAILING": True,
+        # ── Pair Exclusion ──
+        "EXCLUDE_CURRENCIES": []
     },
     # ✅ ─── Profile4 / Account004 · DEMO 全新独立 ───
     "profile4": {
@@ -251,9 +250,6 @@ PROFILE_CFG = {
         "SL_MAX_ALLOWED_PIPS": 200,
         "SL_MAX_ALLOWED_PIPS_JPY": 500,
 
-        # ── Pair Exclusion ──
-        "EXCLUDE_CURRENCIES": ["NZD", "CAD", "CHF"],
-
         "XGB_BULLISH_THRESHOLD": 0.52,                    # 0.55 → 0.52 · 减少 strength/XGB 分裂投票
         "MC_BULLISH_THRESHOLD_PCT": 52.0,                 # 55.0 → 52.0 · MC 信号更平衡
         "MC_STRONG_THRESHOLD": 0.55,
@@ -293,5 +289,8 @@ PROFILE_CFG = {
 
         # ── MC ──
         "SKIP_MC": False,
+
+        # ── Pair Exclusion ──
+        "EXCLUDE_CURRENCIES": ["NZD", "CAD", "CHF"],
     }
 }
