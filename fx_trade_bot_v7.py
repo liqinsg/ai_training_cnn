@@ -1148,7 +1148,10 @@ def main():
     vol_open = {"high": 0, "mid": 0, "low": 0}
     for _oanda, _is_open in open_pos_by_oanda.items():
         if _is_open and _oanda in oanda_to_yahoo_rev:
-            vol_open[_vol_group(oanda_to_yahoo_rev[_oanda])] += 1
+            # vol_open[_vol_group(oanda_to_yahoo_rev[_oanda])] += 1
+            _g = _vol_group(oanda_to_yahoo_rev[_oanda])
+            if _g:
+                vol_open[_g] += 1
     logger.info(f"📊 分组: high={vol_open['high']}/{MAX_OPEN_HIGH_VOL}  mid={vol_open['mid']}/{MAX_OPEN_MID_VOL}  low={vol_open['low']}/{MAX_OPEN_LOW_VOL}")
 
     # Execute Top Candidates
