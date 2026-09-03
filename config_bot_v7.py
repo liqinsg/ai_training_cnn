@@ -102,7 +102,7 @@ PROFILE_CFG = {
         # ── Thresholds ──
         "MIN_CONVICTION_SCORE": 30.0,
         "MIN_SCORE_GAP": 0.10,
-        "MAX_OPEN_POSITIONS": 5,
+        "MAX_OPEN_POSITIONS": 3,
         "XGB_BULLISH_THRESHOLD": 0.52,
         "MC_BULLISH_THRESHOLD_PCT": 52.0,
         "MC_STRONG_THRESHOLD": 0.60,
@@ -170,7 +170,7 @@ PROFILE_CFG = {
         # ── Thresholds ──
         "MIN_CONVICTION_SCORE": 20.0,
         "MIN_SCORE_GAP": 0.10,
-        "MAX_OPEN_POSITIONS": 4,
+        "MAX_OPEN_POSITIONS": 6,
         "XGB_BULLISH_THRESHOLD": 0.55,
         "MC_BULLISH_THRESHOLD_PCT": 55.0,
         "MC_STRONG_THRESHOLD": 0.55,
