@@ -10,8 +10,8 @@ logger = logging.getLogger(__name__)
 # fx_trade_bot_ml.py — MODEL & TRAINING (RARELY CHANGES)
 # Contains: ensure_model(), globals needed for training
 
-from utils.logging_utils import setup_logger
-logger = setup_logger()
+from utils.logging_utils import get_logger
+logger = get_logger()
 
 
 def ensure_model(
