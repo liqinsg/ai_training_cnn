@@ -249,6 +249,8 @@ class StrategyEngine:
         return winners
 
     def _predict(self, latest: pd.Series) -> float:
+        print(f"🔍 _predict CALLED: scaler={self.scaler is not None}, features={len(self.features)}")
+        print(f"🔍 feature cols in latest: {sum(1 for f in self.features if f in latest.index)}/{len(self.features)}")
         row = {f: latest.get(f, 0.0) for f in self.features}
         X = pd.DataFrame([row])
         if self.scaler is not None:
