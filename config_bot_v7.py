@@ -127,10 +127,10 @@ PROFILE_CFG = {
         # ── Dynamic Exit ──
         "USE_DYNAMIC_SL": 2,
         "DYNAMIC_SL_MULT": 1.5,
-        "BE_TRIGGER_ATR_MULT": 1.5,
-        "TRAIL_TRIGGER_ATR_MULT": 2.5,
-        "TRAIL_ATR_MULT": 1.5,
-        "MAX_HOLD_BARS": 12,
+        "BE_TRIGGER_ATR_MULT": 2.5,       # 1.5 → 2.5 · 晚一点推保本，让利润先跑
+        "TRAIL_TRIGGER_ATR_MULT": 3.5,   # 2.5 → 3.5 · 更大盈利才启动 trailing
+        "TRAIL_ATR_MULT": 2.8,           # 1.5 → 2.8 · trailing 距离加宽，给回调留空间
+        "MAX_HOLD_BARS": 24,             # 12 → 24 · 15m TF: 3h → 6h，单边行情更多时间
 
         # ── SL Strategy ──
         "SL_USE_ZONE_HIERARCHY": True,
