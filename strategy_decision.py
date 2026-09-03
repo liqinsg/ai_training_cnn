@@ -248,7 +248,7 @@ class StrategyEngine:
             winners.append(sig)
         return winners
 
-    def _predict_old(self, latest: pd.Series) -> float:
+    def _predict(self, latest: pd.Series) -> float:
         try:
             # print(f"🔍 _predict CALLED: scaler={self.scaler is not None}, features={len(self.features)}")
             # print(f"🔍 feature cols in latest: {sum(1 for f in self.features if f in latest.index)}/{len(self.features)}")
