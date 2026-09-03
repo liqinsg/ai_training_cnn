@@ -61,4 +61,5 @@ def ensure_model(
 
     strat_engine.model = model_wrapper.model
     strat_engine.features = model_wrapper.feature_names
+    strat_engine.scaler = model_wrapper.scaler
     return model_wrapper, strat_engine

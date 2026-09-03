@@ -79,10 +79,11 @@ class Signal:
 
 
 class StrategyEngine:
-    def __init__(self, config: StrategyConfig, model, feature_list: List[str]):
+    def __init__(self, config: StrategyConfig, model, feature_list: List[str], scaler=None):
         self.cfg = config
         self.model = model
         self.features = feature_list
+        self.scaler = scaler
 
     def should_close(
         self, position_units: int, latest_features: pd.Series
@@ -250,7 +251,9 @@ class StrategyEngine:
     def _predict(self, latest: pd.Series) -> float:
         row = {f: latest.get(f, 0.0) for f in self.features}
         X = pd.DataFrame([row])
-        return float(self.model.predict_proba(X.values)[0, 1])
+        if self.scaler is not None:
+            X = self.scaler.transform(X.values)
+        return float(self.model.predict_proba(X)[0, 1])
 
     def _score_model_edge(self, edge: float) -> float:
         normalized = min(edge / 0.20, 1.0)

@@ -28,7 +28,8 @@ def load_cooldown(path):
         return {}
     try:
         return json.loads(path.read_text())
-    except:
+    except Exception as e:
+        print(f"{RED}Failed to load cooldown from {path}: {e}{RESET}")
         return {}
 
 
