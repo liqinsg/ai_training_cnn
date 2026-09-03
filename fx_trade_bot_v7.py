@@ -871,21 +871,28 @@ def main():
             logger.warning("⚠️ 无法给现有仓位打分，跳过换仓")
         else:
             scored_positions.sort() # 分数从低到高
-            need_to_free = open_pos_count - MAX_OPEN + 1 # 至少要空出1个位置
-            to_close = scored_positions[:need_to_free]
+            # 🛡️ 保护：最低分 >= 入场阈值 → 所有持仓健康，不换
+            floor = MIN_CONVICTION_SCORE
+            if scored_positions[0][0] >= floor:
+                logger.info(f"🛡️ 所有持仓分数 ≥ {floor}，跳过换仓（保护盈利中仓位）")
+            else:
+                need_to_free = open_pos_count - MAX_OPEN + 1
+                to_close = [s for s in scored_positions[:need_to_free] if s[0] < floor]
 
-            for score, pair, oanda_inst, dir in to_close:
-                logger.warning(f"🔪 AUTO-CLOSE: {pair} {dir} SCORE={score:.1f} 太低了，平仓让路")
-                close_wrap(oanda_inst, exit_reason="AUTO_ROTATION")
-                # ✅ 写入冷却时间戳（NO_COOLDOWN=True 时跳过）
-                if not NO_COOLDOWN:
-                    JUST_CLOSED_PAIRS[pair] = time.time()
-                    save_cooldown(COOLDOWN_FILE, JUST_CLOSED_PAIRS)
-                open_pos_by_oanda[oanda_inst] = False  # 立刻标记为已平
-                open_pos_count -= 1
-                time.sleep(1)  # OANDA限频
+                if not to_close:
+                    logger.info(f"🛡️ 没有分数 < {floor} 的仓位，跳过换仓")
+                else:
+                    for score, pair, oanda_inst, dir in to_close:
+                        logger.warning(f"🔪 AUTO-CLOSE: {pair} {dir} SCORE={score:.1f} < {floor}，平仓让路")
+                        close_wrap(oanda_inst, exit_reason="AUTO_ROTATION")
+                        if not NO_COOLDOWN:
+                            JUST_CLOSED_PAIRS[pair] = time.time()
+                            save_cooldown(COOLDOWN_FILE, JUST_CLOSED_PAIRS)
+                        open_pos_by_oanda[oanda_inst] = False
+                        open_pos_count -= 1
+                        time.sleep(1)
 
-            logger.info(f"✅ 换仓完成，当前可用仓位: {MAX_OPEN - open_pos_count}")
+                    logger.info(f"✅ 换仓完成，当前可用仓位: {MAX_OPEN - open_pos_count}")
 
     # Step 7 — Score, Trend Filter, Smart TP & Execute
     logger.info("[STEP 7] Scoring + TREND FILTER + SMART TP...")
