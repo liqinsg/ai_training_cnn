@@ -248,17 +248,17 @@ class StrategyEngine:
             winners.append(sig)
         return winners
 
-    def _predict(self, latest: pd.Series) -> float:
+    def _predict_old(self, latest: pd.Series) -> float:
         try:
-            print(f"🔍 _predict CALLED: scaler={self.scaler is not None}, features={len(self.features)}")
-            print(f"🔍 feature cols in latest: {sum(1 for f in self.features if f in latest.index)}/{len(self.features)}")
+            # print(f"🔍 _predict CALLED: scaler={self.scaler is not None}, features={len(self.features)}")
+            # print(f"🔍 feature cols in latest: {sum(1 for f in self.features if f in latest.index)}/{len(self.features)}")
             row = {f: latest.get(f, 0.0) for f in self.features}
             X = pd.DataFrame([row])
             if self.scaler is not None:
                 X = self.scaler.transform(X.values)
-            p = float(self.model.predict_proba(X)[0, 1])
-            print(f"🔍 _predict OK: p_up={p:.6f} | row0_keys={list(row.keys())[:3]} | X_shape={X.shape}")
-            return p
+            return float(self.model.predict_proba(X)[0, 1])
+            # print(f"🔍 _predict OK: p_up={p:.6f} | row0_keys={list(row.keys())[:3]} | X_shape={X.shape}")
+            # return p
         except Exception as e:
             import traceback
             print(f"🔍 _predict EXCEPTION: {e}")
