@@ -1,18 +1,34 @@
-.git
+# .dockerignore
+# Jupyter notebooks — 本地分析用，容器里不需要
+jupyterlab/
+*.ipynb
+.ipynb_checkpoints/
+
+# Docker 相关
+Dockerfile
+Dockerfile.base
+Dockerfile_main
+.dockerignore
+fx_trade_bot_v6.8.6.py
+fx_trade_bot_v6.8.2_profile2.py
+fx_trade_bot_v6.8.2_profile3.py
+fx_trade_bot_v6.8.5.py
+fx_trade_bot_v6.8.6.py
+requirements.txt
+# Git
+.git/
 .gitignore
 
-__pycache__
+# Python 缓存
+__pycache__/
 *.pyc
+*.pyo
+*.pyd
 
-tests
-docs
+# IDE
+.idea/
+.vscode/
 
-logs
-state
-
-.env
-.env.*
-.github
-.vscode
-jupyterlab
-
+# 日志和状态（容器里会新建）
+logs/
+state/

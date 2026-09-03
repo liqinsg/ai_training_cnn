@@ -1,17 +1,15 @@
-#docker build -f Dockerfile.base -t ai-training-cnn-base:v1 .
+# docker build -f Dockerfile.base -t ai-training-cnn-base:v1 .
 # base Dockerfile for the AI training CNN application
 FROM --platform=linux/amd64 python:3.12-slim
 
 WORKDIR /app
 
+# 只需要 cron，ta-lib 等 Python 包都有自包含的预编译 wheel
 RUN apt-get update && apt-get install -y --no-install-recommends \
     cron \
-    gcc \
-    g++ \
-    procps \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt .
+COPY requirements_docker.txt .
 
 RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+    pip install --no-cache-dir -r requirements_docker.txt
