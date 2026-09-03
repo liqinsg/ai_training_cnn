@@ -1,8 +1,8 @@
 # Dockerfile for the AI training CNN application
 # How to copy image to another server
 # docker save ai-training-cnn:v20260903 | bzip2 | pv | ssh nie@10.240.26.196 'bunzip2 | docker load'
-FROM --platform=linux/amd64 python:3.12-slim
-# for Intel MacMini, must use amd64
+FROM python:3.12-slim
+## for Intel MacMini, must use amd64
 
 WORKDIR /app
 
