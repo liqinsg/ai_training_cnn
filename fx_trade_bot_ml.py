@@ -57,6 +57,19 @@ def ensure_model(
         logger.info("Top features:\n" + top_features.to_string(index=False))
     else:
         model_wrapper.load()
+        # Guard: 检查 scaler 特征数是否和 feature_names 匹配
+        scaler_n = getattr(model_wrapper.scaler, 'n_features_in_', None)
+        if scaler_n is not None and scaler_n != len(model_wrapper.feature_names):
+            logger.warning(
+                f"Scaler feature count ({scaler_n}) != model features "
+                f"({len(model_wrapper.feature_names)}) — forcing retrain"
+            )
+            needs_train = True
+            # 递归一次重训
+            return ensure_model(
+                MODEL_PATH, FEAT_CFG, model_wrapper, strat_engine,
+                fetcher, feat_engine, DEFAULT_PAIRS, YAHOO_TO_OANDA, cfg,
+            )
         logger.info(f"Loaded model from {MODEL_PATH}")
 
     strat_engine.model = model_wrapper.model
