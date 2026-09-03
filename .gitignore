@@ -224,7 +224,8 @@ tmp/
 *tar
 *pkl
 utils/cooldown.json
-utils/dail_results_profile2/
-utils/dail_results_profile3/
-utils/dail_results_profile4/
-utils/trade_model*json
+utils/daily_results_profile2/
+utils/daily_results_profile4/
+utils/daily_results_profile4/
+trade_model_xgb.pkl
+utils/trade_model_xgb.features.json
