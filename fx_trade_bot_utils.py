@@ -953,6 +953,10 @@ class DynamicPositionManager:
         tp_raise_thresh_pips: int = 15,
         telegram_send=None,
         dry_run: bool = False,
+        zone_trailing: bool = False,
+        min_sl_step_pips: float = 15.0,
+        sl_buffer_pips: float = 25.0,
+        sl_zone_lookback: int = 6,
     ):
         self.api = api
         self.account_id = account_id
@@ -965,6 +969,10 @@ class DynamicPositionManager:
         self.tp_thresh_pips = tp_raise_thresh_pips
         self.telegram = telegram_send
         self.dry_run = dry_run
+        self.zone_trailing = zone_trailing
+        self.min_sl_step_pips = min_sl_step_pips
+        self.sl_buffer_pips = sl_buffer_pips
+        self.sl_zone_lookback = sl_zone_lookback
 
     def _get_open_trades(self, instrument: str):
         try:
@@ -997,6 +1005,30 @@ class DynamicPositionManager:
 
         except Exception as e:
             logger.warning(f"  ⚠️ Price fetch failed for {instrument}: {e}")
+            return None
+
+    def _recalc_zone_sl(self, oanda_inst, side, pip) -> float | None:
+        try:
+            from oandapyV20.endpoints.instruments import InstrumentsCandles
+            resp = self.api.request(
+                InstrumentsCandles(
+                    instrument=oanda_inst,
+                    params={"granularity": "H4", "count": self.sl_zone_lookback + 1, "price": "M"},
+                )
+            )
+            candles = resp.get("candles", [])
+            closed = candles[:-1] if len(candles) > 1 else candles
+            if len(closed) < 3:
+                return None
+            highs = [float(c["mid"]["h"]) for c in closed]
+            lows = [float(c["mid"]["l"]) for c in closed]
+            buffer_amt = self.sl_buffer_pips * pip
+            if side == "short":
+                return max(highs) + buffer_amt
+            else:
+                return min(lows) - buffer_amt
+        except Exception as e:
+            logger.debug(f"  ⚠️ zone SL recalc failed for {oanda_inst}: {e}")
             return None
 
     def _update_trade_sl(self, trade_id: str, new_sl: float, decimals: int):
@@ -1138,26 +1170,42 @@ class DynamicPositionManager:
                     ):
                         new_sl, action = be_sl, "BREAKEVEN"
 
-                # Trailing SL (overrides BE)
                 if profit_pips >= trail_pips:
-                    trail_sl = (
-                        current_price - self.trail_mult * _trail_mult * atr_val
-                        if side == "long"
-                        else current_price + self.trail_mult * _trail_mult * atr_val
-                    )
-                    if (
-                        current_sl is None
-                        or (side == "long" and trail_sl > current_sl)
-                        or (side == "short" and trail_sl < current_sl)
-                    ):
-                        new_sl, action = trail_sl, "TRAIL"
+                    if self.zone_trailing:
+                        cand = self._recalc_zone_sl(instrument, side, pip)
+                        if cand is not None:
+                            cand = round(cand, decimals)
+                            favorable = (
+                                (side == "long" and cand > current_sl)
+                                or (side == "short" and cand < current_sl)
+                                or current_sl is None
+                            )
+                            big_enough = (
+                                current_sl is None
+                                or abs(cand - current_sl) >= self.min_sl_step_pips * pip
+                            )
+                            if favorable and big_enough:
+                                new_sl, action = cand, "ZONE-TRAIL"
+                        else:
+                            logger.debug(f"  ⚠️ {pair} #{tid}: zone SL recalc failed → skip")
+                    else:
+                        trail_sl = (
+                            current_price - self.trail_mult * _trail_mult * atr_val
+                            if side == "long"
+                            else current_price + self.trail_mult * _trail_mult * atr_val
+                        )
+                        if (
+                            current_sl is None
+                            or (side == "long" and trail_sl > current_sl)
+                            or (side == "short" and trail_sl < current_sl)
+                        ):
+                            new_sl, action = trail_sl, "TRAIL"
 
-                # Apply SL update only if moving in your favor
                 if new_sl and action:
                     if (side == "long" and current_sl and new_sl < current_sl) or (
                         side == "short" and current_sl and new_sl > current_sl
                     ):
-                        continue  # Never move SL against you
+                        continue
                     if self._update_trade_sl(tid, new_sl, decimals) and self.telegram:
                         self.telegram(
                             f"🎯 {action} on {pair} #{tid} | Price: {current_price} | New SL: {round(new_sl, decimals)} | Profit: {profit_pips:.1f} pips"

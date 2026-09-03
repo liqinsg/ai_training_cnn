@@ -833,6 +833,10 @@ def main():
         tp_raise_thresh_pips=TP_RAISE_THRESHOLD_PIPS,
         telegram_send=send_telegram_message,
         dry_run=DRY_RUN,
+        zone_trailing=cfg(P, "SL_ZONE_TRAILING", False),
+        min_sl_step_pips=cfg(P, "SL_MIN_MOVE_PIPS", 15),
+        sl_buffer_pips=cfg(P, "SL_TRAIL_BUFFER_PIPS", 25),
+        sl_zone_lookback=cfg(P, "SL_TRAIL_ZONE_LOOKBACK", 6),
     )
     # oanda_level = logging.getLogger("oandapyV20").level
     # logging.getLogger("oandapyV20").setLevel(logging.CRITICAL)

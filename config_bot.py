@@ -201,6 +201,10 @@ PROFILE_CFG = {
 
         # ── SL Strategy ──
         "SL_USE_ZONE_HIERARCHY": True,
+        "SL_ZONE_TRAILING": True,
+        "SL_MIN_MOVE_PIPS": 15,
+        "SL_TRAIL_BUFFER_PIPS": 25,
+        "SL_TRAIL_ZONE_LOOKBACK": 6,
 
         # ── Pair Selection ──
         "USE_TOP_PAIRS_ONLY": False,
