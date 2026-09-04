@@ -172,5 +172,5 @@ if __name__ == "__main__":
         print("\n" + "━" * 120 + "\n")
 
     # Send combined report via Telegram
-    combined = "\n\n" + "📋 " + "=" * 30 + " MULTI-ACCOUNT REPORT " + "=" * 30 + "\n\n".join(full_report)
-    send_telegram_message(combined.strip())
+    # combined = "\n\n" + "📋 " + "=" * 30 + " MULTI-ACCOUNT REPORT " + "=" * 30 + "\n\n".join(full_report)
+    # send_telegram_message(combined.strip())
