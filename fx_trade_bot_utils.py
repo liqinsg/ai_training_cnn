@@ -391,7 +391,7 @@ def open_oanda_order_simple(
     if dry_run:
         dec = price_decimals(instrument)
         logger.info(f"🧊 DRY-RUN — would OPEN: {instrument} {direction} | SL={sl_price:.{dec}f} TP={tp_price:.{dec}f}")
-        return {"status": "DRY_RUN", "instrument": instrument, "direction": direction}
+        return {"ok": True, "status": "DRY_RUN", "instrument": instrument, "direction": direction}
 
     from oandapyV20.endpoints.orders import OrderCreate
     from oandapyV20.endpoints.trades import TradeClientExtensions
@@ -449,7 +449,9 @@ def open_oanda_order_simple(
 
         if not trade_id:
             return {
+                "ok": False,
                 "status": "ERROR",
+                "error": "TradeID missing",
                 "message": "TradeID missing",
             }
 
@@ -508,6 +510,7 @@ def open_oanda_order_simple(
             logger.info(f"✅ TP set at {tp_price}")
 
         return {
+            "ok": True,
             "status": "OK",
             "trade_id": trade_id,
             "tag": tag,
@@ -520,7 +523,9 @@ def open_oanda_order_simple(
         logger.error(f"❌ FAILED {instrument}: " f"{type(e).__name__}: {e}")
 
         return {
+            "ok": False,
             "status": "ERROR",
+            "error": str(e),
             "message": str(e),
         }
 

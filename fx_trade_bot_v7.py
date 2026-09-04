@@ -516,7 +516,10 @@ def main():
             logger.info(f"📌 OPEN POSITION: {pair} → {oanda_inst} | {pos['side'].upper()} | units={pos['units']}")
     open_list = [o.replace("_","/") for o,s in open_pos_by_oanda.items() if s]
     ready_list = [p.replace("=X","") for p in selected_pairs if not open_pos_by_oanda.get(YAHOO_TO_OANDA.get(p), False)]
-    logger.info(f"📊 Open positions: {open_pos_count}/{MAX_OPEN} | OPEN: {', '.join(open_list) or 'None'} | READY: {', '.join(ready_list) or 'None'}")
+    over = open_pos_count - MAX_OPEN_POSITIONS
+    over_tag = f" ⚠️ OVER-LIMIT (+{over})" if over > 0 else ""
+    logger.info(f"📊 Open positions: {open_pos_count}/{MAX_OPEN_POSITIONS}{over_tag} | OPEN: {', '.join(open_list) or 'None'} | READY: {', '.join(ready_list) or 'None'}")
+    open_slots_remaining = max(0, MAX_OPEN_POSITIONS - open_pos_count)
 
     # Step 7 — Score, Trend Filter, Smart TP & Execute
     logger.info("[STEP 7] Scoring + TREND FILTER + SMART TP...")
@@ -613,13 +616,19 @@ def main():
         tp_price = round(current + smart_tp_pips * pip_cache[pair], dec) if direction == "BUY" else round(current - smart_tp_pips * pip_cache[pair], dec)
         all_candidates.append((-w["FINAL"], w["FINAL"], pair, oanda, direction, current, sl_price, tp_price, dec, smart_tp_pips))
 
+    all_candidates.sort(key=lambda x: x[0])
+
     # Execute Top Candidates
-    logger.info(f"🏆 RANKED: {len(all_candidates)} passed → opening top {min(MAX_OPEN, len(all_candidates))}")
+    logger.info(f"🏆 RANKED: {len(all_candidates)} passed → opening top {open_slots_remaining} (slots={open_slots_remaining})")
     for i, (_, score, pair, _, dir, _, _, _, _, tp_pips) in enumerate(all_candidates, 1):
         logger.info(f"   #{i} — {pair} {dir} SCORE={score:.1f} SMART-TP={tp_pips:.1f}p")
 
     executed_in_this_run = set()
+    executed_count = 0
     for _, FINAL, pair, oanda, direction, current, sl_price, tp_price, dec, tp_pips in all_candidates:
+        if executed_count >= open_slots_remaining:
+            logger.info(f"🛑 Reached MAX_OPEN={MAX_OPEN_POSITIONS} ({open_pos_count} open + {executed_count} new) → STOPPED")
+            break
         if open_pos_by_oanda.get(oanda, False):
             logger.info(f"⏭️ {pair}: already open — SKIP")
             continue
@@ -633,10 +642,11 @@ def main():
             result = open_oanda_order(
                 api, OANDA_ACCOUNT_ID, oanda,
                 direction, lot,
-                stop_loss_price=sl_price,
-                take_profit_price=tp_price,
+                sl_price=sl_price,
+                tp_price=tp_price,
             )
             executed_in_this_run.add(oanda)
+            executed_count += 1
             if result.get("ok"):
                 logger.info(f"✅ ORDER OPENED: {pair} {direction} | SL={sl_price:.{dec}f} TP={tp_price:.{dec}f}")
             else:
