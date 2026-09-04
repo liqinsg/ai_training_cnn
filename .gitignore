@@ -221,3 +221,6 @@ logs/
 .vscode*
 utils/trading_core_OLD*.py
 tmp/
+*pkl
+cooldown*json
+cooldown_profile2.json

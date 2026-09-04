@@ -18,6 +18,144 @@ from oandapyV20.endpoints.trades import OpenTrades, TradeCRCDO
 logger = logging.getLogger(__name__)
 # logging.getLogger("oandapyV20").setLevel(logging.WARNING)
 
+# ==================================================
+# 🛡️ STOP-LOSS RULES — LOCKED — v6.x+ IMMUTABLE
+# RULES:
+#   SELL → SL = max(4 closed H4 highs) + 20 pips
+#   BUY  → SL = min(4 closed H4 lows) - 20 pips
+#   MAX  → >200 pips → ABORT TRADE
+# ==================================================
+SL_OFFSET_PIPS        = 20    # Buffer from extreme levels — LOCKED
+SL_MAX_ALLOWED_PIPS  = 200   # Max allowed distance — adjust later if needed
+REQUIRED_H4_CANDLES  = 4     # Only fully closed H4 — LOCKED
+
+# ──────────────────────────────────────────────────────────────────────
+# ✅ HYBRID SL: H4 PRIMARY + ATR GUARD — ALWAYS PICK CLOSER-TO-ENTRY
+# ──────────────────────────────────────────────────────────────────────
+def calculate_hybrid_sl(direction, entry_price, h4_closed, atr_value, pip_sz):
+    """
+    Unified Hybrid SL — same logic for NEW orders + EXISTING positions
+    Returns: (final_sl_price, h4_sl, atr_sl, chosen_source, total_pips, skip_trade)
+    """
+    decimals = 3 if "JPY" in oanda_instr else 5
+    MAX_SL_PIPS = 200
+
+    # Step 1: Calculate H4 Zone Hierarchy SL
+    try:
+        h4_sl, h4_pips, h4_skip = calculate_stop_loss(
+            direction, entry_price, h4_closed, pip_sz
+        )
+        h4_sl = round(h4_sl, decimals)
+    except:
+        h4_sl = h4_pips = h4_skip = None
+
+    # Step 2: Calculate ATR Guard SL (ATR × 2.0)
+    try:
+        atr_offset = atr_value * 2.0
+        if direction == "BUY":
+            atr_sl = round(entry_price - atr_offset, decimals)
+        else:  # SELL
+            atr_sl = round(entry_price + atr_offset, decimals)
+        atr_pips = atr_offset / pip_sz
+        atr_skip = (atr_pips > MAX_SL_PIPS)
+    except:
+        atr_sl = atr_pips = atr_skip = None
+
+    # Step 3: Fallback Logic — pick available
+    if h4_sl is None and atr_sl is None:
+        return None, None, None, "NONE", 0, True  # Skip — both failed
+
+    if h4_sl is None:
+        final_sl = atr_sl
+        chosen = "ATR"
+        final_pips = atr_pips
+        skip_trade = atr_skip
+    elif atr_sl is None:
+        final_sl = h4_sl
+        chosen = "H4"
+        final_pips = h4_pips
+        skip_trade = h4_skip
+    else:
+        # ✅ BOTH AVAILABLE → ALWAYS PICK THE CLOSER (more conservative)
+        if direction == "BUY":
+            # BUY: higher SL = closer to entry = tighter
+            if h4_sl >= atr_sl:
+                final_sl = h4_sl
+                chosen = "H4"
+                final_pips = h4_pips
+            else:
+                final_sl = atr_sl
+                chosen = "ATR-GUARD"
+                final_pips = atr_pips
+        else:  # SELL
+            # SELL: lower SL = closer to entry = tighter
+            if h4_sl <= atr_sl:
+                final_sl = h4_sl
+                chosen = "H4"
+                final_pips = h4_pips
+            else:
+                final_sl = atr_sl
+                chosen = "ATR-GUARD"
+                final_pips = atr_pips
+        skip_trade = (final_pips > MAX_SL_PIPS)
+
+    return final_sl, h4_sl, atr_sl, chosen, final_pips, skip_trade
+
+def calculate_stop_loss(side: str, entry_price: float, h4_candles, pip_size: float) -> tuple[float, float, bool]:
+    """
+    Calculate Stop-Loss per H4 Zone Hierarchy + Max SL Cap
+    
+    ⚠️  CRITICAL: h4_candles must contain ONLY fully closed H4 candles
+                 — ALWAYS exclude the current forming candle before calling
+    
+    Args:
+        side: 'BUY' or 'SELL'
+        entry_price: estimated entry price
+        h4_candles: list of dicts — [{"high":x, "low":y}, ...]
+        pip_size: 0.0001 (non-JPY) / 0.01 (JPY)
+    
+    Returns:
+        (sl_price: float, sl_pips: float, skip_trade: bool)
+    """
+
+    # ─── Validate Candle Count ───
+    if len(h4_candles) < REQUIRED_H4_CANDLES:
+        raise ValueError(
+            f"⚠️ H4 candle count insufficient: need ≥{REQUIRED_H4_CANDLES}, got {len(h4_candles)} — "
+            "Did you forget to remove the forming candle? Use h4_data[:-1]"
+        )
+
+    # ─── Calculate SL per H4 Zone Hierarchy ───
+    if side.upper() == "SELL":
+        ref_level = max(c["high"] for c in h4_candles)
+        sl_price  = ref_level + (SL_OFFSET_PIPS * pip_size)
+        sl_pips   = (sl_price - entry_price) / pip_size  # positive value
+
+    elif side.upper() == "BUY":
+        ref_level = min(c["low"] for c in h4_candles)
+        sl_price  = ref_level - (SL_OFFSET_PIPS * pip_size)
+        sl_pips   = (entry_price - sl_price) / pip_size  # positive value
+
+    else:
+        raise ValueError(f"Invalid order side: '{side}' — use BUY or SELL")
+
+    # ─── Enforce Max SL Cap ───
+    if sl_pips > SL_MAX_ALLOWED_PIPS:
+        skip_trade = True
+        logging.warning(
+            f"🚫 SL TOO LARGE — TRADE ABORTED | Side: {side} | Ref: {ref_level:.5f} | "
+            f"Entry: {entry_price:.5f} | SL: {sl_price:.5f} | "
+            f"Distance: {sl_pips:.1f} pips | MAX ALLOWED: {SL_MAX_ALLOWED_PIPS}"
+        )
+    else:
+        skip_trade = False
+        logging.info(
+            f"✅ SL ACCEPTED | Side: {side} | Ref: {ref_level:.5f} | "
+            f"Entry: {entry_price:.5f} | SL: {sl_price:.5f} | "
+            f"Distance: {sl_pips:.1f} pips"
+        )
+
+    return sl_price, sl_pips, skip_trade
 
 # ✅ KEEP THIS — proper candle fetcher
 def fetch_candles(api, oanda_instrument: str, gran: str, count: int = 100):
@@ -28,7 +166,7 @@ def fetch_candles(api, oanda_instrument: str, gran: str, count: int = 100):
             params={"granularity": gran, "count": count, "price": "M"},
         )
     )
-    return pd.DataFrame(
+    df = pd.DataFrame(
         [
             {
                 "Time": c["time"],
@@ -40,6 +178,8 @@ def fetch_candles(api, oanda_instrument: str, gran: str, count: int = 100):
             for c in resp["candles"]
         ]
     ).set_index("Time")
+    logger.debug(f"📊 Fetched {oanda_instrument} {gran} bars={len(df)}")
+    return df
 
 
 # ============================================================================
@@ -360,7 +500,7 @@ def open_oanda_order_simple(
         "order": {
             "type": "MARKET",
             "instrument": instrument,
-            "units": str(units if direction == "BUY" else -units),
+            "units": str(abs(units) if direction == "BUY" else -abs(units)),
             "positionFill": "DEFAULT",
         }
     }
@@ -369,7 +509,9 @@ def open_oanda_order_simple(
         logger.info(f"✅ OANDA accepted order for {instrument}")
         trade_id = ""
         if "orderFillTransaction" in resp:
-            trade_id = str(resp["orderFillTransaction"].get("id", ""))
+            fill = resp["orderFillTransaction"]
+            trade_opened = fill.get("tradeOpened") or {}
+            trade_id = str(trade_opened.get("tradeID", ""))
             logger.info(f"📦 Trade opened: TradeID={trade_id}")
         elif "orderCreateTransaction" in resp:
             trade_id = str(resp["orderCreateTransaction"].get("id", ""))
@@ -384,7 +526,7 @@ def open_oanda_order_simple(
                         "order": {
                             "type": "STOP_LOSS",
                             "tradeID": trade_id,
-                            "price": str(round(float(sl_price), dec)),
+                            "price": f"{float(sl_price):.{dec}f}",
                             "timeInForce": "GTC",
                         }
                     },
@@ -399,7 +541,7 @@ def open_oanda_order_simple(
                         "order": {
                             "type": "TAKE_PROFIT",
                             "tradeID": trade_id,
-                            "price": str(round(float(tp_price), dec)),
+                            "price": f"{tp_price:.{dec}f}",
                             "timeInForce": "GTC",
                         }
                     },
@@ -863,6 +1005,78 @@ def build_trade_telegram(trade_lines: list, mc_summary: list = None) -> str:
             lines.append(f"   {s}")
     return "\n".join(lines)
 
+def compute_sl_zone(api, oanda_instrument, direction, entry_price, pip_size, cfg_fn):
+    """Hierarchical SL: H4 → H8 → Daily → ATR → Fixed"""
+    BUFFER_PIPS   = cfg_fn("SL_BUFFER_PIPS", 25)
+    MIN_DIST_PIPS = cfg_fn("SL_MIN_DISTANCE_PIPS", 20)
+    ATR_MULT      = cfg_fn("ATR_SL_MULT", 2.0)
+    FIXED_PIPS    = cfg_fn("SL_FALLBACK_FIXED_PIPS", 35)
+
+    TF_LIST = [
+        ("H4",  "H4", cfg_fn("SL_H4_LOOKBACK_BARS", 6)),
+        ("H8",  "H8", cfg_fn("SL_H8_LOOKBACK_BARS", 4)),
+        ("DAILY","D", cfg_fn("SL_DAILY_LOOKBACK_BARS", 2)),
+    ]
+
+    def _fetch_zone(gran, count, dir):
+        try:
+            resp = api.request(InstrumentsCandles(
+                instrument=oanda_instrument,
+                params={"granularity": gran, "count": count, "price": "M"}
+            ))
+            candles = resp.get("candles", [])
+            if len(candles) < count * 0.5:
+                return None, 0
+            highs = [float(c["mid"]["h"]) for c in candles]
+            lows  = [float(c["mid"]["l"]) for c in candles]
+            closes = [float(c["mid"]["c"]) for c in candles]
+            trs = []
+            for i in range(1, len(candles)):
+                tr = max(highs[i]-lows[i], abs(highs[i]-closes[i-1]), abs(lows[i]-closes[i-1]))
+                trs.append(tr)
+            atr = np.mean(trs[-14:]) if len(trs)>=14 else np.mean(trs) if trs else 0
+            if dir == "BUY":
+                return min(lows), atr
+            else:
+                return max(highs), atr
+        except Exception as e:
+            logger.debug(f"⚠️ {gran} fetch failed: {e}")
+            return None, 0
+
+    buffer_amt = BUFFER_PIPS * pip_size
+
+    for name, gran, lookback in TF_LIST:
+        zone, atr = _fetch_zone(gran, lookback, direction)
+        if zone is None:
+            logger.info(f"⏭️ {oanda_instrument} {direction} {name}: no data → next")
+            continue
+        if direction == "BUY":
+            sl_candidate = zone - buffer_amt
+        else:
+            sl_candidate = zone + buffer_amt
+        dist = abs(entry_price - sl_candidate) / pip_size
+        if dist >= MIN_DIST_PIPS:
+            logger.info(f"📏 SL {name}: Zone={zone:.5f} ±{BUFFER_PIPS}p → {sl_candidate:.5f} | Dist={dist:.1f}p")
+            return sl_candidate, f"{name} Zone {dist:.0f}p"
+        else:
+            logger.info(f"⚠️ {name} too close ({dist:.1f}p < {MIN_DIST_PIPS}p) → stepping up")
+
+    _, atr = _fetch_zone("H4", 14, direction)
+    if atr and atr > 0:
+        if direction == "BUY":
+            sl_atr = entry_price - atr * ATR_MULT
+        else:
+            sl_atr = entry_price + atr * ATR_MULT
+        dist = abs(entry_price - sl_atr) / pip_size
+        logger.info(f"🔁 SL ATR-{ATR_MULT}x: {sl_atr:.5f} | Dist={dist:.1f}p")
+        return sl_atr, f"ATR-{ATR_MULT}x {dist:.0f}p"
+
+    if direction == "BUY":
+        sl_fix = entry_price - FIXED_PIPS * pip_size
+    else:
+        sl_fix = entry_price + FIXED_PIPS * pip_size
+    logger.info(f"🚨 SL FIXED-{FIXED_PIPS}p: {sl_fix:.5f}")
+    return sl_fix, f"FIXED-{FIXED_PIPS}p"
 
 # ============================================================================
 # 🎯 DYNAMIC POSITION MANAGER — Breakeven + Trailing Stop + ✅ DYNAMIC TP
@@ -1077,6 +1291,209 @@ class DynamicPositionManager:
                         side == "short" and current_sl and new_sl > current_sl
                     ):
                         continue  # Never move SL against you
+                    if self._update_trade_sl(tid, new_sl, decimals) and self.telegram:
+                        self.telegram(
+                            f"🎯 {action} on {pair} #{tid} | Price: {current_price} | New SL: {round(new_sl, decimals)} | Profit: {profit_pips:.1f} pips"
+                        )
+
+
+class DynamicPositionManager_v2:
+    def __init__(
+        self,
+        api,
+        account_id: str,
+        timeframe: str,
+        be_trigger_atr_mult: float = 2.0,       # 提高门槛：默认从1.5改为2.0
+        trail_trigger_atr_mult: float = 3.0,    # 提高门槛：默认从2.5改为3.0
+        trail_atr_mult: float = 2.0,            # 提高容忍度：默认从1.5改为2.0 (JPY可设为2.5)
+        max_hold_bars: int = 12,
+        min_hold_bars: int = 4,                 # ✅ 新增：最少持仓Bar数（防止过早退出）
+        exit_on_close_only: bool = True,        # ✅ 新增：仅收盘价确认，忽略盘中影线
+        ratchet_exit: bool = True,              # ✅ 新增：止损只进不退（Ratchet）
+        dynamic_tp: bool = True,
+        tp_raise_thresh_pips: int = 15,
+        telegram_send=None,
+    ):
+        self.api = api
+        self.account_id = account_id
+        self.timeframe = timeframe
+        self.be_trigger = be_trigger_atr_mult
+        self.trail_trigger = trail_trigger_atr_mult
+        self.trail_mult = trail_atr_mult
+        self.max_hold = max_hold_bars
+        self.min_hold_bars = min_hold_bars
+        self.exit_on_close_only = exit_on_close_only
+        self.ratchet_exit = ratchet_exit
+        self.dynamic_tp = dynamic_tp
+        self.tp_thresh_pips = tp_raise_thresh_pips
+        self.telegram = telegram_send
+
+    def _get_open_trades(self, instrument: str):
+        try:
+            resp = self.api.request(OpenTrades(accountID=self.account_id))
+            return [
+                t for t in resp.get("trades", []) if t.get("instrument") == instrument
+            ]
+        except Exception as e:
+            if "404" in str(e) or "NO_SUCH_POSITION" in str(e):
+                logger.info(f"  ✅ {instrument}: No open trades")
+            else:
+                logger.error(f"  ❌ Failed to fetch trades for {instrument}: {e}")
+            return []
+
+    def _current_price(self, instrument: str, side: str) -> float:
+        try:
+            prices = get_live_prices(instrument)
+            if prices and "bid" in prices and "ask" in prices:
+                return prices["bid"] if side == "long" else prices["ask"]
+            return None
+        except Exception as e:
+            logger.warning(f"  ⚠️ Price fetch failed for {instrument}: {e}")
+            return None
+
+    def _update_trade_sl(self, trade_id: str, new_sl: float, decimals: int):
+        try:
+            data = {
+                "stopLoss": {
+                    "price": str(round(new_sl, decimals)),
+                    "timeInForce": "GTC",
+                }
+            }
+            self.api.request(
+                TradeCRCDO(accountID=self.account_id, tradeID=trade_id, data=data)
+            )
+            logger.info(f"   🔄 Updated SL on trade {trade_id} → {round(new_sl, decimals)}")
+            return True
+        except Exception as e:
+            logger.error(f"   ❌ Failed to update SL on trade {trade_id}: {e}")
+            return False
+
+    def _update_trade_tp(
+        self, trade_id: str, instrument: str, new_tp: float, decimals: int
+    ):
+        return update_order_tp(
+            self.api,
+            self.account_id,
+            trade_id,
+            instrument,
+            new_tp,
+            send_telegram=self.telegram,
+        )
+
+    def update_all(self, pair_data: dict, close_position_fn=None):
+        BAR_HOURS = {"15m": 0.25, "1H": 1, "H4": 4, "D": 24}
+        bar_hours = BAR_HOURS.get(self.timeframe, 4)
+        pip_size_map = lambda p: 0.01 if "JPY" in p.upper() else 0.0001
+
+        for pair, info in pair_data.items():
+            instrument = info["oanda"]
+            df = info.get("df")
+            if df is None or len(df) < 2:
+                continue
+
+            atr_val = df.iloc[-1].get("atr")
+            if atr_val is None or np.isnan(atr_val) or atr_val <= 0:
+                continue
+
+            # ✅ 针对 JPY 货币对自适应调整 ATR 乘数上限与基准
+            is_jpy = "JPY" in pair.upper()
+            active_trail_mult = 2.5 if is_jpy else self.trail_mult
+
+            decimals = price_decimals(pair)
+            pip = pip_size_map(pair)
+            trades = self._get_open_trades(instrument)
+            if not trades:
+                continue
+
+            for trade in trades:
+                tid = trade["id"]
+                units = int(trade["currentUnits"])
+                side = "long" if units > 0 else "short"
+                entry = float(trade["price"])
+                current_sl_raw = trade.get("stopLossOrder", {}).get("price")
+                current_sl = float(current_sl_raw) if current_sl_raw else None
+                current_tp_raw = trade.get("takeProfitOrder", {}).get("price")
+                current_tp = float(current_tp_raw) if current_tp_raw else None
+
+                current_price = self._current_price(instrument, side)
+                if current_price is None:
+                    continue
+
+                profit_pips = (
+                    (current_price - entry) / pip
+                    if side == "long"
+                    else (entry - current_price) / pip
+                )
+                open_time = datetime.fromisoformat(
+                    trade["openTime"].replace("Z", "+00:00")
+                )
+                bars_held = (
+                    (datetime.now(timezone.utc) - open_time).total_seconds()
+                    / 3600
+                    / bar_hours
+                )
+
+                # ⏰ Time-based exit (需同时满足超过最小持仓 bar 数，防止过早被时间清仓)
+                if bars_held >= self.max_hold:
+                    logger.info(f"⏰ TIME EXIT: {pair} trade {tid} held {bars_held:.1f} bars")
+                    if close_position_fn:
+                        close_position_fn(instrument)
+                    continue
+
+                # 🛡️ 保护机制：初期持仓保护（不满足最小持仓根数，跳过动态止损判定）
+                if bars_held < self.min_hold_bars:
+                    logger.debug(f"🛡️ {pair}: bars held {bars_held:.1f} < MIN_HOLD ({self.min_hold_bars}) — skip dynamic exit")
+                    continue
+
+                # ── ✅ DYNAMIC TP ──
+                if self.dynamic_tp:
+                    atr_mult_tp = 3.0
+                    if side == "long":
+                        new_tp_candidate = current_price + (atr_mult_tp * atr_val)
+                        if current_tp is None or new_tp_candidate > current_tp + (self.tp_thresh_pips * pip):
+                            self._update_trade_tp(tid, instrument, new_tp_candidate, decimals)
+                    else:
+                        new_tp_candidate = current_price - (atr_mult_tp * atr_val)
+                        if current_tp is None or new_tp_candidate < current_tp - (self.tp_thresh_pips * pip):
+                            self._update_trade_tp(tid, instrument, new_tp_candidate, decimals)
+
+                # ── SL LOGIC → Breakeven → Trailing (Wider & Ratchet) ──
+                new_sl = action = None
+                be_pips = self.be_trigger * atr_val / pip
+                trail_pips = self.trail_trigger * atr_val / pip
+
+                # Breakeven SL
+                if profit_pips >= be_pips:
+                    be_sl = entry - pip if side == "long" else entry + pip
+                    if (
+                        current_sl is None
+                        or (side == "long" and be_sl > current_sl)
+                        or (side == "short" and be_sl < current_sl)
+                    ):
+                        new_sl, action = be_sl, "BREAKEVEN"
+
+                # Trailing SL (使用加宽后的 active_trail_mult，给予利润更多奔跑空间)
+                if profit_pips >= trail_pips:
+                    trail_sl = (
+                        current_price - active_trail_mult * atr_val
+                        if side == "long"
+                        else current_price + active_trail_mult * atr_val
+                    )
+                    if (
+                        current_sl is None
+                        or (side == "long" and trail_sl > current_sl)
+                        or (side == "short" and trail_sl < current_sl)
+                    ):
+                        new_sl, action = trail_sl, "TRAIL"
+
+                # Apply SL update with Ratchet and Close-Only safeguards
+                if new_sl and action:
+                    if self.ratchet_exit:
+                        # 严格保证止损只能朝着有利方向移动，绝不回退
+                        if (side == "long" and current_sl and new_sl < current_sl) or \
+                           (side == "short" and current_sl and new_sl > current_sl):
+                            continue
+
                     if self._update_trade_sl(tid, new_sl, decimals) and self.telegram:
                         self.telegram(
                             f"🎯 {action} on {pair} #{tid} | Price: {current_price} | New SL: {round(new_sl, decimals)} | Profit: {profit_pips:.1f} pips"

@@ -1,50 +1,70 @@
+import re
+import importlib
+import argparse
 import oandapyV20
-from oandapyV20.endpoints.accounts import AccountList, AccountSummary
-from config_oanda import OANDA_API_TOKEN, OANDA_ENV
+from oandapyV20.endpoints.accounts import AccountSummary
 
-# Initialize OANDA client directly (no utils import)
-api = oandapyV20.API(access_token=OANDA_API_TOKEN, environment=OANDA_ENV)
+config = importlib.import_module("config_oanda")
 
-def check_all_accounts():
-    try:
-        # Step 1: Fetch list of all sub-account IDs
-        account_list_request = AccountList()
-        list_response = api.request(account_list_request)
-        accounts = list_response.get("accounts", [])
+OANDA_API_TOKEN = getattr(config, "OANDA_API_TOKEN", None)
+OANDA_API_TOKEN_LIVE = getattr(config, "OANDA_API_TOKEN_LIVE", None)
+OANDA_ENV_DEMO = getattr(config, "OANDA_ENV", "practice")
+OANDA_ENV_LIVE = getattr(config, "OANDA_ENV_LIVE", "live")
 
-        if not accounts:
-            print("❌ No accounts found for this API token.")
-            return
+assert OANDA_API_TOKEN and OANDA_API_TOKEN_LIVE, "OANDA TOKEN not found"
 
-        print(f"Found {len(accounts)} sub-account(s):\n" + "-" * 40)
+def collect_account_ids(prefix_regex: str):
+    ids = []
+    for name, value in vars(config).items():
+        if re.fullmatch(prefix_regex, name):
+            ids.append(str(value))
+    return sorted(ids)
 
-        # Step 2: Loop through each account and fetch summary
-        for acc in accounts:
-            acc_id = acc.get("id")
-            tags = ", ".join(acc.get("tags", []))
-            tag_str = f" [{tags}]" if tags else ""
+demo_account_ids = collect_account_ids(r"OANDA_ACCOUNT_ID_\d+")
+live_account_ids = collect_account_ids(r"OANDA_ACCOUNT_ID_LIVE_\d+")
 
-            try:
-                summary_request = AccountSummary(acc_id)
-                summary = api.request(summary_request).get("account", {})
+def check_accounts(env_value, env_name, account_ids):
+    print(f"\n========== Checking {env_name.upper()} ==========")
+    api = oandapyV20.API(access_token=OANDA_API_TOKEN, environment=env_value)
 
-                currency = summary.get("currency", "N/A")
-                balance = summary.get("balance", "N/A")
-                nav = summary.get("NAV", "N/A")
-                unrealized_pnl = summary.get("unrealizedPL", "0.00")
+    if not account_ids:
+        print(f"❌ No {env_name} account IDs found in config_oanda.py.")
+        return
 
-                print(f"✅ Account: {acc_id}{tag_str}")
-                print(f"   Currency : {currency}")
-                print(f"   Balance  : {balance} {currency}")
-                print(f"   NAV      : {nav} {currency}")
-                print(f"   Unrealized P/L: {unrealized_pnl} {currency}")
-                print("-" * 40)
+    for acc_id in account_ids:
+        try:
+            summary_request = AccountSummary(acc_id)
+            summary = api.request(summary_request).get("account", {})
 
-            except Exception as e:
-                print(f"❌ Failed to fetch summary for {acc_id}: {e}\n" + "-" * 40)
+            currency = summary.get("currency", "N/A")
+            balance = summary.get("balance", "N/A")
+            nav = summary.get("NAV", "N/A")
+            unrealized_pnl = summary.get("unrealizedPL", "0.00")
 
-    except Exception as e:
-        print(f"❌ Account list request failed: {e}")
+            print(f"✅ Account: {acc_id}")
+            print(f"   Currency : {currency}")
+            print(f"   Balance  : {balance} {currency}")
+            print(f"   NAV      : {nav} {currency}")
+            print(f"   Unrealized P/L: {unrealized_pnl} {currency}")
+            print("-" * 40)
+
+        except Exception as e:
+            print(f"❌ Failed to fetch summary for {acc_id}: {e}\n" + "-" * 40)
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-d", "--demo", action="store_true", help="Check demo (practice) accounts only")
+    parser.add_argument("-l", "--live", action="store_true", help="Check live accounts only")
+    args = parser.parse_args()
+
+    # If neither flag => do both
+    check_demo = args.demo or (not args.demo and not args.live)
+    check_live = args.live or (not args.demo and not args.live)
+
+    if check_demo:
+        check_accounts(OANDA_ENV_DEMO, "demo", demo_account_ids)
+    if check_live:
+        check_accounts(OANDA_ENV_LIVE, "live", live_account_ids)
 
 if __name__ == "__main__":
-    check_all_accounts()
+    main()
