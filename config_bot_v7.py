@@ -235,7 +235,7 @@ PROFILE_CFG = {
         "MIN_SCORE_GAP": 0.05,                            # 0.10 → 0.05 · 低 gap 也能参与共识
 
         # ── Position Limits ──
-        "MAX_OPEN_POSITIONS": 6,
+        "MAX_OPEN_POSITIONS": 10,
         "MAX_OPEN_HIGH_VOL": 4,
         "MAX_OPEN_MID_VOL": 1,
         "MAX_OPEN_LOW_VOL": 1,
@@ -279,6 +279,10 @@ PROFILE_CFG = {
         "TRAIL_ATR_MULT": 1.5,
         "MAX_HOLD_BARS": 12,
 
+        # ── PROFILE4 H4-ESCALE + TP LINK ──
+        "USE_H4_ESCALE": True,
+        "TP_LINK_SL": True,
+
         # ── SL Strategy ──
         "SL_USE_ZONE_HIERARCHY": True,
 
@@ -291,6 +295,6 @@ PROFILE_CFG = {
         "SKIP_MC": False,
 
         # ── Pair Exclusion ──
-        "EXCLUDE_CURRENCIES": ["NZD", "CAD", "CHF"],
+        "EXCLUDE_CURRENCIES": [],
     }
 }

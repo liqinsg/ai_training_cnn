@@ -837,6 +837,8 @@ def main():
         min_sl_step_pips=cfg(P, "SL_MIN_MOVE_PIPS", 15),
         sl_buffer_pips=cfg(P, "SL_TRAIL_BUFFER_PIPS", 25),
         sl_zone_lookback=cfg(P, "SL_TRAIL_ZONE_LOOKBACK", 6),
+        use_h4_escale=cfg(P, "USE_H4_ESCALE", False),
+        tp_link_sl=cfg(P, "TP_LINK_SL", False),
     )
     # oanda_level = logging.getLogger("oandapyV20").level
     # logging.getLogger("oandapyV20").setLevel(logging.CRITICAL)

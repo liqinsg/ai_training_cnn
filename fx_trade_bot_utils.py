@@ -957,6 +957,8 @@ class DynamicPositionManager:
         min_sl_step_pips: float = 15.0,
         sl_buffer_pips: float = 25.0,
         sl_zone_lookback: int = 6,
+        use_h4_escale: bool = False,
+        tp_link_sl: bool = False,
     ):
         self.api = api
         self.account_id = account_id
@@ -973,6 +975,8 @@ class DynamicPositionManager:
         self.min_sl_step_pips = min_sl_step_pips
         self.sl_buffer_pips = sl_buffer_pips
         self.sl_zone_lookback = sl_zone_lookback
+        self.use_h4_escale = use_h4_escale
+        self.tp_link_sl = tp_link_sl
 
     def _get_open_trades(self, instrument: str):
         try:
@@ -1031,6 +1035,35 @@ class DynamicPositionManager:
             logger.debug(f"  ⚠️ zone SL recalc failed for {oanda_inst}: {e}")
             return None
 
+    def _h4_atr(self, oanda_inst) -> float:
+        try:
+            from oandapyV20.endpoints.instruments import InstrumentsCandles
+            resp = self.api.request(
+                InstrumentsCandles(
+                    instrument=oanda_inst,
+                    params={"granularity": "H4", "count": 15, "price": "M"},
+                )
+            )
+            candles = resp.get("candles", [])
+            if len(candles) < 5:
+                return 0.0
+            closed = candles[:-1] if len(candles) > 1 else candles
+            highs = [float(c["mid"]["h"]) for c in closed]
+            lows = [float(c["mid"]["l"]) for c in closed]
+            closes = [float(c["mid"]["c"]) for c in closed]
+            trs = []
+            for i in range(1, len(closed)):
+                tr = max(
+                    highs[i] - lows[i],
+                    abs(highs[i] - closes[i - 1]),
+                    abs(lows[i] - closes[i - 1]),
+                )
+                trs.append(tr)
+            return float(np.mean(trs[-14:])) if trs else 0.0
+        except Exception as e:
+            logger.debug(f"  ⚠️ H4 ATR fetch failed for {oanda_inst}: {e}")
+            return 0.0
+
     def _update_trade_sl(self, trade_id: str, new_sl: float, decimals: int):
         if self.dry_run:
             logger.info(f"🧊 DRY-RUN — would MOVE SL: trade={trade_id} → {round(new_sl, decimals)}")
@@ -1069,7 +1102,7 @@ class DynamicPositionManager:
 
     def update_all(self, pair_data: dict, close_position_fn=None):
         BAR_HOURS = {"15m": 0.25, "1H": 1, "H4": 4, "D": 24}
-        bar_hours = BAR_HOURS.get(self.timeframe, 4)
+        bar_hours = 4 if self.use_h4_escale else BAR_HOURS.get(self.timeframe, 4)
         pip_size_map = lambda p: 0.01 if "JPY" in p.upper() else 0.0001
 
         for pair, info in pair_data.items():
@@ -1078,7 +1111,7 @@ class DynamicPositionManager:
             if df is None or len(df) < 2:
                 continue
 
-            atr_val = df.iloc[-1].get("atr")
+            atr_val = self._h4_atr(instrument) if self.use_h4_escale else df.iloc[-1].get("atr")
             if atr_val is None or np.isnan(atr_val) or atr_val <= 0:
                 continue
 
@@ -1206,10 +1239,26 @@ class DynamicPositionManager:
                         side == "short" and current_sl and new_sl > current_sl
                     ):
                         continue
-                    if self._update_trade_sl(tid, new_sl, decimals) and self.telegram:
-                        self.telegram(
-                            f"🎯 {action} on {pair} #{tid} | Price: {current_price} | New SL: {round(new_sl, decimals)} | Profit: {profit_pips:.1f} pips"
-                        )
+                    if self._update_trade_sl(tid, new_sl, decimals):
+                        if self.telegram:
+                            self.telegram(
+                                f"🎯 {action} on {pair} #{tid} | Price: {current_price} | New SL: {round(new_sl, decimals)} | Profit: {profit_pips:.1f} pips"
+                            )
+                        if self.tp_link_sl:
+                            sl_dist = abs(entry - new_sl)
+                            if side == "long":
+                                new_tp = round(new_sl + sl_dist * 1.5, decimals)
+                            else:
+                                new_tp = round(new_sl - sl_dist * 1.5, decimals)
+                            if (current_tp is None) or (
+                                (side == "long" and new_tp > current_tp)
+                                or (side == "short" and new_tp < current_tp)
+                            ):
+                                self._update_trade_tp(tid, instrument, new_tp, decimals)
+                                if self.telegram:
+                                    self.telegram(
+                                        f"🎯 TP×1.5 on {pair} #{tid} | New TP: {new_tp:.{decimals}f}"
+                                    )
 
 
 class DynamicPositionManager_v2:
