@@ -1200,7 +1200,7 @@ class DynamicPositionManager:
                                 tid, instrument, new_tp_candidate, decimals
                             )
 
-                # ── SL LOGIC → FULL RECALC (无条件) → Breakeven → Trailing ──
+                # ── SL LOGIC → Breakeven → Trailing (均为 profit-gated) ──
                 new_sl = action = None
                 _jpy = "JPY" in instrument
                 _trig_mult = 2.0 if _jpy else 1.0   # JPY 门槛 ×2
@@ -1208,52 +1208,7 @@ class DynamicPositionManager:
                 be_pips = self.be_trigger * _trig_mult * atr_val / pip
                 trail_pips = self.trail_trigger * _trig_mult * atr_val / pip
 
-                # ── ✅ 1. FULL SL RECALC (always runs, profit-independent) ──
-                # Purpose: Fix wrong/missing SL (e.g. 500 pips wide, or never set)
-                # Uses same calculation method as trailing but WITHOUT profit gate.
-                if self.zone_trailing:
-                    cand = self._recalc_zone_sl(instrument, side, pip, gran_override=_sl_gran)
-                    if cand is not None:
-                        cand = round(cand, decimals)
-                        favorable = (
-                            (side == "long" and cand > current_sl)
-                            or (side == "short" and cand < current_sl)
-                            or current_sl is None
-                        )
-                        big_enough = (
-                            current_sl is None
-                            or abs(cand - current_sl) >= self.min_sl_step_pips * pip
-                        )
-                        if favorable and big_enough:
-                            new_sl, action = cand, "FULL-RECALC"
-                            logger.info(
-                                f"  🔄 {pair} #{tid}: FULL-RECALC zone SL | "
-                                f"Old={current_sl_raw} New={cand} "
-                                f"(Δ{abs(cand-current_sl)/pip:.0f}pips) | "
-                                f"Profit={profit_pips:.1f}pips"
-                            )
-                    else:
-                        logger.debug(f"  ⚠️ {pair} #{tid}: FULL-RECALC zone SL failed → skip")
-                else:
-                    atr_recalc_sl = (
-                        current_price - self.trail_mult * _trail_mult * atr_val
-                        if side == "long"
-                        else current_price + self.trail_mult * _trail_mult * atr_val
-                    )
-                    favorable = (
-                        (side == "long" and atr_recalc_sl > current_sl)
-                        or (side == "short" and atr_recalc_sl < current_sl)
-                        or current_sl is None
-                    )
-                    if favorable:
-                        new_sl, action = round(atr_recalc_sl, decimals), "FULL-RECALC-ATR"
-                        logger.info(
-                            f"  🔄 {pair} #{tid}: FULL-RECALC ATR SL | "
-                            f"Old={current_sl_raw} New={round(atr_recalc_sl, decimals)} | "
-                            f"Profit={profit_pips:.1f}pips"
-                        )
-
-                # Breakeven SL (profit-gated, can override FULL-RECALC if better)
+                # Breakeven SL (profit-gated only)
                 if profit_pips >= be_pips:
                     be_sl = entry - pip if side == "long" else entry + pip
                     if (
