@@ -153,7 +153,6 @@ PROFILE_CFG = {
         "TOP_PAIRS_MIN_GAP": 0.25,
         # ── MC ──
         "SKIP_MC": False,
-        # "EXCLUDE_CURRENCIES": ["NZD", "CAD", "CHF", "JPY"],  # 🚫 不碰 NZD/CAD/CHF
     },
     "profile3": {
         "LABEL": "PROFILE3",
@@ -209,8 +208,6 @@ PROFILE_CFG = {
         # ── MC ──
         "SKIP_MC": False,
         "SL_ZONE_TRAILING": True,
-        # ── Pair Exclusion ──
-        # "EXCLUDE_CURRENCIES": [],
     },
     # ✅ ─── Profile4 / Account004 · DEMO 全新独立 ───
     "profile4": {
@@ -282,35 +279,72 @@ PROFILE_CFG = {
         "TOP_PAIRS_MIN_GAP": 0.25,
         # ── MC ──
         "SKIP_MC": False,
-        # ── Pair Exclusion ──
-        # "EXCLUDE_CURRENCIES": [],
     },
 }
 
 # ==========================================
-# 🎯 PAIR STRATEGY GROUPS — per-pair overrides (profile3 only)
+# 🌐 全局共享资源 — 一处定义，多 profile 复用
 # ==========================================
-# 新增一组 = 加一个 dict entry，无需改代码
-# 每个 group 可以 override: timeframe, sl_lookback_bars, sl_buffer_pips,
-# min_sl_pips, max_sl_pips, confirmation_candle, min_hold_bars, max_hold_bars
 
-PAIR_STRATEGY_GROUPS = {
-    # ── D1 Daily 模式组 ──
+# ── D_STRATEGY_GROUPS — Daily 模式专属分组 ──
+# 命中条件: instrument 名 == dict key（如 "GBP_AUD"）
+# 消费端: DynamicPositionManager.update_all() → instrument_overrides.get(instrument)
+# 字段说明（与消费端 key 严格对齐）：
+#   bar_hours        — 每根 bar 小时数（日线=24）
+#   max_hold         — 超过多少 bar 强制时间退出
+#   sl_granularity   — Zone SL 重算时的 OANDA K 线粒度（H4/D/...）
+#   confirm_on_close — True 时 SL 更新只在 D1 收盘后触发
+D_STRATEGY_GROUPS = {
+    # ── D1 Daily · GBP_AUD 高 beta ──
     "GBP_AUD": {
-        "label": "D1_DAILY_HIGH_BETA",
-        "timeframe_override": "D1",  # D = Daily
-        "sl_lookback_bars": 10,
-        "sl_buffer_pips": 20,
-        "min_sl_pips": 50,
-        "max_sl_pips": 200,
-        "confirmation_candle": "CLOSE",  # SL/trailing 只在 D1 收盘后触发
-        "min_hold_bars": 4,
-        "max_hold_bars": 12,
+        "bar_hours": 24,
+        "max_hold": 12,
+        "sl_granularity": "D",
+        "confirm_on_close": True,
     },
-    # ── 未来可加的组 ──
-    # "EUR_USD": {
-    #     "label": "TREND_FOLLOWER",
-    #     "timeframe_override": "H4",
-    #     ...
-    # },
 }
+
+# ── EXCLUDE_CURRENCIES_GLOBAL — 默认要排除的货币代码 ──
+EXCLUDE_CURRENCIES_GLOBAL = [
+    # "NZD", "CAD", "CHF", "JPY",   # 需要时取消注释
+]
+
+# ==========================================
+# 🔌 load_profile() — main app 的唯一入口
+# ==========================================
+# 用法:  P = load_profile("profile3")
+#
+# 内部做的事：
+#   1. 取 PROFILE_CFG[name] 作为模板（深拷贝，不污染原模板）
+#   2. merge 模块级全局常量（原来 cfg() 函数的第二层 fallback）
+#   3. 注入全局共享资源（D_STRATEGY_GROUPS / EXCLUDE_CURRENCIES_GLOBAL）
+#      — 哪些 profile 启用哪些资源，在这里集中声明
+#   4. 返回一个完全独立的最终 dict
+#
+# main app 不需要知道 D_STRATEGY_GROUPS、PROFILE_CFG、cfg() 这些内部细节
+def load_profile(profile_name: str) -> dict:
+    import copy
+
+    # ── Step 1: 取模板 + 深拷贝，不污染原 PROFILE_CFG ──
+    template = PROFILE_CFG.get(profile_name, PROFILE_CFG["profile2"])
+    final = copy.deepcopy(template)
+
+    # ── Step 2: merge 模块级全局常量（原来 cfg() 第二层 fallback）──
+    for key in dir(cfg_base := __import__(__name__)):
+        if key.startswith("_"):
+            continue
+        if key.upper() != key:
+            continue  # 只 merge 全大写常量
+        if key not in final:
+            final[key] = getattr(cfg_base, key)
+
+    # ── Step 3: 注入全局共享资源 ──
+    # profile3 启用 Daily 分组
+    if profile_name == "profile3":
+        final["INSTRUMENT_OVERRIDES"] = D_STRATEGY_GROUPS
+        final["EXCLUDE_CURRENCIES"] = list(EXCLUDE_CURRENCIES_GLOBAL)
+    else:
+        final["INSTRUMENT_OVERRIDES"] = {}
+        final["EXCLUDE_CURRENCIES"] = []
+
+    return final

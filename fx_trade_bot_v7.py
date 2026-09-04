@@ -18,8 +18,8 @@ from datetime import datetime, timezone
 import numpy as np, pandas as pd
 
 # ─── ✅ ONLY ONE CONFIG IMPORT ───
-import config_bot as cfg_base
-from config_bot import PROFILE_CFG
+# load_profile() 是唯一入口。内部完成所有装配：PROFILE_CFG 模板 + 全局常量 merge + 全局共享资源注入
+from config_bot import load_profile
 
 from utils.trading_core import forex_market_closed
 from utils.strategy_helpers import build_strength_matrix, format_strength_ranking, get_live_prices
@@ -43,12 +43,11 @@ logger = get_logger()   # 全局 "fx_bot" 日志器，自动带文件+控制台�
 BASE_DIR = Path(__file__).resolve().parent
 sys.path.extend([str(BASE_DIR), str(BASE_DIR / "utils")])
 
-
 # ─── HELPER: Profile-aware config lookup ─────────────────────────────────────
+# load_profile() 已把 profile 模板 + config 全局常量 + 全局资源 全部 merge 进 P
+# 所以这里就是纯 get，三层 fallback 已内化到 config_bot.load_profile()
 def cfg(profile_dict, key, default=None):
-    """Priority: Profile-specific → config_bot base → default"""
-    return profile_dict.get(key, getattr(cfg_base, key, default))
-
+    return profile_dict.get(key, default)
 
 # ─── PARSE ARGS & SELECT PROFILE ─────────────────────────────────────────────
 parser = argparse.ArgumentParser(description="FX Trading Bot v7 · Unified Config")
@@ -72,7 +71,7 @@ elif args.profile3:
 else:
     PROFILE_NAME = "profile2"
 
-P = PROFILE_CFG[PROFILE_NAME]  # All profile settings in ONE dict
+P = load_profile(PROFILE_NAME)  # 唯一入口 — 内部装配好一切
 
 # ─── Resolve core identity ──────────────────────────────────────────────────
 OANDA_ACCOUNT_ID = cfg(P, "OANDA_ACCOUNT_ID")
@@ -496,6 +495,8 @@ def main():
         # ✅ H4 escale + TP link (Profile4)
         use_h4_escale=cfg(P, "USE_H4_ESCALE", False),
         tp_link_sl=cfg(P, "TP_LINK_SL", False),
+        # ✅ Daily 模式分组（D_STRATEGY_GROUPS · Profile3 专属，以后可推广）
+        instrument_overrides=(D_STRATEGY_GROUPS if PROFILE_NAME == "profile3" else {}),
     )
     
     oanda_level = logging.getLogger("oandapyV20").level

@@ -1018,6 +1018,13 @@ class DynamicPositionManager:
             logger.warning(f"  ⚠️ Price fetch failed for {instrument}: {e}")
             return None
 
+    def _is_daily_closed(self) -> bool:
+        """启发式：OANDA D1 日线在 UTC 00:00 切换。
+        UTC 00:05 之后视为前一根日线已收盘，零 API 成本。
+        未来如需精确可替换为拉 D1 candle 检查 .complete 字段。"""
+        now = datetime.now(timezone.utc)
+        return now.hour >= 0 and now.minute >= 5
+
     def _recalc_zone_sl(self, oanda_inst, side, pip, gran_override=None) -> float | None:
         try:
             from oandapyV20.endpoints.instruments import InstrumentsCandles
@@ -1250,6 +1257,13 @@ class DynamicPositionManager:
                             new_sl, action = trail_sl, "TRAIL"
 
                 if new_sl and action:
+                    # ── Gate: D_STRATEGY_GROUPS 的 pair 必须等 D1 收盘 ──
+                    if _use_d1_close_only and not self._is_daily_closed():
+                        logger.info(
+                            f"  ⏳ {pair} #{tid}: SKIP {action} — D1-close-only, "
+                            f"waiting for daily candle close"
+                        )
+                        continue
                     if (side == "long" and current_sl and new_sl < current_sl) or (
                         side == "short" and current_sl and new_sl > current_sl
                     ):
