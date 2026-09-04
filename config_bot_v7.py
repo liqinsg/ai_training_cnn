@@ -102,7 +102,8 @@ PROFILE_CFG = {
         # ── Thresholds ──
         "MIN_CONVICTION_SCORE": 30.0,
         "MIN_SCORE_GAP": 0.10,
-        "MAX_OPEN_POSITIONS": 2,
+        "MAX_OPEN_POSITIONS": 3,
+        "MAX_OPEN_PER_RUN": 1,
         "XGB_BULLISH_THRESHOLD": 0.52,
         "MC_BULLISH_THRESHOLD_PCT": 52.0,
         "MC_STRONG_THRESHOLD": 0.60,
@@ -167,6 +168,7 @@ PROFILE_CFG = {
         "MIN_CONVICTION_SCORE": 20.0,
         "MIN_SCORE_GAP": 0.10,
         "MAX_OPEN_POSITIONS": 6,
+        "MAX_OPEN_PER_RUN": 2,
         "XGB_BULLISH_THRESHOLD": 0.55,
         "MC_BULLISH_THRESHOLD_PCT": 55.0,
         "MC_STRONG_THRESHOLD": 0.55,
@@ -236,9 +238,10 @@ PROFILE_CFG = {
 
         # ── Position Limits ──
         "MAX_OPEN_POSITIONS": 10,
-        "MAX_OPEN_HIGH_VOL": 4,
-        "MAX_OPEN_MID_VOL": 1,
-        "MAX_OPEN_LOW_VOL": 1,
+        "MAX_OPEN_PER_RUN": 3,
+        "MAX_OPEN_HIGH_VOL": 6,
+        "MAX_OPEN_MID_VOL": 2,
+        "MAX_OPEN_LOW_VOL": 2,
 
         # ── JPY 方向共识 ──
         "JPY_CONSENSUS_MIN": 2,

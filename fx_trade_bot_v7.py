@@ -199,6 +199,7 @@ MAX_OPEN_LOW_VOL = cfg(P, "MAX_OPEN_LOW_VOL", 1)     # majors
 # ── JPY 方向共识 ──
 JPY_CONSENSUS_MIN = cfg(P, "JPY_CONSENSUS_MIN", 2)
 JPY_MAX_OPEN_PER_RUN = cfg(P, "JPY_MAX_OPEN_PER_RUN", 2)
+MAX_OPEN_PER_RUN = cfg(P, "MAX_OPEN_PER_RUN", 999)
 
 # ── 货币对波动分组（已排除 NZD/CAD/CHF） ──
 HIGH_VOL = {"EURJPY", "GBPJPY", "USDJPY", "AUDJPY"}
@@ -1190,6 +1191,10 @@ def main():
         # ✅ MAX_OPEN guard — 执行层面硬性限制
         if open_count_this_run >= slots_available:
             logger.info(f"⏸️ slots exhausted ({open_count_this_run}/{slots_available}) — stopping")
+            break
+        # ✅ Per-run cap — 每次最多开 N 个（Profile4 不梭哈）
+        if open_count_this_run >= MAX_OPEN_PER_RUN:
+            logger.info(f"⏸️ per-run cap hit ({open_count_this_run}/{MAX_OPEN_PER_RUN}) — stopping")
             break
 
         # 🎯 JPY 方向共识白名单
