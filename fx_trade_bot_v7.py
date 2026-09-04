@@ -1069,6 +1069,7 @@ def main():
             ema100_buffer_pips=EMA100_BUFFER_PIPS,
         )
         if not allow_entry:
+            logger.info(f"⏭️ {pair}: TREND FILTER 拒绝 — {tp_info}")
             continue
 
         # SL & TP
