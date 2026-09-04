@@ -153,7 +153,7 @@ PROFILE_CFG = {
         "TOP_PAIRS_MIN_GAP": 0.25,
         # ── MC ──
         "SKIP_MC": False,
-        "EXCLUDE_CURRENCIES": ["NZD", "CAD", "CHF", "JPY"],  # 🚫 不碰 NZD/CAD/CHF
+        # "EXCLUDE_CURRENCIES": ["NZD", "CAD", "CHF", "JPY"],  # 🚫 不碰 NZD/CAD/CHF
     },
     "profile3": {
         "LABEL": "PROFILE3",
@@ -210,7 +210,7 @@ PROFILE_CFG = {
         "SKIP_MC": False,
         "SL_ZONE_TRAILING": True,
         # ── Pair Exclusion ──
-        "EXCLUDE_CURRENCIES": [],
+        # "EXCLUDE_CURRENCIES": [],
     },
     # ✅ ─── Profile4 / Account004 · DEMO 全新独立 ───
     "profile4": {
@@ -283,7 +283,7 @@ PROFILE_CFG = {
         # ── MC ──
         "SKIP_MC": False,
         # ── Pair Exclusion ──
-        "EXCLUDE_CURRENCIES": [],
+        # "EXCLUDE_CURRENCIES": [],
     },
 }
 

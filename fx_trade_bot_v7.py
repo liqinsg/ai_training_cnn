@@ -370,7 +370,7 @@ def main():
     logger.info(f"\n🤖 RUN v6.8.6 {PROFILE_LABEL} — {ACCOUNT_NAME} | "
                 f"FILTERS={'ON' if TREND_FILTER_ENABLED else 'OFF'} | "
                 f"EMA100_WK={'ON' if WEEK_EMA100_FILTER_ENABLED else 'OFF'} | "
-                f"{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')} | MAX_OPEN={MAX_OPEN_POSITIONS}")
+                f"{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')} | MAX OPEN POSITIONS={MAX_OPEN_POSITIONS}")
     logger.info(f"🔑 OANDA Account ID: {OANDA_ACCOUNT_ID}")
 
     if forex_market_closed(): return
