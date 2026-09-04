@@ -959,6 +959,7 @@ class DynamicPositionManager:
         sl_zone_lookback: int = 6,
         use_h4_escale: bool = False,
         tp_link_sl: bool = False,
+        instrument_overrides: dict | None = None,
     ):
         self.api = api
         self.account_id = account_id
@@ -977,6 +978,7 @@ class DynamicPositionManager:
         self.sl_zone_lookback = sl_zone_lookback
         self.use_h4_escale = use_h4_escale
         self.tp_link_sl = tp_link_sl
+        self.instrument_overrides = instrument_overrides or {}
 
     def _get_open_trades(self, instrument: str):
         try:
@@ -1011,13 +1013,14 @@ class DynamicPositionManager:
             logger.warning(f"  ⚠️ Price fetch failed for {instrument}: {e}")
             return None
 
-    def _recalc_zone_sl(self, oanda_inst, side, pip) -> float | None:
+    def _recalc_zone_sl(self, oanda_inst, side, pip, gran_override=None) -> float | None:
         try:
             from oandapyV20.endpoints.instruments import InstrumentsCandles
+            _gran = gran_override or "H4"
             resp = self.api.request(
                 InstrumentsCandles(
                     instrument=oanda_inst,
-                    params={"granularity": "H4", "count": self.sl_zone_lookback + 1, "price": "M"},
+                    params={"granularity": _gran, "count": self.sl_zone_lookback + 1, "price": "M"},
                 )
             )
             candles = resp.get("candles", [])
@@ -1102,7 +1105,7 @@ class DynamicPositionManager:
 
     def update_all(self, pair_data: dict, close_position_fn=None):
         BAR_HOURS = {"15m": 0.25, "1H": 1, "H4": 4, "D": 24}
-        bar_hours = 4 if self.use_h4_escale else BAR_HOURS.get(self.timeframe, 4)
+        bar_hours_default = 4 if self.use_h4_escale else BAR_HOURS.get(self.timeframe, 4)
         pip_size_map = lambda p: 0.01 if "JPY" in p.upper() else 0.0001
 
         for pair, info in pair_data.items():
@@ -1111,7 +1114,14 @@ class DynamicPositionManager:
             if df is None or len(df) < 2:
                 continue
 
-            atr_val = self._h4_atr(instrument) if self.use_h4_escale else df.iloc[-1].get("atr")
+            # ── Per-instrument override ──
+            _ov = self.instrument_overrides.get(instrument, {})
+            _bar_hours = _ov.get("bar_hours", bar_hours_default)
+            _max_hold = _ov.get("max_hold", self.max_hold)
+            _sl_gran = _ov.get("sl_granularity", None)
+            _use_d1_close_only = _ov.get("confirm_on_close", False)
+
+            atr_val = self._h4_atr(instrument) if self.use_h4_escale and not _ov else df.iloc[-1].get("atr")
             if atr_val is None or np.isnan(atr_val) or atr_val <= 0:
                 continue
 
@@ -1153,11 +1163,11 @@ class DynamicPositionManager:
                 bars_held = (
                     (datetime.now(timezone.utc) - open_time).total_seconds()
                     / 3600
-                    / bar_hours
+                    / _bar_hours
                 )
 
                 # ⏰ Time-based exit
-                if bars_held >= self.max_hold:
+                if bars_held >= _max_hold:
                     logger.info(
                         f"⏰ TIME EXIT: {pair} trade {tid} held {bars_held:.1f} bars"
                     )
@@ -1205,7 +1215,7 @@ class DynamicPositionManager:
 
                 if profit_pips >= trail_pips:
                     if self.zone_trailing:
-                        cand = self._recalc_zone_sl(instrument, side, pip)
+                        cand = self._recalc_zone_sl(instrument, side, pip, gran_override=_sl_gran)
                         if cand is not None:
                             cand = round(cand, decimals)
                             favorable = (
