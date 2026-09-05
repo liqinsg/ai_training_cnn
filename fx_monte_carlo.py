@@ -16,6 +16,7 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -71,17 +72,16 @@ else:
     REPORT_TITLE = "FX DAILY MONTE CARLO UPDATE"
 
 # ==========================================
-# 🛡️ MARKET STATUS CHECK
+# 🛡️ MARKET STATUS — FAST SCHEDULE EXIT (London TZ, zero API cost)
 # ==========================================
 def forex_market_closed():
-    try:
-        from oandapyV20.endpoints.instruments import InstrumentsCandles
-        resp = api.request(InstrumentsCandles(
-            instrument="EUR_USD", params={"count": 1, "granularity": OANDA_GRANULARITY}
-        ))
-        return not bool(resp.get("candles"))
-    except Exception:
-        return False
+    now = datetime.now(ZoneInfo("Europe/London"))
+    wd = now.weekday()
+    return (
+        wd == 5                      # Saturday all-day
+        or (wd == 6 and now.hour < 21)   # Sunday before 21:00 London
+        or (wd == 4 and now.hour >= 21)  # Friday after 21:00 London
+    )
 
 if forex_market_closed():
     msg = f"⏸️ FX {TF} MC: Market closed — skipped"

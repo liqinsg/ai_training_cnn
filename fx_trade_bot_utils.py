@@ -5,6 +5,7 @@ import json
 import logging
 from pathlib import Path
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 import numpy as np
 import pandas as pd
 from telegram_message import send_telegram_message
@@ -229,6 +230,19 @@ def save_cooldown(cooldown_file: Path, state: dict):
 
 # ============================================================================
 # MARKET STATUS CHECK
+def forex_market_closed_schedule() -> bool:
+    """Check if forex market is closed via London-time schedule (zero API cost).
+    Friday 21:00 London close → Sunday 21:00 London open = market closed.
+    """
+    now = datetime.now(ZoneInfo("Europe/London"))
+    wd = now.weekday()
+    return (
+        wd == 5                      # Saturday all-day
+        or (wd == 6 and now.hour < 21)   # Sunday before 21:00 London
+        or (wd == 4 and now.hour >= 21)  # Friday after 21:00 London
+    )
+
+
 def forex_market_closed(api, oanda_account_id: str, oanda_granularity: str) -> bool:
     """Check if forex market is closed via recent candle availability."""
     try:
@@ -247,7 +261,7 @@ def forex_market_closed(api, oanda_account_id: str, oanda_granularity: str) -> b
 # ============================================================================
 # POSITION HELPERS
 # ============================================================================
-def attach_tp_to_open_positions(engine, instrument=None):
+def attach_tp_to_open_positions(engine, instrument=None, dry_run: bool = False):
     """
     Scan open positions → attach FIXED TP if missing
     Call this at bot startup to ensure ALL positions have TP
@@ -273,6 +287,8 @@ def attach_tp_to_open_positions(engine, instrument=None):
     for trade in trades:
         tid = trade["id"]
         inst = trade["instrument"]
+        if instrument and inst != instrument:
+            continue
         current_tp = trade.get("takeProfitOrder", {}).get("price")
         units = float(trade["currentUnits"])
         entry_price = float(trade["price"])
@@ -300,6 +316,10 @@ def attach_tp_to_open_positions(engine, instrument=None):
 
         # Send TP update to OANDA
         data = {"takeProfit": {"price": f"{tp_price}", "timeInForce": "GTC"}}
+        if dry_run:
+            logger.info(f"🧊 DRY-RUN — would ATTACH TP: {inst} trade={tid} → {tp_price}")
+            attached_count += 1
+            continue
         try:
             client.request(TradeCRCDO(account_id, tid, data=data))
             attached_count += 1
@@ -546,6 +566,7 @@ def open_oanda_order(
     max_sl_pct: float = 0.03,
     telegram_send=None,
     cfg=None,
+    dry_run: bool = False,
 ) -> dict:
     """Open order with SL/TP logic and safety guards."""
 
@@ -595,6 +616,10 @@ def open_oanda_order(
         err = f"SL GUARD BLOCKED {pair_raw}: SL {sl} <= entry {entry} for SHORT"
         logger.error(err)
         return {"status": "ERROR", "message": err}
+
+    if dry_run:
+        logger.info(f"🧊 DRY-RUN — would OPEN: {pair_raw} {action} | SL={sl:.{dec}f} TP={tp:.{dec}f}")
+        return {"ok": True, "status": "DRY_RUN", "instrument": pair_raw, "direction": action}
 
     # ✅ STEP 1: Send MARKET order WITHOUT attached SL/TP
     order_payload = {
@@ -1306,6 +1331,7 @@ class DynamicPositionManager_v2:
         dynamic_tp: bool = True,
         tp_raise_thresh_pips: int = 15,
         telegram_send=None,
+        dry_run: bool = False,
     ):
         self.api = api
         self.account_id = account_id
@@ -1320,6 +1346,7 @@ class DynamicPositionManager_v2:
         self.dynamic_tp = dynamic_tp
         self.tp_thresh_pips = tp_raise_thresh_pips
         self.telegram = telegram_send
+        self.dry_run = dry_run
 
     def _get_open_trades(self, instrument: str):
         try:
@@ -1345,6 +1372,9 @@ class DynamicPositionManager_v2:
             return None
 
     def _update_trade_sl(self, trade_id: str, new_sl: float, decimals: int):
+        if self.dry_run:
+            logger.info(f"🧊 DRY-RUN — would MOVE SL: trade={trade_id} → {round(new_sl, decimals)}")
+            return True
         try:
             data = {
                 "stopLoss": {
@@ -1373,6 +1403,7 @@ class DynamicPositionManager_v2:
             instrument,
             new_tp,
             send_telegram=self.telegram,
+            dry_run=self.dry_run,
         )
 
     def update_all(self, pair_data: dict, close_position_fn=None):

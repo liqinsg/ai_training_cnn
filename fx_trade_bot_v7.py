@@ -20,7 +20,6 @@ import numpy as np, pandas as pd
 # load_profile() 是唯一入口。内部完成所有装配：PROFILE_CFG 模板 + 全局常量 merge + 全局共享资源注入
 from config_bot import load_profile, cfg
 
-from utils.trading_core import forex_market_closed
 from utils.strategy_helpers import build_strength_matrix, format_strength_ranking, get_live_prices
 from telegram_message import send_telegram_message
 from oandapyV20.endpoints.instruments import InstrumentsCandles
@@ -29,7 +28,7 @@ from data_pipeline import FeatureConfig, FeatureEngine, ModelWrapper, DataFetche
 from fx_trade_bot_utils import (
     pip_size, load_cooldown, get_open_position, close_position, fetch_candles,
     open_oanda_order_simple as open_oanda_order, DynamicPositionManager, load_mc_legacy,
-    calculate_stop_loss,
+    calculate_stop_loss, forex_market_closed_schedule as forex_market_closed,
 )
 from fx_trade_bot_mc import MCGenerator, MCConfig
 from fx_trade_bot_ml import ensure_model
@@ -49,6 +48,7 @@ parser.add_argument("--confluence", action="store_true", default=None)
 parser.add_argument("--no-confluence", action="store_false", dest="confluence")
 parser.add_argument("--skip-mc", action="store_true")
 parser.add_argument("--mc-only", action="store_true")
+parser.add_argument("--dry-run", action="store_true", default=False, help="Dry-run: show actions, NO real orders")
 args = parser.parse_args()
 
 
@@ -352,6 +352,7 @@ def main():
     logger.info(f"\n🤖 RUN v6.8.6 {PROFILE_LABEL} — {ACCOUNT_NAME} | "
                 f"FILTERS={'ON' if TREND_FILTER_ENABLED else 'OFF'} | "
                 f"EMA100_WK={'ON' if WEEK_EMA100_FILTER_ENABLED else 'OFF'} | "
+                f"DRY-RUN={'ON 🧊' if args.dry_run else 'OFF LIVE'} | "
                 f"{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')} | MAX OPEN POSITIONS={MAX_OPEN_POSITIONS}")
     logger.info(f"🔑 OANDA Account ID: {OANDA_ACCOUNT_ID}")
 
@@ -455,13 +456,14 @@ def main():
 
     # Step 5 — Dynamic Exit Manager
     logger.info("[STEP 5] Dynamic Exit Manager...")
-    def close_wrap(instr): return close_position(api, OANDA_ACCOUNT_ID, instr, send_telegram_message)
+    def close_wrap(instr): return close_position(api, OANDA_ACCOUNT_ID, instr, send_telegram_message, dry_run=args.dry_run)
     dyn_mgr = DynamicPositionManager(
         api, OANDA_ACCOUNT_ID, TIMEFRAME,
         cfg(P, "BE_TRIGGER_ATR_MULT", 1.5), cfg(P, "TRAIL_TRIGGER_ATR_MULT", 2.5),
         cfg(P, "TRAIL_ATR_MULT", 1.5), cfg(P, "MAX_HOLD_BARS", 12),
         dynamic_tp=DYNAMIC_TP, tp_raise_thresh_pips=TP_RAISE_THRESHOLD_PIPS,
         telegram_send=send_telegram_message,
+        dry_run=args.dry_run,
         # ✅ Zone trailing (Profile3)
         zone_trailing=cfg(P, "SL_ZONE_TRAILING", False),
         min_sl_step_pips=cfg(P, "SL_MIN_MOVE_PIPS", 15),
@@ -617,6 +619,7 @@ def main():
                 direction, lot,
                 sl_price=sl_price,
                 tp_price=tp_price,
+                dry_run=args.dry_run,
             )
             executed_in_this_run.add(oanda)
             executed_count += 1

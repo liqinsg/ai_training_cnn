@@ -11,6 +11,7 @@ import pandas as pd
 import pickle
 from pathlib import Path
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 import xgboost as xgb
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score, roc_auc_score
@@ -203,6 +204,18 @@ if __name__ == "__main__":
     logger.info("=" * 60)
     logger.info("🚀 XGBOOST MODEL RETRAINING — FRESH DATA")
     logger.info("=" * 60)
+
+    # 🛡️ MARKET STATUS — FAST SCHEDULE EXIT (London TZ, zero API cost)
+    _now = datetime.now(ZoneInfo("Europe/London"))
+    _wd = _now.weekday()
+    _market_closed = (
+        _wd == 5                        # Saturday all-day
+        or (_wd == 6 and _now.hour < 21)   # Sunday before 21:00 London
+        or (_wd == 4 and _now.hour >= 21)  # Friday after 21:00 London
+    )
+    if _market_closed:
+        logger.info("⏸️ Market closed — skip retraining")
+        raise SystemExit(0)
 
     df = fetch_all_data()
     model, features = train_model(df)

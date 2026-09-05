@@ -59,7 +59,7 @@ def get_open_position(instrument: str):
     )
 
 
-def attach_sl_tp_to_open_trade(signal, instrument: str | None = None) -> bool:
+def attach_sl_tp_to_open_trade(signal, instrument: str | None = None, dry_run: bool = False) -> bool:
     instrument = instrument or signal.pair_to_trade
     position = get_open_position(instrument)
     if not position:
@@ -71,14 +71,19 @@ def attach_sl_tp_to_open_trade(signal, instrument: str | None = None) -> bool:
     if not trade_ids:
         return False
     trade_id = trade_ids[0]
+    sl_str = format_price_for_instrument(signal.stop_loss, instrument)
+    tp_str = format_price_for_instrument(signal.take_profit, instrument)
+    if dry_run:
+        print(f"[DRY-RUN] Would attach SL/TP to {instrument} trade={trade_id} SL={sl_str} TP={tp_str}")
+        return True
     trades_mod = importlib.import_module("oandapyV20.endpoints.trades")
     payload = {
         "stopLoss": {
-            "price": format_price_for_instrument(signal.stop_loss, instrument),
+            "price": sl_str,
             "timeInForce": "GTC",
         },
         "takeProfit": {
-            "price": format_price_for_instrument(signal.take_profit, instrument),
+            "price": tp_str,
             "timeInForce": "GTC",
         },
     }
@@ -133,7 +138,7 @@ def get_recent_range(
         return None
 
 
-def execute_market_trade(signal, units_override=None):
+def execute_market_trade(signal, units_override=None, dry_run: bool = False):
     if not signal or signal.action == "HOLD":
         print("[EXEC] No action")
         return False
@@ -160,8 +165,6 @@ def execute_market_trade(signal, units_override=None):
             print("[EXEC] Invalid SL/TP")
             return False
     except Exception as e:
-        # FIX: a failed price check must abort the trade, not silently
-        # skip validation and continue to order submission.
         print(f"[PRICE CHECK] {e}")
         return False
 
@@ -170,22 +173,27 @@ def execute_market_trade(signal, units_override=None):
         if signal.action == "BUY"
         else -(units_override or 10000)
     )
+    pair = signal.pair_to_trade
+    sl_str = format_price_for_instrument(signal.stop_loss, pair)
+    tp_str = format_price_for_instrument(signal.take_profit, pair)
+    if dry_run:
+        print(
+            f"[DRY-RUN] Would {signal.action} {pair} units={units} "
+            f"SL={sl_str} TP={tp_str}"
+        )
+        return True
     orders_mod = importlib.import_module("oandapyV20.endpoints.orders")
     payload = {
         "order": {
             "units": str(units),
-            "instrument": signal.pair_to_trade,
+            "instrument": pair,
             "timeInForce": "FOK",
             "type": "MARKET",
             "stopLossOnFill": {
-                "price": format_price_for_instrument(
-                    signal.stop_loss, signal.pair_to_trade
-                )
+                "price": sl_str
             },
             "takeProfitOnFill": {
-                "price": format_price_for_instrument(
-                    signal.take_profit, signal.pair_to_trade
-                )
+                "price": tp_str
             },
             "clientExtensions": {
                 "comment": signal.reasoning[:128],
@@ -198,9 +206,9 @@ def execute_market_trade(signal, units_override=None):
         if "orderFillTransaction" in resp:
             fill = resp["orderFillTransaction"]
             print(
-                f"[EXEC] Filled {signal.action} {signal.pair_to_trade} @ {fill.get('price')} (order id {fill.get('id')})"
+                f"[EXEC] Filled {signal.action} {pair} @ {fill.get('price')} (order id {fill.get('id')})"
             )
-            attach_sl_tp_to_open_trade(signal)
+            attach_sl_tp_to_open_trade(signal, dry_run=dry_run)
             return True
         else:
             print(f"[EXEC] Order sent but no fill transaction in response: {resp}")
@@ -369,7 +377,7 @@ def get_latest_price(instrument: str) -> float | None:
         return None
 
 
-def close_position(instrument: str) -> bool:
+def close_position(instrument: str, dry_run: bool = False) -> bool:
     positions_mod = importlib.import_module("oandapyV20.endpoints.positions")
 
     try:
@@ -400,6 +408,10 @@ def close_position(instrument: str) -> bool:
 
         if short_units < 0:
             payload["shortUnits"] = str(abs(short_units))
+
+        if dry_run:
+            print(f"[DRY-RUN] Would CLOSE {instrument} payload={payload}")
+            return True
 
         req = positions_mod.PositionClose(
             accountID=OANDA_ACCOUNT_ID,
