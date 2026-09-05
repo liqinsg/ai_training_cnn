@@ -1,11 +1,18 @@
 # utils/oanda_execution.py — 100% MATCHES YOUR OUTPUT
 import time
+import os
 from oandapyV20.endpoints.orders import OrderCreate
 import oandapyV20
-from config_oanda import OANDA_ACCOUNT_ID, OANDA_ENV, OANDA_API_TOKEN
 from oandapyV20.endpoints.accounts import AccountSummary
+from config_bot import load_profile, cfg
 
-api = oandapyV20.API(access_token=OANDA_API_TOKEN, environment=OANDA_ENV)
+# ✅ 铁律：任何 utils 不得直接 import config_oanda
+# 统一从 config_bot.load_profile() → P → cfg(P,key) 获取连接对象与账号信息
+_DEFAULT_PROFILE = os.getenv("FX_PROFILE", "profile2")
+P = load_profile(_DEFAULT_PROFILE)
+
+api = cfg(P, "OANDA_API")
+OANDA_ACCOUNT_ID = cfg(P, "OANDA_ACCOUNT_ID")
 
 def check_oanda_account(account_id: str = None):
     try:

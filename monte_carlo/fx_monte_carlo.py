@@ -1,9 +1,9 @@
-# fx_monte_carlo_v1.py
+#!/usr/bin/env python3
 """
 FX MONTE CARLO ENGINE — DAILY + H4 UNIFIED
 ✅ Usage:
-   python fx_monte_carlo.py --timeframe D
    python fx_monte_carlo.py --timeframe H4
+   python fx_monte_carlo.py --timeframe D
 ✅ Auto‑scales lookback / forecast / drift‑vol per timeframe
 ✅ Market‑closed skip per timeframe
 ✅ Consistent JSON output for trading bot
@@ -55,11 +55,11 @@ if TF == "H4":
     YF_PERIOD_RESAMPLE = "60d"
     LOOKBACK = cfg("H4_LOOKBACK", 90)
     FORECAST = cfg("H4_FORECAST", 8)
-    PERIODS_YEAR = 252 * 6
-    DT_SCALE = 6
+    PERIODS_YEAR = 252 * 6   # ~6× daily bars
+    DT_SCALE = 6             # H4 = 6 per day
     OANDA_GRANULARITY = "H4"
     REPORT_TITLE = "FX H4 MONTE CARLO UPDATE"
-else:
+else:  # DAILY
     YF_INTERVAL = "1d"
     YF_PERIOD_FULL = "120d"
     YF_PERIOD_RESAMPLE = "180d"
@@ -71,7 +71,7 @@ else:
     REPORT_TITLE = "FX DAILY MONTE CARLO UPDATE"
 
 # ==========================================
-# 🛡️ MARKET STATUS CHECK
+# 🛡️ MARKET STATUS CHECK (PER TIMEFRAME)
 # ==========================================
 def forex_market_closed():
     try:
@@ -93,12 +93,14 @@ if forex_market_closed():
 # 📥 DATA FETCH — AUTO‑RESAMPLE FALLBACK
 # ==========================================
 def fetch_data(pair: str) -> pd.DataFrame:
+    """Fetch desired interval; fall back to lower TF → resample if needed."""
     try:
         df = yf.download(pair, period=YF_PERIOD_FULL, interval=YF_INTERVAL, progress=False)
         if len(df) >= LOOKBACK:
             return df[["Open","High","Low","Close"]].dropna()
     except Exception:
         pass
+    # Fallback: fetch finer data then resample
     try:
         fallback_interval = "1h" if TF == "H4" else "4h"
         df = yf.download(pair, period=YF_PERIOD_RESAMPLE, interval=fallback_interval, progress=False)
@@ -112,7 +114,7 @@ def fetch_data(pair: str) -> pd.DataFrame:
         return pd.DataFrame()
 
 # ==========================================
-# 🧠 UNIFIED PROBABILITY ENGINE — WARNING FIXED
+# 🧠 UNIFIED PROBABILITY ENGINE
 # ==========================================
 def run_mc(pair: str):
     df = fetch_data(pair)
@@ -120,7 +122,6 @@ def run_mc(pair: str):
         return None, False
 
     closes = df["Close"].values[-LOOKBACK:]
-    # ✅ FIXED: extract scalar properly — no deprecation warning
     current = float(closes[-1].item())
     log_returns = np.log(closes[1:] / closes[:-1])
 
@@ -147,6 +148,7 @@ def run_mc(pair: str):
     touch_upper = round((np.any(paths >= upper, axis=1).sum() / SIMULATIONS) * 100, 1)
     touch_lower = round((np.any(paths <= lower, axis=1).sum() / SIMULATIONS) * 100, 1)
 
+    # Regime labeling (auto‑adjusts to TF)
     if percentile >= 85 and p_down > 55:
         regime = f"🔴 {TF} OVERBOUGHT | Mean‑Reversion Risk"
     elif percentile <= 15 and p_up > 55:
@@ -181,7 +183,7 @@ def run_mc(pair: str):
     }, True
 
 # ==========================================
-# 📤 TELEGRAM REPORT
+# 📤 TELEGRAM REPORT — AUTO‑ADAPT TO TF
 # ==========================================
 def build_telegram(results: list) -> str:
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")

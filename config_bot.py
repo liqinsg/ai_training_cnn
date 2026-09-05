@@ -1,4 +1,4 @@
-# config_bot.py — v6.8.6 · UNIFIED STRATEGY CONFIG
+# config_bot.py — v7 · UNIFIED STRATEGY CONFIG
 """
 ALL strategy/profile settings in ONE file.
 OANDA API/connection → config_oanda.py (KEPT SEPARATE)
@@ -6,6 +6,11 @@ OANDA API/connection → config_oanda.py (KEPT SEPARATE)
 Purpose: Strategy & profile parameters ONLY.
 Connection tokens/env → config_oanda.py (runtime config)
 """
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
 
 # ==========================================
 # GLOBAL DEFAULTS — shared across profiles
@@ -90,10 +95,67 @@ TRAIN_LOOKBACK_BARS = 5000
 # ==========================================
 # 🔑 ACCOUNT IDs ONLY — reference config_oanda connection
 # ==========================================
+from config_oanda import api as OANDA_API
 from config_oanda import (
     OANDA_ACCOUNT_ID_2 as OANDA_ACCOUNT_ID_PROFILE2,
     OANDA_ACCOUNT_ID_3 as OANDA_ACCOUNT_ID_PROFILE3,
     OANDA_ACCOUNT_ID_4 as OANDA_ACCOUNT_ID_PROFILE4,
+)
+
+# ==========================================
+# ✅ 明确常量清单（禁止遍历 dir() 猜测合并）
+# ==========================================
+# 铁律：load_profile() 只能合并这些明确列出的 key，避免“扫一遍模块变量就塞进 P”的不可控行为。
+_GLOBAL_CONSTANT_KEYS: tuple[str, ...] = (
+    # pairs / mapping
+    "ALL_PAIRS",
+    "YAHOO_TO_OANDA",
+    # yfinance
+    "YF_INTERVAL",
+    "YF_PERIOD_FULL",
+    "YF_PERIOD_RESAMPLE",
+    "YF_INTERVAL_D",
+    "YF_PERIOD_FULL_D",
+    "YF_PERIOD_RESAMPLE_D",
+    # MC
+    "PERIODS_YEAR",
+    "MC_BAND_PCT",
+    "MC_MAX_AGE_HOURS",
+    "SIMULATIONS",
+    "CONFIDENCE",
+    # ATR / SLTP
+    "ATR_PERIOD",
+    "BASE_TP_PIPS",
+    "EMA100_BUFFER_PIPS",
+    "MIN_SL_PIPS",
+    "MIN_SL_PIPS_JPY",
+    # runtime flags
+    "DEBUG_MODE",
+    "NO_COOLDOWN",
+    "DEFAULT_LOT_SIZE",
+    # confluence
+    "MULTI_TF_CONFLUENCE",
+    "CONFLUENCE_REQUIRED_TFS",
+    # dynamic tp
+    "TRAILING_TP",
+    "DYNAMIC_TP",
+    "TP_RAISE_THRESHOLD_PIPS",
+    # lookback / forecast
+    "H4_LOOKBACK",
+    "H4_FORECAST",
+    "DAILY_LOOKBACK",
+    "DAILY_FORECAST",
+    # feature / model
+    "USE_ATR",
+    "USE_MACD",
+    "USE_RSI",
+    "USE_ADX",
+    "MODEL_TYPE",
+    "TARGET_HORIZON",
+    "TRAIN_LOOKBACK_BARS",
+    # shared resources
+    "D_STRATEGY_GROUPS",
+    "EXCLUDE_CURRENCIES_GLOBAL",
 )
 
 # ==========================================
@@ -325,21 +387,19 @@ EXCLUDE_CURRENCIES_GLOBAL = [
 def load_profile(profile_name: str) -> dict:
     import copy
 
+    base_dir = Path(__file__).resolve().parent
+
     # ── Step 1: 取模板 + 深拷贝，不污染原 PROFILE_CFG ──
     template = PROFILE_CFG.get(profile_name, PROFILE_CFG["profile2"])
-    final = copy.deepcopy(template)
+    final: dict[str, Any] = copy.deepcopy(template)
 
-    # ── Step 2: merge 模块级全局常量（原来 cfg() 第二层 fallback）──
-    for key in dir(cfg_base := __import__(__name__)):
-        if key.startswith("_"):
+    # ── Step 2: merge 明确列出的模块级全局常量（禁止 dir() 猜测合并） ──
+    for key in _GLOBAL_CONSTANT_KEYS:
+        if key in final:
             continue
-        if key.upper() != key:
-            continue  # 只 merge 全大写常量
-        if key not in final:
-            final[key] = getattr(cfg_base, key)
+        final[key] = globals()[key]
 
-    # ── Step 3: 注入全局共享资源 ──
-    # profile3 启用 Daily 分组
+    # ── Step 3: 注入全局共享资源（集中声明哪些 profile 启用哪些资源） ──
     if profile_name == "profile3":
         final["INSTRUMENT_OVERRIDES"] = D_STRATEGY_GROUPS
         final["EXCLUDE_CURRENCIES"] = list(EXCLUDE_CURRENCIES_GLOBAL)
@@ -347,4 +407,23 @@ def load_profile(profile_name: str) -> dict:
         final["INSTRUMENT_OVERRIDES"] = {}
         final["EXCLUDE_CURRENCIES"] = []
 
+    # ── Step 4: 注入外部客户端/连接（只在 config_bot 触碰 config_oanda） ──
+    final["OANDA_API"] = OANDA_API
+
+    # ── Step 5: 统一路径装配（避免各文件重复算 BASE_DIR / 拼路径） ──
+    final["BASE_DIR"] = base_dir
+    final["PROFILE_NAME"] = profile_name
+    final["COOLDOWN_FILE_PATH"] = base_dir / final.get("COOLDOWN_FILE", f"cooldown_{profile_name}.json")
+    final["RESULTS_DIR_PATH"] = base_dir / final.get("RESULTS_DIR", f"daily_results_{profile_name}")
+
     return final
+
+
+def cfg(P: dict, key: str, default: Any = None) -> Any:
+    """
+    唯一读取入口：cfg(P, key)
+    铁律：业务侧不允许直接 import 常量，不允许直接访问 config 层的模块变量。
+    """
+    if P is None:
+        return default
+    return P.get(key, default)

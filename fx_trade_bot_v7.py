@@ -13,13 +13,12 @@
         python fx_trade_bot_v7.py --profile3 --trend-filter-enabled false
 """
 import contextlib, sys, logging, argparse, os
-from pathlib import Path
 from datetime import datetime, timezone
 import numpy as np, pandas as pd
 
 # ─── ✅ ONLY ONE CONFIG IMPORT ───
 # load_profile() 是唯一入口。内部完成所有装配：PROFILE_CFG 模板 + 全局常量 merge + 全局共享资源注入
-from config_bot import load_profile
+from config_bot import load_profile, cfg
 
 from utils.trading_core import forex_market_closed
 from utils.strategy_helpers import build_strength_matrix, format_strength_ranking, get_live_prices
@@ -34,20 +33,10 @@ from fx_trade_bot_utils import (
 )
 from fx_trade_bot_mc import MCGenerator, MCConfig
 from fx_trade_bot_ml import ensure_model
-from config_oanda import api
 
 # ─── ✅ 使用统一日志配置 ──────────────────────────────────────────────────────
 from utils.logging_utils import get_logger
-logger = get_logger()   # 全局 "fx_bot" 日志器，自动带文件+控制台双输出
-
-BASE_DIR = Path(__file__).resolve().parent
-sys.path.extend([str(BASE_DIR), str(BASE_DIR / "utils")])
-
-# ─── HELPER: Profile-aware config lookup ─────────────────────────────────────
-# load_profile() 已把 profile 模板 + config 全局常量 + 全局资源 全部 merge 进 P
-# 所以这里就是纯 get，三层 fallback 已内化到 config_bot.load_profile()
-def cfg(profile_dict, key, default=None):
-    return profile_dict.get(key, default)
+logger = get_logger(__name__)  # 统一从 logging_utils 获取（禁止 basicConfig/重复 handler）
 
 # ─── PARSE ARGS & SELECT PROFILE ─────────────────────────────────────────────
 parser = argparse.ArgumentParser(description="FX Trading Bot v7 · Unified Config")
@@ -73,12 +62,16 @@ else:
 
 P = load_profile(PROFILE_NAME)  # 唯一入口 — 内部装配好一切
 
+# ─── 从 P 分发所有“基础资源/连接/路径” ─────────────────────────────────────────
+BASE_DIR = cfg(P, "BASE_DIR")
+api = cfg(P, "OANDA_API")
+
 # ─── Resolve core identity ──────────────────────────────────────────────────
 OANDA_ACCOUNT_ID = cfg(P, "OANDA_ACCOUNT_ID")
 PROFILE_LABEL = cfg(P, "LABEL", PROFILE_NAME.upper())
 ACCOUNT_NAME = cfg(P, "ACCOUNT_NAME", "Unknown")
-COOLDOWN_FILE = BASE_DIR / cfg(P, "COOLDOWN_FILE", f"cooldown_{PROFILE_NAME}.json")
-RESULTS_DIR = BASE_DIR / cfg(P, "RESULTS_DIR", f"daily_results_{PROFILE_NAME}")
+COOLDOWN_FILE = cfg(P, "COOLDOWN_FILE_PATH")
+RESULTS_DIR = cfg(P, "RESULTS_DIR_PATH")
 
 if not OANDA_ACCOUNT_ID or len(OANDA_ACCOUNT_ID) < 10 or "-" not in OANDA_ACCOUNT_ID:
     logger.critical(f"💥 FATAL: Invalid OANDA_ACCOUNT_ID = '{OANDA_ACCOUNT_ID}'")
@@ -138,7 +131,7 @@ W_X = cfg(P, "WEIGHT_XGB", 0.20)
 W_M = cfg(P, "WEIGHT_MC", 0.10)
 _WEIGHT_SUM = W_S + W_R + W_A + W_X + W_M
 if abs(_WEIGHT_SUM - 1.00) > 0.001:
-    logging.warning(f"⚠️ Weight sum = {_WEIGHT_SUM:.4f} ≠ 1.00 — normalizing")
+    logger.warning(f"⚠️ Weight sum = {_WEIGHT_SUM:.4f} ≠ 1.00 — normalizing")
     W_S, W_R, W_A, W_X, W_M = [w / _WEIGHT_SUM for w in [W_S, W_R, W_A, W_X, W_M]]
 
 CONSENSUS_THRESHOLD = cfg(P, "CONSENSUS_THRESHOLD", 2)
@@ -149,9 +142,9 @@ MIN_STRENGTH_GAP = cfg(P, "MIN_SCORE_GAP", 0.10)
 USE_DYNAMIC_SL   = cfg(P, "USE_DYNAMIC_SL", True)
 DYNAMIC_SL_MULT = cfg(P, "DYNAMIC_SL_MULT", 1.5)
 
-# Global base fallbacks
-ALL_PAIRS          = cfg_base.ALL_PAIRS
-YAHOO_TO_OANDA     = cfg_base.YAHOO_TO_OANDA
+# Global base constants（全部来自 P，禁止 cfg_base / 直接 import 常量）
+ALL_PAIRS          = cfg(P, "ALL_PAIRS")
+YAHOO_TO_OANDA     = cfg(P, "YAHOO_TO_OANDA")
 YF_INTERVAL        = cfg(P, "YF_INTERVAL", "4h")
 YF_PERIOD_FULL     = cfg(P, "YF_PERIOD_FULL", "30d")
 YF_PERIOD_RESAMPLE = cfg(P, "YF_PERIOD_RESAMPLE", "60d")
@@ -159,14 +152,14 @@ YF_INTERVAL_D      = cfg(P, "YF_INTERVAL_D", "1d")
 PERIODS_YEAR       = cfg(P, "PERIODS_YEAR", 252)
 MC_MAX_AGE_HOURS   = cfg(P, "MC_MAX_AGE_HOURS", 24)
 MC_BAND_PCT        = cfg(P, "MC_BAND_PCT", 90)
-SIMULATIONS        = cfg(P, "MC_SIMULATIONS", 5000)
-CONFIDENCE         = MC_BAND_PCT / 100.0
+SIMULATIONS        = cfg(P, "SIMULATIONS", 5000)
+CONFIDENCE         = cfg(P, "CONFIDENCE", MC_BAND_PCT / 100.0)
 TRAILING_TP        = cfg(P, "TRAILING_TP", True)
 DYNAMIC_TP         = cfg(P, "DYNAMIC_TP", False)
 TP_RAISE_THRESHOLD_PIPS = cfg(P, "TP_RAISE_THRESHOLD_PIPS", 15)
 MIN_SL_PIPS        = cfg(P, "MIN_SL_PIPS", 35)
 MIN_SL_PIPS_JPY    = cfg(P, "MIN_SL_PIPS_JPY", MIN_SL_PIPS + 10)
-REMOVE_COOLDOWN    = cfg(P, "REMOVE_COOLDOWN", True)
+REMOVE_COOLDOWN    = cfg(P, "NO_COOLDOWN", True)
 DEBUG_MODE         = cfg(P, "DEBUG_MODE", False)
 SKIP_MC            = cfg(P, "SKIP_MC", False)
 MULTI_TF_CONFLUENCE= cfg(P, "MULTI_TF_CONFLUENCE", False)
@@ -177,17 +170,7 @@ if args.confluence is not None:
 
 
 # ─── Logging ─────────────────────────────────────────────────────────────────
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[
-        logging.FileHandler(BASE_DIR / f"bot_{PROFILE_NAME}.log"),
-        logging.StreamHandler(sys.stdout),
-    ],
-)
-# logger = logging.getLogger(__name__)
-# logger.info(logger_info_cli)
-# logger.info(f"⚖️  {PROFILE_LABEL} WEIGHTS: S={W_S:.2f} R={W_R:.2f} A={W_A:.2f} X={W_X:.2f} M={W_M:.2f} | SUM=1.00")
+# 统一日志只能在 utils/logging_utils.py 配置；此处禁止 basicConfig/手动 handler。
 
 
 # ─── Weekly EMA100 & Trend Logic ────────────────────────────────────────────
@@ -478,14 +461,6 @@ def main():
         cfg(P, "BE_TRIGGER_ATR_MULT", 1.5), cfg(P, "TRAIL_TRIGGER_ATR_MULT", 2.5),
         cfg(P, "TRAIL_ATR_MULT", 1.5), cfg(P, "MAX_HOLD_BARS", 12),
         dynamic_tp=DYNAMIC_TP, tp_raise_thresh_pips=TP_RAISE_THRESHOLD_PIPS,
-        telegram_send=send_telegram_message,        
-    )
-
-    dyn_mgr = DynamicPositionManager(
-        api, OANDA_ACCOUNT_ID, TIMEFRAME,
-        cfg(P, "BE_TRIGGER_ATR_MULT", 1.5), cfg(P, "TRAIL_TRIGGER_ATR_MULT", 2.5),
-        cfg(P, "TRAIL_ATR_MULT", 1.5), cfg(P, "MAX_HOLD_BARS", 12),
-        dynamic_tp=DYNAMIC_TP, tp_raise_thresh_pips=TP_RAISE_THRESHOLD_PIPS,
         telegram_send=send_telegram_message,
         # ✅ Zone trailing (Profile3)
         zone_trailing=cfg(P, "SL_ZONE_TRAILING", False),
@@ -496,13 +471,10 @@ def main():
         use_h4_escale=cfg(P, "USE_H4_ESCALE", False),
         tp_link_sl=cfg(P, "TP_LINK_SL", False),
         # ✅ Daily 模式分组（D_STRATEGY_GROUPS · Profile3 专属，以后可推广）
-        instrument_overrides=(D_STRATEGY_GROUPS if PROFILE_NAME == "profile3" else {}),
+        instrument_overrides=cfg(P, "INSTRUMENT_OVERRIDES", {}),
     )
-    
-    oanda_level = logging.getLogger("oandapyV20").level
-    logging.getLogger("oandapyV20").setLevel(logging.CRITICAL)
+
     dyn_mgr.update_all(pair_data, close_wrap)
-    logging.getLogger("oandapyV20").setLevel(oanda_level)
 
     # Step 6 — Scan Open Positions
     open_pos_by_oanda, open_pos_count = {}, 0

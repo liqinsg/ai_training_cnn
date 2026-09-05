@@ -37,8 +37,9 @@ console_handler.setFormatter(logging.Formatter(LOG_FORMAT, datefmt=DATE_FORMAT))
 console_handler.setLevel(logging.INFO)
 
 # ─── Attach ───
-logger.addHandler(file_handler)
-logger.addHandler(console_handler)
+if not logger.handlers:
+    logger.addHandler(file_handler)
+    logger.addHandler(console_handler)
 
 # ──────────────────────────────────────────────────────────
 # 🔇 中央静音：第三方库全关INFO，只留WARNING+
@@ -79,4 +80,9 @@ def fmt(dt=None, fmt_str="%Y-%m-%d %H:%M:%S"):
 
 def get_logger(name: str = None) -> logging.Logger:
     """Get a shared logger — use in every .py file"""
-    return logging.getLogger(name or "fx_bot")
+    if not name or name == "fx_bot":
+        return logger
+    # 子 logger：名字带模块名，但 handler/格式由 fx_bot 统一控制
+    child = logging.getLogger(f"fx_bot.{name}")
+    child.propagate = True
+    return child
