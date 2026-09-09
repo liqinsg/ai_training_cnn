@@ -239,3 +239,5 @@ daily_results_profile*/
 daily_results/
 *.log
 cooldown_*.json
+*pkl
+trade_model_xgb.pkl
