@@ -1,0 +1,13 @@
+"""
+常量 —— 全局固定参数
+"""
+# 交易相关
+DEFAULT_PAIR = "USD_JPY"
+GRANULARITY = "H1"
+
+# 风控
+RISK_LIMIT_PCT = 0.02
+MAX_POSITION_UNITS = 1000
+
+# 日志
+LOG_LEVEL = "INFO"
