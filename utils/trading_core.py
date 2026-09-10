@@ -349,14 +349,25 @@ def get_candles(
         params["from"] = start.isoformat()
     if end:
         params["to"] = end.isoformat()
-
-    try:
-        req = instruments.InstrumentsCandles(instrument=instrument, params=params)
-        resp = oanda_client.request(req)
-        return resp.get("candles", [])
-    except Exception as e:
-        print(f"[OANDA] Error fetching candles: {str(e)}")
-        return []
+    max_attempts = 3
+    for attempt in range(1, max_attempts + 1):
+        try:
+            req = instruments.InstrumentsCandles(instrument=instrument, params=params)
+            resp = oanda_client.request(req)
+            candles = resp.get("candles", [])
+            return [c for c in candles if c.get("complete")]
+        except Exception as e:
+            msg = str(e)
+            if msg.strip().startswith("<!DOCTYPE html>") or "<html" in msg.lower():
+                short = "<HTML response (server error)>"
+            else:
+                short = msg
+            print(f"[OANDA] Error fetching candles for {instrument} {granularity} (attempt {attempt}/{max_attempts}): {short}")
+            if attempt < max_attempts:
+                backoff = 1 * (2 ** (attempt - 1))
+                time.sleep(backoff)
+                continue
+            return []
 
 
 def get_latest_price(instrument: str) -> float | None:

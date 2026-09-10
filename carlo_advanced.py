@@ -13,20 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from utils.oanda_execution import api
 from utils import oanda_client
-import oandapyV20.endpoints.instruments as instruments
-
-# --------------------------
-# YOUR EXISTING CANDLE FETCH — UNCHANGED
-# --------------------------
-def get_candles(instrument: str, granularity: str, count: int) -> list:
-    params = {"count": count, "granularity": granularity}
-    try:
-        req = instruments.InstrumentsCandles(instrument=instrument, params=params)
-        oanda_client.request(req)
-        return [c for c in req.response.get("candles", []) if c["complete"]]
-    except Exception as e:
-        print(f"  [HELPERS] Candle fetch failed {instrument} {granularity}: {e}")
-        return []
+from utils.trading_core import get_candles
 
 # --------------------------
 # MAIN MC CALCULATION — FULLY FIXED

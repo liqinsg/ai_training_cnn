@@ -33,18 +33,10 @@ assert OANDA_ACCOUNT_ID, "[HELPERS] FATAL: OANDA_ACCOUNT_ID not found in config.
 
 
 # ==========================================
-# MARKET DATA HELPERS
+# MARKET DATA HELPERS (centralized)
 # ==========================================
-def get_candles(instrument: str, granularity: str, count: int) -> list:
-    from utils import oanda_client
-    params = {"count": count, "granularity": granularity}
-    try:
-        req = instruments.InstrumentsCandles(instrument=instrument, params=params)
-        oanda_client.request(req)
-        return [c for c in req.response.get("candles", []) if c["complete"]]
-    except Exception as e:
-        print(f"  [HELPERS] Candle fetch failed {instrument} {granularity}: {e}")
-        return []
+# Use the centralized, robust OANDA fetcher from utils.trading_core
+from utils.trading_core import get_candles
 
 
 def _atr_from_candles(candles: List[dict], period: int) -> Optional[float]:
