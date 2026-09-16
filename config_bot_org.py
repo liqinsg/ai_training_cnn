@@ -1,12 +1,14 @@
-# config_bot.py — v7.1
+# config_bot.py — v7 · UNIFIED STRATEGY CONFIG
 """
 ALL strategy/profile settings in ONE file.
 OANDA API/connection → config_oanda.py (KEPT SEPARATE)
-Changelog:
-- profile3: conservative → max 3 open, 1 per run, exclude EURGBP/GBPAUD
-- profile4: untouched (original)
+
+Purpose: Strategy & profile parameters ONLY.
+Connection tokens/env → config_oanda.py (runtime config)
 """
+
 from __future__ import annotations
+
 from pathlib import Path
 from typing import Any
 
@@ -27,7 +29,6 @@ ALL_PAIRS = [
     "NZDUSD=X",
     "CADJPY=X",
 ]
-
 YAHOO_TO_OANDA = {
     "EURUSD=X": "EUR_USD",
     "GBPUSD=X": "GBP_USD",
@@ -102,42 +103,49 @@ from config_oanda import (
 )
 
 # ==========================================
-# ✅ 明确常量清单
+# ✅ 明确常量清单（禁止遍历 dir() 猜测合并）
 # ==========================================
+# 铁律：load_profile() 只能合并这些明确列出的 key，避免“扫一遍模块变量就塞进 P”的不可控行为。
 _GLOBAL_CONSTANT_KEYS: tuple[str, ...] = (
+    # pairs / mapping
     "ALL_PAIRS",
     "YAHOO_TO_OANDA",
-    "EXCLUDE_PAIRS",
-    "ACTIVE_PAIRS",
-    "EXCLUDE_OANDA",
+    # yfinance
     "YF_INTERVAL",
     "YF_PERIOD_FULL",
     "YF_PERIOD_RESAMPLE",
     "YF_INTERVAL_D",
     "YF_PERIOD_FULL_D",
     "YF_PERIOD_RESAMPLE_D",
+    # MC
     "PERIODS_YEAR",
     "MC_BAND_PCT",
     "MC_MAX_AGE_HOURS",
     "SIMULATIONS",
     "CONFIDENCE",
+    # ATR / SLTP
     "ATR_PERIOD",
     "BASE_TP_PIPS",
     "EMA100_BUFFER_PIPS",
     "MIN_SL_PIPS",
     "MIN_SL_PIPS_JPY",
+    # runtime flags
     "DEBUG_MODE",
     "NO_COOLDOWN",
     "DEFAULT_LOT_SIZE",
+    # confluence
     "MULTI_TF_CONFLUENCE",
     "CONFLUENCE_REQUIRED_TFS",
+    # dynamic tp
     "TRAILING_TP",
     "DYNAMIC_TP",
     "TP_RAISE_THRESHOLD_PIPS",
+    # lookback / forecast
     "H4_LOOKBACK",
     "H4_FORECAST",
     "DAILY_LOOKBACK",
     "DAILY_FORECAST",
+    # feature / model
     "USE_ATR",
     "USE_MACD",
     "USE_RSI",
@@ -145,12 +153,13 @@ _GLOBAL_CONSTANT_KEYS: tuple[str, ...] = (
     "MODEL_TYPE",
     "TARGET_HORIZON",
     "TRAIN_LOOKBACK_BARS",
+    # shared resources
     "D_STRATEGY_GROUPS",
     "EXCLUDE_CURRENCIES_GLOBAL",
 )
 
 # ==========================================
-# 📊 PROFILE STRATEGY CONFIG
+# 📊 PROFILE STRATEGY CONFIG — ALL IN ONE
 # ==========================================
 PROFILE_CFG = {
     "profile2": {
@@ -159,13 +168,16 @@ PROFILE_CFG = {
         "OANDA_ACCOUNT_ID": OANDA_ACCOUNT_ID_PROFILE2,
         "COOLDOWN_FILE": "cooldown_profile2.json",
         "RESULTS_DIR": "daily_results_profile2",
+        # ── Identity ──
         "MODE": "LEVEL10",
         "BASE_MIN_EDGE": 0.50,
+        # ── Weights: S=35 R=20 A=15 X=20 M=10 ──
         "WEIGHT_STRENGTH": 0.35,
         "WEIGHT_RSI": 0.20,
         "WEIGHT_ADX": 0.15,
         "WEIGHT_XGB": 0.20,
         "WEIGHT_MC": 0.10,
+        # ── Thresholds ──
         "MIN_CONVICTION_SCORE": 30.0,
         "MIN_SCORE_GAP": 0.10,
         "MAX_OPEN_POSITIONS": 3,
@@ -178,149 +190,174 @@ PROFILE_CFG = {
         "CONSENSUS_REQUIRED_VOTES": 2,
         "REQUIRE_STRONG_MOMENTUM": False,
         "ADX_SCALE_FACTOR": 2.0,
+        # ── TREND FILTER: Profile2 = OFF ──
         "TREND_FILTER_ENABLED": False,
         "WEEK_EMA100_FILTER_ENABLED": False,
         "EMA_PERIOD_FAST": 20,
         "EMA_PERIOD_SLOW": 40,
+        # ── TP/SL multipliers ──
         "TP_MULT": 2.0,
         "TP_STRONG_MULT": 2.5,
         "ATR_SL_MULT": 2.0,
         "ATR_TP_MULT": 2.5,
+        # ── Dynamic Exit ──
         "USE_DYNAMIC_SL": 2,
         "DYNAMIC_SL_MULT": 1.5,
-        "BE_TRIGGER_ATR_MULT": 2.5,
-        "TRAIL_TRIGGER_ATR_MULT": 3.5,
-        "TRAIL_ATR_MULT": 2.8,
-        "MAX_HOLD_BARS": 24,
+        "BE_TRIGGER_ATR_MULT": 2.5,  # 1.5 → 2.5 · 晚一点推保本，让利润先跑
+        "TRAIL_TRIGGER_ATR_MULT": 3.5,  # 2.5 → 3.5 · 更大盈利才启动 trailing
+        "TRAIL_ATR_MULT": 2.8,  # 1.5 → 2.8 · trailing 距离加宽，给回调留空间
+        "MAX_HOLD_BARS": 24,  # 12 → 24 · 15m TF: 3h → 6h，单边行情更多时间
+        # ── SL Strategy ──
         "SL_USE_ZONE_HIERARCHY": True,
+        # ── Pair Selection ──
         "USE_TOP_PAIRS_ONLY": False,
         "TOP_PAIRS_COUNT": 4,
         "TOP_PAIRS_MIN_GAP": 0.25,
+        # ── MC ──
         "SKIP_MC": False,
     },
-
     "profile3": {
         "LABEL": "PROFILE3",
         "ACCOUNT_NAME": "Account 003",
         "OANDA_ACCOUNT_ID": OANDA_ACCOUNT_ID_PROFILE3,
         "COOLDOWN_FILE": "cooldown_profile3.json",
         "RESULTS_DIR": "daily_results_profile3",
-        # ✅ 排除指定货币对
-        "EXCLUDE_PAIRS": ["EURGBP=X", "GBPAUD=X"],
         # ── Identity ──
         "MODE": "LEVEL10",
         "BASE_MIN_EDGE": 0.50,
-        # ── Weights (保守：强度权重更高) ──
-        "WEIGHT_STRENGTH": 0.45,
-        "WEIGHT_RSI": 0.15,
-        "WEIGHT_ADX": 0.15,
-        "WEIGHT_XGB": 0.15,
-        "WEIGHT_MC": 0.10,
-        # ── 更严阈值 ──
-        "MIN_CONVICTION_SCORE": 35.0,       # 提高门槛
-        "MIN_SCORE_GAP": 0.15,              # 更强趋势才做
-        "MAX_OPEN_POSITIONS": 3,            # ✅ 最多3单
-        "MAX_OPEN_PER_RUN": 1,              # ✅ 一次只开1单
-        "XGB_BULLISH_THRESHOLD": 0.55,
-        "MC_BULLISH_THRESHOLD_PCT": 55.0,
-        "MC_STRONG_THRESHOLD": 0.60,        # 提高强信号门槛
-        "REQUIRE_DIRECTION_CONSENSUS": True,
-        "CONSENSUS_THRESHOLD": 2,
-        "CONSENSUS_REQUIRED_VOTES": 2,
-        "REQUIRE_STRONG_MOMENTUM": True,    # ✅ 强动量才入场
-        "ADX_SCALE_FACTOR": 2.0,
-        # ── TREND FILTER: ON + Weekly EMA100 ──
-        "TREND_FILTER_ENABLED": True,
-        "WEEK_EMA100_FILTER_ENABLED": True,
-        "EMA_PERIOD_FAST": 40,
-        "EMA_PERIOD_SLOW": 80,
-        # ── TP/SL 保守设置 ──
-        "TP_MULT": 2.0,                     # 降低目标倍数
-        "TP_STRONG_MULT": 2.3,
-        "ATR_SL_MULT": 2.2,                 # 略宽止损防扫
-        "ATR_TP_MULT": 2.5,
-        # ── Dynamic Exit ──
-        "USE_DYNAMIC_SL": 2,
-        "DYNAMIC_SL_MULT": 1.5,
-        "BE_TRIGGER_ATR_MULT": 2.0,
-        "TRAIL_TRIGGER_ATR_MULT": 3.0,
-        "TRAIL_ATR_MULT": 2.0,
-        "MAX_HOLD_BARS": 12,                # 缩短持仓周期
-        # ── SL Strategy ──
-        "SL_USE_ZONE_HIERARCHY": True,
-        "SL_ZONE_TRAILING": True,
-        # ── Pair Selection ──
-        "USE_TOP_PAIRS_ONLY": True,         # ✅ 只做最强的
-        "TOP_PAIRS_COUNT": 3,               # ✅ 精选3个
-        "TOP_PAIRS_MIN_GAP": 0.20,
-        # ── MC ──
-        "SKIP_MC": False,
-    },
-
-    "profile4": {
-        "LABEL": "PROFILE4",
-        "ACCOUNT_NAME": "Account 004",
-        "OANDA_ACCOUNT_ID": OANDA_ACCOUNT_ID_PROFILE4,
-        "COOLDOWN_FILE": "cooldown_profile4.json",
-        "RESULTS_DIR": "daily_results_profile4",
-        "MODE": "LEVEL10",
-        "BASE_MIN_EDGE": 0.50,
-        "DEFAULT_LOT_SIZE": 5000,
-        "EXCLUDE_PAIRS": ["EURGBP=X", "GBPAUD=X"],
+        # ── Weights: S=40 R=15 A=15 X=20 M=10 ──
         "WEIGHT_STRENGTH": 0.40,
         "WEIGHT_RSI": 0.15,
         "WEIGHT_ADX": 0.15,
         "WEIGHT_XGB": 0.20,
         "WEIGHT_MC": 0.10,
-        "MIN_CONVICTION_SCORE": 15.0,
-        "MIN_SCORE_GAP": 0.05,
-        "MAX_OPEN_POSITIONS": 10,
-        "MAX_OPEN_PER_RUN": 3,
-        "MAX_OPEN_HIGH_VOL": 6,
-        "MAX_OPEN_MID_VOL": 2,
-        "MAX_OPEN_LOW_VOL": 2,
-        "JPY_CONSENSUS_MIN": 2,
-        "JPY_MAX_OPEN_PER_RUN": 2,
-        "MIN_SL_PIPS": 35,
-        "MIN_SL_PIPS_JPY": 60,
-        "SL_MAX_ALLOWED_PIPS": 200,
-        "SL_MAX_ALLOWED_PIPS_JPY": 500,
-        "XGB_BULLISH_THRESHOLD": 0.52,
-        "MC_BULLISH_THRESHOLD_PCT": 52.0,
+        # ── Thresholds ──
+        "MIN_CONVICTION_SCORE": 20.0,
+        "MIN_SCORE_GAP": 0.10,
+        "MAX_OPEN_POSITIONS": 6,
+        "MAX_OPEN_PER_RUN": 2,
+        "XGB_BULLISH_THRESHOLD": 0.55,
+        "MC_BULLISH_THRESHOLD_PCT": 55.0,
         "MC_STRONG_THRESHOLD": 0.55,
         "REQUIRE_DIRECTION_CONSENSUS": True,
         "CONSENSUS_THRESHOLD": 2,
         "CONSENSUS_REQUIRED_VOTES": 2,
         "REQUIRE_STRONG_MOMENTUM": False,
         "ADX_SCALE_FACTOR": 2.0,
+        # ── TREND FILTER: Profile3 = ON + Weekly EMA100 ──
         "TREND_FILTER_ENABLED": True,
-        "WEEK_EMA100_FILTER_ENABLED": False,
-        "EMA_PERIOD_FAST": 15,
-        "EMA_PERIOD_SLOW": 30,
+        "WEEK_EMA100_FILTER_ENABLED": True,
+        "EMA_PERIOD_FAST": 40,
+        "EMA_PERIOD_SLOW": 80,
+        # ── TP/SL multipliers ──
         "TP_MULT": 2.5,
         "TP_STRONG_MULT": 3.0,
         "ATR_SL_MULT": 2.5,
         "ATR_TP_MULT": 3.0,
+        # ── Dynamic Exit ──
         "USE_DYNAMIC_SL": 2,
         "DYNAMIC_SL_MULT": 1.5,
         "BE_TRIGGER_ATR_MULT": 1.5,
         "TRAIL_TRIGGER_ATR_MULT": 2.5,
         "TRAIL_ATR_MULT": 1.5,
         "MAX_HOLD_BARS": 12,
-        "USE_H4_ESCALE": True,
-        "TP_LINK_SL": True,
+        # ── SL Strategy ──
         "SL_USE_ZONE_HIERARCHY": True,
+        # ── Pair Selection ──
         "USE_TOP_PAIRS_ONLY": False,
         "TOP_PAIRS_COUNT": 4,
         "TOP_PAIRS_MIN_GAP": 0.25,
+        # ── MC ──
+        "SKIP_MC": False,
+        "SL_ZONE_TRAILING": True,
+    },
+    # ✅ ─── Profile4 / Account004 · DEMO 全新独立 ───
+    "profile4": {
+        "LABEL": "PROFILE4",
+        "ACCOUNT_NAME": "Account 004",
+        "OANDA_ACCOUNT_ID": OANDA_ACCOUNT_ID_PROFILE4,
+        "COOLDOWN_FILE": "cooldown_profile4.json",
+        "RESULTS_DIR": "daily_results_profile4",
+        # ── Identity ──
+        "MODE": "LEVEL10",
+        "BASE_MIN_EDGE": 0.50,
+        "DEFAULT_LOT_SIZE": 5000,  # ✅ Added: Demo half-size
+        # ── Weights: S=40 R=15 A=15 X=20 M=10 ──
+        "WEIGHT_STRENGTH": 0.40,
+        "WEIGHT_RSI": 0.15,
+        "WEIGHT_ADX": 0.15,
+        "WEIGHT_XGB": 0.20,
+        "WEIGHT_MC": 0.10,
+        # ── Thresholds (FINAL · 关 WEEKLY EMA100，留 TREND FILTER) ──
+        "MIN_CONVICTION_SCORE": 15.0,  # 20.0 → 15.0 · 捞回擦边球
+        "MIN_SCORE_GAP": 0.05,  # 0.10 → 0.05 · 低 gap 也能参与共识
+        # ── Position Limits ──
+        "MAX_OPEN_POSITIONS": 10,
+        "MAX_OPEN_PER_RUN": 3,
+        "MAX_OPEN_HIGH_VOL": 6,
+        "MAX_OPEN_MID_VOL": 2,
+        "MAX_OPEN_LOW_VOL": 2,
+        # ── JPY 方向共识 ──
+        "JPY_CONSENSUS_MIN": 2,
+        "JPY_MAX_OPEN_PER_RUN": 2,
+        # ── SL caps ──
+        "MIN_SL_PIPS": 35,
+        "MIN_SL_PIPS_JPY": 60,
+        "SL_MAX_ALLOWED_PIPS": 200,
+        "SL_MAX_ALLOWED_PIPS_JPY": 500,
+        "XGB_BULLISH_THRESHOLD": 0.52,  # 0.55 → 0.52 · 减少 strength/XGB 分裂投票
+        "MC_BULLISH_THRESHOLD_PCT": 52.0,  # 55.0 → 52.0 · MC 信号更平衡
+        "MC_STRONG_THRESHOLD": 0.55,
+        "REQUIRE_DIRECTION_CONSENSUS": True,
+        "CONSENSUS_THRESHOLD": 2,
+        "CONSENSUS_REQUIRED_VOTES": 2,
+        "REQUIRE_STRONG_MOMENTUM": False,
+        "ADX_SCALE_FACTOR": 2.0,
+        # ── TREND FILTER: 关周 EMA100（最大瓶颈），留 EMA crossover（这版本紧要之处） ──
+        "TREND_FILTER_ENABLED": True,
+        "WEEK_EMA100_FILTER_ENABLED": False,  # True → False · 🔴 周一亚盘挡了 6+ 单
+        "EMA_PERIOD_FAST": 15,  # 40 → 20 · 更敏捷
+        "EMA_PERIOD_SLOW": 30,  # 80 → 40 · 减少滞后挡单
+        # ── TP/SL multipliers ──
+        "TP_MULT": 2.5,
+        "TP_STRONG_MULT": 3.0,
+        "ATR_SL_MULT": 2.5,
+        "ATR_TP_MULT": 3.0,
+        # ── Dynamic Exit ──
+        "USE_DYNAMIC_SL": 2,
+        "DYNAMIC_SL_MULT": 1.5,
+        "BE_TRIGGER_ATR_MULT": 1.5,
+        "TRAIL_TRIGGER_ATR_MULT": 2.5,
+        "TRAIL_ATR_MULT": 1.5,
+        "MAX_HOLD_BARS": 12,
+        # ── PROFILE4 H4-ESCALE + TP LINK ──
+        "USE_H4_ESCALE": True,
+        "TP_LINK_SL": True,
+        # ── SL Strategy ──
+        "SL_USE_ZONE_HIERARCHY": True,
+        # ── Pair Selection ──
+        "USE_TOP_PAIRS_ONLY": False,
+        "TOP_PAIRS_COUNT": 4,
+        "TOP_PAIRS_MIN_GAP": 0.25,
+        # ── MC ──
         "SKIP_MC": False,
     },
 }
 
 # ==========================================
-# 🌐 全局共享资源
+# 🌐 全局共享资源 — 一处定义，多 profile 复用
 # ==========================================
+
+# ── D_STRATEGY_GROUPS — Daily 模式专属分组 ──
+# 命中条件: instrument 名 == dict key（如 "GBP_AUD"）
+# 消费端: DynamicPositionManager.update_all() → instrument_overrides.get(instrument)
+# 字段说明（与消费端 key 严格对齐）：
+#   bar_hours        — 每根 bar 小时数（日线=24）
+#   max_hold         — 超过多少 bar 强制时间退出
+#   sl_granularity   — Zone SL 重算时的 OANDA K 线粒度（H4/D/...）
+#   confirm_on_close — True 时 SL 更新只在 D1 收盘后触发
 D_STRATEGY_GROUPS = {
+    # ── D1 Daily · GBP_AUD 高 beta ──
     "GBP_AUD": {
         "bar_hours": 24,
         "max_hold": 12,
@@ -329,28 +366,40 @@ D_STRATEGY_GROUPS = {
     },
 }
 
-EXCLUDE_CURRENCIES_GLOBAL = []
+# ── EXCLUDE_CURRENCIES_GLOBAL — 默认要排除的货币代码 ──
+EXCLUDE_CURRENCIES_GLOBAL = [
+    # "NZD", "CAD", "CHF", "JPY",   # 需要时取消注释
+]
 
 # ==========================================
-# 🔌 load_profile() — main app 唯一入口
+# 🔌 load_profile() — main app 的唯一入口
 # ==========================================
+# 用法:  P = load_profile("profile3")
+#
+# 内部做的事：
+#   1. 取 PROFILE_CFG[name] 作为模板（深拷贝，不污染原模板）
+#   2. merge 模块级全局常量（原来 cfg() 函数的第二层 fallback）
+#   3. 注入全局共享资源（D_STRATEGY_GROUPS / EXCLUDE_CURRENCIES_GLOBAL）
+#      — 哪些 profile 启用哪些资源，在这里集中声明
+#   4. 返回一个完全独立的最终 dict
+#
+# main app 不需要知道 D_STRATEGY_GROUPS、PROFILE_CFG、cfg() 这些内部细节
 def load_profile(profile_name: str) -> dict:
     import copy
+
     base_dir = Path(__file__).resolve().parent
 
+    # ── Step 1: 取模板 + 深拷贝，不污染原 PROFILE_CFG ──
     template = PROFILE_CFG.get(profile_name, PROFILE_CFG["profile2"])
     final: dict[str, Any] = copy.deepcopy(template)
 
+    # ── Step 2: merge 明确列出的模块级全局常量（禁止 dir() 猜测合并） ──
     for key in _GLOBAL_CONSTANT_KEYS:
         if key in final:
             continue
         final[key] = globals()[key]
 
-    all_pairs = list(ALL_PAIRS)
-    exclude_pairs = final.get("EXCLUDE_PAIRS", [])
-    final["ACTIVE_PAIRS"] = [p for p in all_pairs if p not in exclude_pairs]
-    final["EXCLUDE_OANDA"] = [YAHOO_TO_OANDA[p] for p in exclude_pairs if p in YAHOO_TO_OANDA]
-
+    # ── Step 3: 注入全局共享资源（集中声明哪些 profile 启用哪些资源） ──
     if profile_name == "profile3":
         final["INSTRUMENT_OVERRIDES"] = D_STRATEGY_GROUPS
         final["EXCLUDE_CURRENCIES"] = list(EXCLUDE_CURRENCIES_GLOBAL)
@@ -358,7 +407,10 @@ def load_profile(profile_name: str) -> dict:
         final["INSTRUMENT_OVERRIDES"] = {}
         final["EXCLUDE_CURRENCIES"] = []
 
+    # ── Step 4: 注入外部客户端/连接（只在 config_bot 触碰 config_oanda） ──
     final["OANDA_API"] = OANDA_API
+
+    # ── Step 5: 统一路径装配（避免各文件重复算 BASE_DIR / 拼路径） ──
     final["BASE_DIR"] = base_dir
     final["PROFILE_NAME"] = profile_name
     final["COOLDOWN_FILE_PATH"] = base_dir / final.get("COOLDOWN_FILE", f"cooldown_{profile_name}.json")
@@ -368,7 +420,10 @@ def load_profile(profile_name: str) -> dict:
 
 
 def cfg(P: dict, key: str, default: Any = None) -> Any:
-    """唯一读取入口：cfg(P, key)"""
+    """
+    唯一读取入口：cfg(P, key)
+    铁律：业务侧不允许直接 import 常量，不允许直接访问 config 层的模块变量。
+    """
     if P is None:
         return default
     return P.get(key, default)

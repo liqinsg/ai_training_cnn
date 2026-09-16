@@ -20,6 +20,11 @@ import numpy as np, pandas as pd
 # ─── ✅ ONLY ONE CONFIG IMPORT ───
 # load_profile() 是唯一入口。内部完成所有装配：PROFILE_CFG 模板 + 全局常量 merge + 全局共享资源注入
 from config_bot import load_profile, cfg
+from utils.logging_utils import get_logger
+
+logger = get_logger(
+    __name__
+)  # 统一从 logging_utils 获取（禁止 basicConfig/重复 handler）
 
 from utils.strategy_helpers import (
     build_strength_matrix,
@@ -52,12 +57,6 @@ from fx_trade_bot_mc import MCGenerator, MCConfig
 from fx_trade_bot_ml import ensure_model
 
 # ─── ✅ 使用统一日志配置 ──────────────────────────────────────────────────────
-from utils.logging_utils import get_logger
-
-logger = get_logger(
-    __name__
-)  # 统一从 logging_utils 获取（禁止 basicConfig/重复 handler）
-
 # ─── PARSE ARGS & SELECT PROFILE ─────────────────────────────────────────────
 parser = argparse.ArgumentParser(description="FX Trading Bot v7 · Unified Config")
 parser.add_argument("--profile2", action="store_true", help="Use Profile2 / Account002")
@@ -603,18 +602,20 @@ def main():
 
     if forex_market_closed():
         return
-
-    model_wrapper, strat_engine = ensure_model(
-        MODEL_PATH,
-        FEAT_CFG,
-        model_wrapper,
-        strat_engine,
-        fetcher,
-        feat_engine,
-        ALL_PAIRS,
-        YAHOO_TO_OANDA,
-        lambda k, d: cfg(P, k, d),  # ← unified lookup
-    )
+    if ensure_model:
+        model_wrapper, strat_engine = ensure_model(
+            MODEL_PATH,
+            FEAT_CFG,
+            model_wrapper,
+            strat_engine,
+            fetcher,
+            feat_engine,
+            ALL_PAIRS,
+            YAHOO_TO_OANDA,
+            lambda k, d: cfg(P, k, d),  # ← unified lookup
+        )
+    else:
+        logger.warning("⚠️ ML model not loaded — ensure_model is None")
 
     # Step 1 — Currency Strength
     logger.info("[STEP 1] Currency Strength...")
