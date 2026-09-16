@@ -22,10 +22,10 @@ ALL_PAIRS = [
     "GBPJPY=X",
     "AUDUSD=X",
     "USDJPY=X",
-    "GBPAUD=X",
+    # "GBPAUD=X",
     "USDCHF=X",
     "AUDJPY=X",
-    "EURGBP=X",
+    # "EURGBP=X",
     "NZDUSD=X",
     "CADJPY=X",
 ]
@@ -36,10 +36,10 @@ YAHOO_TO_OANDA = {
     "GBPJPY=X": "GBP_JPY",
     "AUDUSD=X": "AUD_USD",
     "USDJPY=X": "USD_JPY",
-    "GBPAUD=X": "GBP_AUD",
+    # "GBPAUD=X": "GBP_AUD",
     "USDCHF=X": "USD_CHF",
     "AUDJPY=X": "AUD_JPY",
-    "EURGBP=X": "EUR_GBP",
+    # "EURGBP=X": "EUR_GBP",
     "NZDUSD=X": "NZD_USD",
     "CADJPY=X": "CAD_JPY",
 }
@@ -210,68 +210,74 @@ PROFILE_CFG = {
         # ── SL Strategy ──
         "SL_USE_ZONE_HIERARCHY": True,
         # ── Pair Selection ──
-        "USE_TOP_PAIRS_ONLY": False,
+        "USE_TOP_PAIRS_ONLY": True,
         "TOP_PAIRS_COUNT": 4,
         "TOP_PAIRS_MIN_GAP": 0.25,
         # ── MC ──
         "SKIP_MC": False,
     },
-    "profile3": {
-        "LABEL": "PROFILE3",
-        "ACCOUNT_NAME": "Account 003",
-        "OANDA_ACCOUNT_ID": OANDA_ACCOUNT_ID_PROFILE3,
-        "COOLDOWN_FILE": "cooldown_profile3.json",
-        "RESULTS_DIR": "daily_results_profile3",
-        # ── Identity ──
-        "MODE": "LEVEL10",
-        "BASE_MIN_EDGE": 0.50,
-        # ── Weights: S=40 R=15 A=15 X=20 M=10 ──
-        "WEIGHT_STRENGTH": 0.40,
-        "WEIGHT_RSI": 0.15,
-        "WEIGHT_ADX": 0.15,
-        "WEIGHT_XGB": 0.20,
-        "WEIGHT_MC": 0.10,
-        # ── Thresholds ──
-        "MIN_CONVICTION_SCORE": 20.0,
-        "MIN_SCORE_GAP": 0.10,
-        "MAX_OPEN_POSITIONS": 6,
-        "MAX_OPEN_PER_RUN": 2,
-        "XGB_BULLISH_THRESHOLD": 0.55,
-        "MC_BULLISH_THRESHOLD_PCT": 55.0,
-        "MC_STRONG_THRESHOLD": 0.55,
-        "REQUIRE_DIRECTION_CONSENSUS": True,
-        "CONSENSUS_THRESHOLD": 2,
-        "CONSENSUS_REQUIRED_VOTES": 2,
-        "REQUIRE_STRONG_MOMENTUM": False,
-        "ADX_SCALE_FACTOR": 2.0,
-        # ── TREND FILTER: Profile3 = ON + Weekly EMA100 ──
-        "TREND_FILTER_ENABLED": True,
-        "WEEK_EMA100_FILTER_ENABLED": True,
-        "EMA_PERIOD_FAST": 40,
-        "EMA_PERIOD_SLOW": 80,
-        # ── TP/SL multipliers ──
-        "TP_MULT": 2.5,
-        "TP_STRONG_MULT": 3.0,
-        "ATR_SL_MULT": 2.5,
-        "ATR_TP_MULT": 3.0,
-        # ── Dynamic Exit ──
-        "USE_DYNAMIC_SL": 2,
-        "DYNAMIC_SL_MULT": 1.5,
-        "BE_TRIGGER_ATR_MULT": 1.5,
-        "TRAIL_TRIGGER_ATR_MULT": 2.5,
-        "TRAIL_ATR_MULT": 1.5,
-        "MAX_HOLD_BARS": 12,
-        # ── SL Strategy ──
-        "SL_USE_ZONE_HIERARCHY": True,
-        # ── Pair Selection ──
-        "USE_TOP_PAIRS_ONLY": False,
-        "TOP_PAIRS_COUNT": 4,
-        "TOP_PAIRS_MIN_GAP": 0.25,
-        # ── MC ──
-        "SKIP_MC": False,
-        "SL_ZONE_TRAILING": True,
-    },
-    # ✅ ─── Profile4 / Account004 · DEMO 全新独立 ───
+"profile3": {
+    "LABEL": "PROFILE3",
+    "ACCOUNT_NAME": "Account 003",
+    "OANDA_ACCOUNT_ID": OANDA_ACCOUNT_ID_PROFILE3,
+    "COOLDOWN_FILE": "cooldown_profile3.json",
+    "RESULTS_DIR": "daily_results_profile3",
+
+    # ── 新增：排除货币清单 ──
+    #"EXCLUDE_CURRENCIES": ['GBPAUD','EURGBP'],   # 填货币代码，如 ["CAD", "NZD", "CHF"]
+
+    # ── Identity ──
+    "MODE": "LEVEL10",
+    "BASE_MIN_EDGE": 0.70,
+
+    # ── Weights 保持不变 ──
+    "WEIGHT_STRENGTH": 0.40,
+    "WEIGHT_RSI": 0.15,
+    "WEIGHT_ADX": 0.15,
+    "WEIGHT_XGB": 0.20,
+    "WEIGHT_MC": 0.10,
+
+    # ── 其余全部沿用你刚才的苛刻版参数 ──
+    "MIN_CONVICTION_SCORE": 35.0,
+    "MIN_SCORE_GAP": 0.20,
+    "MAX_OPEN_POSITIONS": 3,
+    "MAX_OPEN_PER_RUN": 1,
+    "XGB_BULLISH_THRESHOLD": 0.62,
+    "MC_BULLISH_THRESHOLD_PCT": 62.0,
+    "MC_STRONG_THRESHOLD": 0.62,
+    "REQUIRE_DIRECTION_CONSENSUS": True,
+    "CONSENSUS_THRESHOLD": 3,
+    "CONSENSUS_REQUIRED_VOTES": 3,
+    "REQUIRE_STRONG_MOMENTUM": True,
+    "ADX_SCALE_FACTOR": 2.5,
+
+    "TREND_FILTER_ENABLED": True,
+    "WEEK_EMA100_FILTER_ENABLED": True,
+    "EMA_PERIOD_FAST": 40,
+    "EMA_PERIOD_SLOW": 80,
+
+    "TP_MULT": 2.0,
+    "TP_STRONG_MULT": 2.5,
+    "ATR_SL_MULT": 2.0,
+    "ATR_TP_MULT": 2.5,
+
+    "USE_DYNAMIC_SL": 2,
+    "DYNAMIC_SL_MULT": 1.2,
+    "BE_TRIGGER_ATR_MULT": 1.2,
+    "TRAIL_TRIGGER_ATR_MULT": 2.0,
+    "TRAIL_ATR_MULT": 1.2,
+    "MAX_HOLD_BARS": 9,
+
+    "SL_USE_ZONE_HIERARCHY": True,
+
+    "USE_TOP_PAIRS_ONLY": True,
+    "TOP_PAIRS_COUNT": 2,
+    "TOP_PAIRS_MIN_GAP": 0.45,
+
+    "SKIP_MC": False,
+    "SL_ZONE_TRAILING": True
+},
+# ✅ ─── Profile4 / Account004 · DEMO 全新独立 ───
     "profile4": {
         "LABEL": "PROFILE4",
         "ACCOUNT_NAME": "Account 004",
@@ -336,9 +342,9 @@ PROFILE_CFG = {
         # ── SL Strategy ──
         "SL_USE_ZONE_HIERARCHY": True,
         # ── Pair Selection ──
-        "USE_TOP_PAIRS_ONLY": False,
-        "TOP_PAIRS_COUNT": 4,
-        "TOP_PAIRS_MIN_GAP": 0.25,
+        "USE_TOP_PAIRS_ONLY": True,
+        "TOP_PAIRS_COUNT": 3,
+        "TOP_PAIRS_MIN_GAP": 0.28,
         # ── MC ──
         "SKIP_MC": False,
     },
@@ -367,9 +373,7 @@ D_STRATEGY_GROUPS = {
 }
 
 # ── EXCLUDE_CURRENCIES_GLOBAL — 默认要排除的货币代码 ──
-EXCLUDE_CURRENCIES_GLOBAL = [
-    # "NZD", "CAD", "CHF", "JPY",   # 需要时取消注释
-]
+EXCLUDE_CURRENCIES_GLOBAL = []
 
 # ==========================================
 # 🔌 load_profile() — main app 的唯一入口

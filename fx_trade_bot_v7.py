@@ -12,7 +12,7 @@ Usage:
     python fx_trade_bot_v7.py --profile3 --timeframe H4
     python fx_trade_bot_v7.py --profile3 --trend-filter-enabled false
 """
-import contextlib, sys, logging, argparse, os, csv
+import contextlib, argparse, csv
 from datetime import datetime, timezone
 from pathlib import Path
 import numpy as np, pandas as pd
@@ -621,7 +621,7 @@ def main():
     strength_scores = build_strength_matrix()
     logger.info(format_strength_ranking(strength_scores))
 
-    USE_TOP_PAIRS_ONLY = cfg(P, "USE_TOP_PAIRS_ONLY", False)
+    USE_TOP_PAIRS_ONLY = cfg(P, "USE_TOP_PAIRS_ONLY", True)
     TOP_PAIRS_COUNT = cfg(P, "TOP_PAIRS_COUNT", 4)
     TOP_PAIRS_MIN_GAP = cfg(P, "TOP_PAIRS_MIN_GAP", 0.25)
 
