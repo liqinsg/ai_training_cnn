@@ -20,6 +20,11 @@ import numpy as np, pandas as pd
 # ─── ✅ ONLY ONE CONFIG IMPORT ───
 # load_profile() 是唯一入口。内部完成所有装配：PROFILE_CFG 模板 + 全局常量 merge + 全局共享资源注入
 from config_bot import load_profile, cfg
+from utils.logging_utils import get_logger
+
+logger = get_logger(
+    __name__
+)  # 统一从 logging_utils 获取（禁止 basicConfig/重复 handler）
 
 from utils.strategy_helpers import (
     build_strength_matrix,
@@ -52,12 +57,6 @@ from fx_trade_bot_mc import MCGenerator, MCConfig
 from fx_trade_bot_ml import ensure_model
 
 # ─── ✅ 使用统一日志配置 ──────────────────────────────────────────────────────
-from utils.logging_utils import get_logger
-
-logger = get_logger(
-    __name__
-)  # 统一从 logging_utils 获取（禁止 basicConfig/重复 handler）
-
 # ─── PARSE ARGS & SELECT PROFILE ─────────────────────────────────────────────
 parser = argparse.ArgumentParser(description="FX Trading Bot v7 · Unified Config")
 parser.add_argument("--profile2", action="store_true", help="Use Profile2 / Account002")
@@ -480,26 +479,58 @@ last_closed = {} if REMOVE_COOLDOWN else load_cooldown(COOLDOWN_FILE, Direction)
 # ─── Helper Functions ────────────────────────────────────────────────────────
 def build_top_pairs(strength_scores, all_pairs, top_n=4, min_gap=0.25):
     ranked = sorted(strength_scores.items(), key=lambda x: x[1], reverse=True)
+    logger.info("📊 Currency Strength Ranking (build_top_pairs):")
+    for idx, (ccy, score) in enumerate(ranked, 1):
+        logger.info(f"  {idx:2d}. {ccy:5s} = {score:+.4f}")
+
     strongest, weakest = [ccy for ccy, _ in ranked[:top_n]], [
         ccy for ccy, _ in ranked[-top_n:]
     ]
-    candidates = []
+    logger.info(
+        f"🔍 build_top_pairs: strongest={strongest}, weakest={weakest}, "
+        f"top_n={top_n}, min_gap={min_gap}"
+    )
+    logger.info(f"📋 白名单 all_pairs: {sorted(all_pairs)}")
+
+    candidates, skip_reasons = [], []
     for i in range(min(top_n, len(strongest), len(weakest))):
         base, quote = strongest[i], weakest[-(i + 1)]
         if base == quote:
+            skip_reasons.append(f"  SKIP {base}↔{quote}: 同币种")
             continue
         gap = strength_scores[base] - strength_scores[quote]
-        if abs(gap) >= min_gap:
-            symbol = (
-                f"{base}{quote}=X"
-                if f"{base}{quote}=X" in all_pairs
-                else f"{quote}{base}=X"
-            )
-            if symbol in all_pairs:
-                candidates.append((symbol, abs(gap), base, quote))
-    candidates.sort(key=lambda x: x[1], reverse=True)
-    return [p[0] for p in candidates[:top_n]], candidates
 
+        symbol1, symbol2 = f"{base}{quote}=X", f"{quote}{base}=X"
+        matched = symbol1 if symbol1 in all_pairs else (symbol2 if symbol2 in all_pairs else None)
+
+        if abs(gap) < min_gap:
+            skip_reasons.append(
+                f"  SKIP {base}({strength_scores[base]:+.4f})↔{quote}({strength_scores[quote]:+.4f}): "
+                f"gap={gap:+.4f} < {min_gap}"
+            )
+        elif matched is None:
+            skip_reasons.append(
+                f"  SKIP {base}+{quote}: {symbol1} / {symbol2} 均不在白名单"
+            )
+        else:
+            candidates.append((matched, abs(gap), base, quote))
+            logger.info(
+                f"  ✅ ADD {matched}: {base}({strength_scores[base]:+.4f})→"
+                f"{quote}({strength_scores[quote]:+.4f}), gap={abs(gap):.4f}"
+            )
+
+    if skip_reasons:
+        logger.info("📋 build_top_pairs 跳过明细:")
+        for line in skip_reasons:
+            logger.info(line)
+
+    candidates.sort(key=lambda x: x[1], reverse=True)
+    result = [p[0] for p in candidates[:top_n]]
+    logger.info(
+        f"🏁 build_top_pairs 最终选出: {result} "
+        f"(全部候选: {[(p[0], round(p[1], 4)) for p in candidates]})"
+    )
+    return result, candidates
 
 def calc_weighted_score(
     pair: str,
@@ -603,18 +634,20 @@ def main():
 
     if forex_market_closed():
         return
-
-    model_wrapper, strat_engine = ensure_model(
-        MODEL_PATH,
-        FEAT_CFG,
-        model_wrapper,
-        strat_engine,
-        fetcher,
-        feat_engine,
-        ALL_PAIRS,
-        YAHOO_TO_OANDA,
-        lambda k, d: cfg(P, k, d),  # ← unified lookup
-    )
+    if ensure_model:
+        model_wrapper, strat_engine = ensure_model(
+            MODEL_PATH,
+            FEAT_CFG,
+            model_wrapper,
+            strat_engine,
+            fetcher,
+            feat_engine,
+            ALL_PAIRS,
+            YAHOO_TO_OANDA,
+            lambda k, d: cfg(P, k, d),  # ← unified lookup
+        )
+    else:
+        logger.warning("⚠️ ML model not loaded — ensure_model is None")
 
     # Step 1 — Currency Strength
     logger.info("[STEP 1] Currency Strength...")
@@ -624,17 +657,23 @@ def main():
     USE_TOP_PAIRS_ONLY = cfg(P, "USE_TOP_PAIRS_ONLY", False)
     TOP_PAIRS_COUNT = cfg(P, "TOP_PAIRS_COUNT", 4)
     TOP_PAIRS_MIN_GAP = cfg(P, "TOP_PAIRS_MIN_GAP", 0.25)
+    ACTIVE_PAIRS = cfg(P, "ACTIVE_PAIRS", ALL_PAIRS)
 
     EXCLUDE_CURRENCIES = cfg(P, "EXCLUDE_CURRENCIES", [])
 
+    logger.info(
+        f"📋 Whitelist: {len(ACTIVE_PAIRS)} pairs "
+        f"[{cfg(P, '_ACTIVE_SOURCE', 'default')}]"
+    )
+
     if USE_TOP_PAIRS_ONLY:
         selected_pairs, _ = build_top_pairs(
-            strength_scores, ALL_PAIRS, TOP_PAIRS_COUNT, TOP_PAIRS_MIN_GAP
+            strength_scores, ACTIVE_PAIRS, TOP_PAIRS_COUNT, TOP_PAIRS_MIN_GAP
         )
-        selected_pairs = selected_pairs or ALL_PAIRS[:]
+        selected_pairs = selected_pairs or ACTIVE_PAIRS[:]
         logger.info(f"🎯 AUTO-RANK: Top {len(selected_pairs)} pairs selected")
     else:
-        selected_pairs = ALL_PAIRS[:]
+        selected_pairs = ACTIVE_PAIRS[:]
         logger.info(f"📋 SCAN ALL: {len(selected_pairs)} pairs")
 
     # ─── APPLY EXCLUSION — BOTH BRANCHES ───────────────────────────────────────
@@ -645,7 +684,7 @@ def main():
             for p in selected_pairs
             if not any(skip in p for skip in EXCLUDE_CURRENCIES)
         ]
-        skipped = sorted(set(ALL_PAIRS) - set(selected_pairs))
+        skipped = sorted(set(ACTIVE_PAIRS) - set(selected_pairs))
         logger.info(
             f"🚫 EXCLUSION: Skipped {before_count - len(selected_pairs)} pairs containing {EXCLUDE_CURRENCIES}: {', '.join(skipped)}"
         )
@@ -973,6 +1012,7 @@ def main():
             timeframe=TIMEFRAME,
         )
         if not allow_entry:
+            logger.info(f"⏭️ {pair}: TREND FILTER BLOCKED — {tp_info}")
             # AUDIT: gap-qualified but blocked by trend filter → NO_CONSENSUS
             if _sig_row is not None and _sig_row.get("action_taken") == "PENDING":
                 _sig_row["action_taken"] = "NO_CONSENSUS"

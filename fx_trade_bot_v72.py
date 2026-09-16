@@ -1,10 +1,14 @@
+# fx_trade_bot_v7 — Unified Forex Trading Bot with Single Config
 #!/usr/bin/env python3
 """
-fx_trade_bot_v7 — UNIFIED CONFIG · Single config_bot_v7.py
+fx_trade_bot_v7 — UNIFIED CONFIG · Single config_bot.py
 Profile2/Account002 · Profile3/Account003
 ✅ All profiles in config_bot.py — NO separate profile config files
 ✅ CLI selects profile → auto-loads correct account + settings
 ✅ TREND_FILTER: Profile3=ON · Profile2=OFF — CLI can override
+✅ PAIRS: 扫描/交易一律用 ACTIVE_PAIRS ← config_bot
+   (--profile3 → forex_pairs.yml group3 · --profile2/--profile4 → all_pairs)
+✅ RISK SCOPE: MAX_OPEN + 退出管理 = 账户全部持仓（含已移出白名单的遗留仓位）
 
 Usage:
     python fx_trade_bot_v7.py --profile2    # default, filters OFF
@@ -282,6 +286,13 @@ DYNAMIC_SL_MULT = cfg(P, "DYNAMIC_SL_MULT", 1.5)
 # Global base constants（全部来自 P，禁止 cfg_base / 直接 import 常量）
 ALL_PAIRS = cfg(P, "ALL_PAIRS")
 YAHOO_TO_OANDA = cfg(P, "YAHOO_TO_OANDA")
+
+# ─── ✅ ACTIVE PAIRS — 按命令行参数 --profileX 取 config_bot 装好的白名单 ──────
+#   --profile3      → forex_pairs.yml → group3     （active pairs：只扫描/交易这些）
+#   --profile2/4    → forex_pairs.yml → all_pairs
+#   ALL_PAIRS 只作为 ML 训练语料（共享模型 trade_model_xgb.pkl）与兜底使用
+ACTIVE_PAIRS = list(cfg(P, "ACTIVE_PAIRS") or ALL_PAIRS)
+ACTIVE_SOURCE = cfg(P, "_ACTIVE_SOURCE", "default")
 YF_INTERVAL = cfg(P, "YF_INTERVAL", "4h")
 YF_PERIOD_FULL = cfg(P, "YF_PERIOD_FULL", "30d")
 YF_PERIOD_RESAMPLE = cfg(P, "YF_PERIOD_RESAMPLE", "60d")
@@ -573,17 +584,29 @@ def main():
     )
     logger.info(f"🔑 OANDA Account ID: {OANDA_ACCOUNT_ID}")
 
+    # ─── ACCOUNT OPEN TRADES — 每次运行读一次，审计 + 风控共用 ──────────────────
+    def _read_open_trades():
+        """→ (trades, ok)·ok=False 时禁止据此判定『已平仓』（防误判）"""
+        try:
+            from oandapyV20.endpoints.trades import OpenTrades
+
+            return (
+                api.request(OpenTrades(accountID=OANDA_ACCOUNT_ID)).get("trades", []),
+                True,
+            )
+        except Exception as _e:
+            logger.warning(f"⚠️ Cannot read open trades from OANDA: {_e}")
+            return [], False
+
+    _OPEN_TRADES, _OPEN_READ_OK = _read_open_trades()
+
     # ─── AUDIT HOOK 3: RECONCILIATION ──────────────────────────────────────
     # Any open trade_log row whose trade_id no longer exists on OANDA
     # → auto-backfill with exit_reason="SL_OR_TP_HIT"
     try:
-        if TRADE_LOG_PATH.exists():
+        if TRADE_LOG_PATH.exists() and _OPEN_READ_OK:
             _rdf = pd.read_csv(TRADE_LOG_PATH, dtype={"trade_id": str})
-            _open_ids = set()
-            with contextlib.suppress(Exception):
-                from oandapyV20.endpoints.trades import OpenTrades
-                _o = api.request(OpenTrades(accountID=OANDA_ACCOUNT_ID))
-                _open_ids = {str(t["id"]) for t in _o.get("trades", [])}
+            _open_ids = {str(t["id"]) for t in _OPEN_TRADES}
             for _, _row in _rdf.iterrows():
                 if pd.notna(_row.get("exit_time")):
                     continue
@@ -604,6 +627,8 @@ def main():
     if forex_market_closed():
         return
 
+    # ⚠️ 训练语料仍用 ALL_PAIRS：trade_model_xgb.pkl 是所有 profile 共享的模型，
+    #    每天由 retrain_model.py 全量重训。扫描/交易一律走 ACTIVE_PAIRS（见 Step 1）。
     model_wrapper, strat_engine = ensure_model(
         MODEL_PATH,
         FEAT_CFG,
@@ -627,14 +652,24 @@ def main():
 
     EXCLUDE_CURRENCIES = cfg(P, "EXCLUDE_CURRENCIES", [])
 
+    # ─── ✅ ACTIVE WHITELIST — 由 --profileX 决定（config_bot ← forex_pairs.yml）─
+    logger.info(
+        f"📋 Whitelist: {len(ACTIVE_PAIRS)} pairs [{ACTIVE_SOURCE}] → {ACTIVE_PAIRS}"
+    )
+    _unmapped = [p for p in ACTIVE_PAIRS if p not in YAHOO_TO_OANDA]
+    if _unmapped:
+        logger.warning(
+            f"⚠️ Whitelist pairs without OANDA mapping (will be skipped): {_unmapped}"
+        )
+
     if USE_TOP_PAIRS_ONLY:
         selected_pairs, _ = build_top_pairs(
-            strength_scores, ALL_PAIRS, TOP_PAIRS_COUNT, TOP_PAIRS_MIN_GAP
+            strength_scores, ACTIVE_PAIRS, TOP_PAIRS_COUNT, TOP_PAIRS_MIN_GAP
         )
-        selected_pairs = selected_pairs or ALL_PAIRS[:]
+        selected_pairs = selected_pairs or ACTIVE_PAIRS[:]
         logger.info(f"🎯 AUTO-RANK: Top {len(selected_pairs)} pairs selected")
     else:
-        selected_pairs = ALL_PAIRS[:]
+        selected_pairs = ACTIVE_PAIRS[:]
         logger.info(f"📋 SCAN ALL: {len(selected_pairs)} pairs")
 
     # ─── APPLY EXCLUSION — BOTH BRANCHES ───────────────────────────────────────
@@ -645,14 +680,60 @@ def main():
             for p in selected_pairs
             if not any(skip in p for skip in EXCLUDE_CURRENCIES)
         ]
-        skipped = sorted(set(ALL_PAIRS) - set(selected_pairs))
+        skipped = sorted(set(ACTIVE_PAIRS) - set(selected_pairs))
         logger.info(
             f"🚫 EXCLUSION: Skipped {before_count - len(selected_pairs)} pairs containing {EXCLUDE_CURRENCIES}: {', '.join(skipped)}"
         )
 
+    # ─── ✅ ACCOUNT-WIDE 持仓发现 — 白名单只决定「新开仓」，风控看整个账户 ──────
+    #   INHERITED_PAIRS : 账户上已持有、但已不在 ACTIVE_PAIRS 的货币对（例如收窄 group3 后的遗留仓位）
+    #   DATA_PAIRS      : 本次取数 + 退出管理（trailing / 时间退出）的范围 = 待入场 + 全部持仓
+    _OANDA_TO_YAHOO = {v: k for k, v in YAHOO_TO_OANDA.items()}
+    _open_by_instrument = {}
+    for _t in _OPEN_TRADES:
+        _open_by_instrument.setdefault(str(_t["instrument"]), _t)
+
+    if not _OPEN_READ_OK:
+        # 兜底：账号级 OpenTrades 读取失败 → 逐对 PositionDetails（白名单 + 待入场），
+        # 绝不能因为读取失败就当成「0 持仓」→ 否则会突破 MAX_OPEN
+        logger.warning("⚠️ OpenTrades 读取失败 → 回退逐对 PositionDetails 查询持仓")
+        for _p in dict.fromkeys(ACTIVE_PAIRS + selected_pairs):
+            _ins_p = YAHOO_TO_OANDA.get(_p)
+            if not _ins_p:
+                continue
+            if get_open_position(api, OANDA_ACCOUNT_ID, _ins_p) is not None:
+                _open_by_instrument.setdefault(_ins_p, {})
+
+    _open_yahoo, _unmanaged_open = [], []
+    for _ins in sorted(_open_by_instrument):
+        _yp = _OANDA_TO_YAHOO.get(_ins)
+        if _yp is None and "_" in _ins:  # 兜底：NZD_USD → NZDUSD=X
+            _yp = _ins.replace("_", "") + "=X"
+        if not _yp:
+            _unmanaged_open.append(_ins)
+            continue
+        if _yp not in _open_yahoo:
+            _open_yahoo.append(_yp)
+
+    INHERITED_PAIRS = [p for p in _open_yahoo if p not in ACTIVE_PAIRS]
+    DATA_PAIRS = list(dict.fromkeys(selected_pairs + _open_yahoo))
+    if INHERITED_PAIRS:
+        logger.warning(
+            f"⚠️ {len(INHERITED_PAIRS)} 个持仓不在 ACTIVE_PAIRS 内（收窄白名单前的遗留仓位）: "
+            f"{INHERITED_PAIRS} → 仍按 trailing/时间退出管理并计入 MAX_OPEN，但不会再加仓"
+        )
+    if _unmanaged_open:
+        logger.warning(
+            f"⚠️ 持仓 instrument 无 Yahoo 映射，无法取数管理: {_unmanaged_open}"
+        )
+    logger.info(
+        f"🧭 本次处理范围 DATA_PAIRS: {len(DATA_PAIRS)} "
+        f"(待入场 {len(selected_pairs)} + 持仓 {len(_open_yahoo)})"
+    )
+
     # Step 2 — Fetch Data
     pair_data, weekly_ema_cache = {}, {}
-    for pair in selected_pairs:
+    for pair in DATA_PAIRS:
         oanda = YAHOO_TO_OANDA.get(pair)
         if not oanda:
             logger.warning(f"⚠️ No OANDA mapping for {pair} — skipping")
@@ -790,30 +871,34 @@ def main():
 
     dyn_mgr.update_all(pair_data, close_wrap)
 
-    # Step 6 — Scan Open Positions
+    # Step 6 — Scan Open Positions（ACCOUNT-WIDE：白名单只管新开仓，风控管整个账户）
     open_pos_by_oanda, open_pos_count = {}, 0
-    logger.info("🔍 Checking open positions...")
-    for pair in selected_pairs:
-        oanda_inst = YAHOO_TO_OANDA.get(pair)
-        if not oanda_inst:
-            continue
-        pos = get_open_position(api, OANDA_ACCOUNT_ID, oanda_inst)
-        open_pos_by_oanda[oanda_inst] = pos is not None
-        if pos is not None:
-            open_pos_count += 1
-            logger.info(
-                f"📌 OPEN POSITION: {pair} → {oanda_inst} | {pos['side'].upper()} | units={pos['units']}"
-            )
-    open_list = [o.replace("_", "/") for o, s in open_pos_by_oanda.items() if s]
+    logger.info("🔍 Checking open positions (account-wide)...")
+    for _ins in sorted(_open_by_instrument):
+        _tr = _open_by_instrument[_ins]
+        open_pos_by_oanda[_ins] = True
+        open_pos_count += 1
+        _units_raw = _tr.get("currentUnits")
+        if _units_raw is None:  # 兜底路径只有 instrument，没有明细
+            _side = "?"
+        else:
+            _side = "LONG" if float(_units_raw) > 0 else "SHORT"
+        logger.info(
+            f"📌 OPEN POSITION: {_ins} | {_side} | units={_units_raw or '?'} "
+            f"| entry={_tr.get('price', '?')} | uPL={_tr.get('unrealizedPL', '-')} "
+            f"| id={_tr.get('id', '?')}"
+        )
     ready_list = [
         p.replace("=X", "")
         for p in selected_pairs
         if not open_pos_by_oanda.get(YAHOO_TO_OANDA.get(p), False)
     ]
+    open_list = [o.replace("_", "/") for o in sorted(open_pos_by_oanda)]
     over = open_pos_count - MAX_OPEN_POSITIONS
     over_tag = f" ⚠️ OVER-LIMIT (+{over})" if over > 0 else ""
     logger.info(
-        f"📊 Open positions: {open_pos_count}/{MAX_OPEN_POSITIONS}{over_tag} | OPEN: {', '.join(open_list) or 'None'} | READY: {', '.join(ready_list) or 'None'}"
+        f"📊 Open positions: {open_pos_count}/{MAX_OPEN_POSITIONS}{over_tag} "
+        f"| OPEN: {', '.join(open_list) or 'None'} | READY: {', '.join(ready_list) or 'None'}"
     )
     open_slots_remaining = max(0, MAX_OPEN_POSITIONS - open_pos_count)
 

@@ -143,16 +143,18 @@ def get_pair_momentum(instrument: str, granularity: str) -> Optional[float]:
     return blended
 
 
-def build_strength_matrix() -> Dict[str, float]:
-    scores = {c: 0.0 for c in CURRENCIES}
-    samples = {c: 0 for c in CURRENCIES}
+def build_strength_matrix(allowed_currencies=None) -> Dict[str, float]:
+    if allowed_currencies is None:
+        allowed_currencies = CURRENCIES
+    scores = {c: 0.0 for c in allowed_currencies}
+    samples = {c: 0 for c in allowed_currencies}
 
     for pair in STRENGTH_PAIRS:
         parts = pair.split("_")
         if len(parts) != 2:
             continue
         base, quote = parts
-        if base not in CURRENCIES or quote not in CURRENCIES:
+        if base not in allowed_currencies or quote not in allowed_currencies:
             continue
 
         for granularity, weight in STRENGTH_TIMEFRAMES.items():
@@ -164,7 +166,7 @@ def build_strength_matrix() -> Dict[str, float]:
             samples[base] += 1
             samples[quote] += 1
 
-    for c in CURRENCIES:
+    for c in allowed_currencies:
         if samples[c] > 0:
             scores[c] /= samples[c]
 

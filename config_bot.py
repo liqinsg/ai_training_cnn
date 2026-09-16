@@ -1,8 +1,11 @@
 # config_bot.py — v7.7 · Strict group3, no silent fallback
 """
-- forex_pairs.yml: all_pairs = full list, group3 = exact 13 pairs below
+- forex_pairs.yml 是唯一货币对来源:
+    all_pairs → profile2/4 的 ACTIVE_PAIRS（全量）
+    group3    → profile3  的 ACTIVE_PAIRS（active pairs）
 - profile3 → exact group3 from YAML; ERROR if missing/empty
 - profile2/4 → all_pairs
+- 自动去重（保持 YAML 顺序）— 重复项只取第一次
 - Full untruncated print for verification
 """
 from __future__ import annotations
@@ -33,9 +36,14 @@ def _load_pairs_from_yaml():
         raise ValueError("forex_pairs.yml: 'group3' is missing or empty — please define it!")
     
     def _to_symbols(names):
+        """YAML 名称 → Yahoo/OANDA 符号（自动去重，保持原顺序）"""
         ya = []
         oa_map = {}
+        seen = set()
         for name in names:
+            if name in seen:
+                continue  # forex_pairs.yml 里的重复项只取第一次
+            seen.add(name)
             ys = f"{name}=X"
             os = f"{name[:3]}_{name[3:]}" if len(name) == 6 else name
             ya.append(ys)
@@ -260,10 +268,14 @@ def load_profile(profile_name: str) -> dict:
     # Exact assignment — no silent fallback ✅
     if profile_name == "profile3":
         final["ACTIVE_PAIRS"] = list(GROUP3_PAIRS)
-        final["_ACTIVE_SOURCE"] = "forex_pairs.yml → group3 (exact 13 pairs)"
+        final["_ACTIVE_SOURCE"] = (
+            f"forex_pairs.yml → group3 ({len(GROUP3_PAIRS)} pairs)"
+        )
     else:
         final["ACTIVE_PAIRS"] = list(ALL_PAIRS)
-        final["_ACTIVE_SOURCE"] = "forex_pairs.yml → all_pairs"
+        final["_ACTIVE_SOURCE"] = (
+            f"forex_pairs.yml → all_pairs ({len(ALL_PAIRS)} pairs)"
+        )
 
     final["EXCLUDE_PAIRS"] = []
     final["EXCLUDE_OANDA"] = []
