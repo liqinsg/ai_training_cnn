@@ -438,3 +438,38 @@ def forex_market_closed():
         (wd == 6 and now.hour < 21) or  # Sunday before open
         (wd == 4 and now.hour >= 21)    # Friday after close
     )
+
+def update_trade_on_close(instrument, exit_reason="UNKNOWN", TRADE_LOG_PATH=None ):
+    try:
+        if not TRADE_LOG_PATH.exists():
+            return
+        df = pd.read_csv(TRADE_LOG_PATH, dtype={"trade_id": str})
+        for c in ("pips", "profit_usd", "exit_reason", "exit_time"):
+            if c in df.columns:
+                df[c] = df[c].astype(object)
+        if df.empty:
+            return
+        mask = (df["pair"] == instrument) & df["exit_time"].isna()
+        match = df.loc[mask].head(1)
+        if match.empty:
+            return
+        tid = str(match.iloc[0]["trade_id"])
+        if tid.startswith("DRY_RUN_"):
+            df.loc[match.index, "exit_reason"] = exit_reason
+            df.loc[match.index, "exit_time"] = datetime.now(timezone.utc).isoformat()
+            df.to_csv(TRADE_LOG_PATH, index=False)
+            return
+        realized_pl = 0.0
+        with contextlib.suppress(Exception):
+            from oandapyV20.endpoints.trades import TradeDetails
+
+            t = api.request(TradeDetails(accountID=OANDA_ACCOUNT_ID, tradeID=tid)).get(
+                "trade", {}
+            )
+            realized_pl = float(t.get("realizedPL", 0.0))
+        df.loc[match.index, "profit_usd"] = round(realized_pl, 2)
+        df.loc[match.index, "exit_reason"] = exit_reason
+        df.loc[match.index, "exit_time"] = datetime.now(timezone.utc).isoformat()
+        df.to_csv(TRADE_LOG_PATH, index=False)
+    except Exception as e:
+        logger.warning(f"⚠️ Backfill error {instrument}: {e}")

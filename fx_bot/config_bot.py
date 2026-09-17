@@ -155,7 +155,7 @@ _GLOBAL_CONSTANT_KEYS: tuple[str, ...] = (
     "TRAIN_LOOKBACK_BARS",
     # shared resources
     "D_STRATEGY_GROUPS",
-    "EXCLUDE_CURRENCIES_GLOBAL",
+    "EXCLUDE_PAIRS_GLOBAL",
 )
 
 # ==========================================
@@ -366,8 +366,8 @@ D_STRATEGY_GROUPS = {
     },
 }
 
-# ── EXCLUDE_CURRENCIES_GLOBAL — 默认要排除的货币代码 ──
-EXCLUDE_CURRENCIES_GLOBAL = [
+# ── EXCLUDE_PAIRS_GLOBAL — 默认要排除的货币代码 ──
+EXCLUDE_PAIRS_GLOBAL = [
     # "NZD", "CAD", "CHF", "JPY",   # 需要时取消注释
 ]
 
@@ -379,7 +379,7 @@ EXCLUDE_CURRENCIES_GLOBAL = [
 # 内部做的事：
 #   1. 取 PROFILE_CFG[name] 作为模板（深拷贝，不污染原模板）
 #   2. merge 模块级全局常量（原来 cfg() 函数的第二层 fallback）
-#   3. 注入全局共享资源（D_STRATEGY_GROUPS / EXCLUDE_CURRENCIES_GLOBAL）
+#   3. 注入全局共享资源（D_STRATEGY_GROUPS / EXCLUDE_PAIRS_GLOBAL）
 #      — 哪些 profile 启用哪些资源，在这里集中声明
 #   4. 返回一个完全独立的最终 dict
 #
@@ -402,10 +402,10 @@ def load_profile(profile_name: str) -> dict:
     # ── Step 3: 注入全局共享资源（集中声明哪些 profile 启用哪些资源） ──
     if profile_name == "profile3":
         final["INSTRUMENT_OVERRIDES"] = D_STRATEGY_GROUPS
-        final["EXCLUDE_CURRENCIES"] = list(EXCLUDE_CURRENCIES_GLOBAL)
+        final["EXCLUDE_PAIRS"] = list(EXCLUDE_PAIRS_GLOBAL)
     else:
         final["INSTRUMENT_OVERRIDES"] = {}
-        final["EXCLUDE_CURRENCIES"] = []
+        final["EXCLUDE_PAIRS"] = []
 
     # ── Step 4: 注入外部客户端/连接（只在 config_bot 触碰 config_oanda） ──
     final["OANDA_API"] = OANDA_API

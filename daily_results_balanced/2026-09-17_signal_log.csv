@@ -1,0 +1,4 @@
+timestamp,profile,account,pair,score_final,score_s,score_r,score_a,score_x,score_m,action_taken
+2026-09-17T09:14:47.942293+00:00,profile2,a/c2,EURUSD=X,66.6,88.2,17.9,100.0,50.0,35.9,NO_SLOT_MAX_OPEN
+2026-09-17T09:14:48.994608+00:00,profile2,a/c2,AUDJPY=X,44.9,28.5,3.7,98.1,64.2,54.0,NO_SLOT_MAX_OPEN
+2026-09-17T09:14:49.529949+00:00,profile2,a/c2,GBPNZD=X,32.5,22.3,0.0,61.0,50.0,44.4,NO_SLOT_MAX_OPEN

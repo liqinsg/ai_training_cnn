@@ -1,0 +1,142 @@
+OANDA 配置职责与初始化修复 — 审查报告
+日期：2026-09-17
+项目：/home/qili/projects/ai_training_cnn
+
+一、修复范围
+本次只修复 OANDA 配置职责与启动初始化，不重构交易策略。
+原始错误为 config_bot_v7.py 引用未定义的 config_oanda，导致导入时 NameError。
+没有通过添加 import config_oanda 来掩盖错误。
+工作区原有未提交修改已保留；以下说明仅针对本次补丁。
+
+二、修改文件
+1. /home/qili/projects/ai_training_cnn/config_bot_v7.py
+2. /home/qili/projects/ai_training_cnn/config_oanda.py
+3. /home/qili/projects/ai_training_cnn/fx_trade_bot_v71.py
+4. /home/qili/projects/ai_training_cnn/config_bot_v7.yml
+5. /home/qili/projects/ai_training_cnn/tests/test_oanda_profile_initialization.py
+   第 5 项为新增离线回归测试。
+
+三、配置职责
+config_bot_v7.py：
+- 删除 PROFILE_CFG 内三处 OANDA_ACCOUNT_ID 配置。
+- 删除已失效的 OANDA 导入提示和账户/环境诊断。
+- 不导入 config_oanda，不创建 API，不保存 API key。
+- 保持 load_profile 的策略绑定和 strategy 返回结构。
+- 保持 cfg() 不变，不展开或重新解释策略字典。
+
+config_bot_v7.yml：
+- 删除 profile1–4 的 account_id 和 mode 字段。
+- 保留 account_alias、param_set、dry_run 和其他字段及其值。
+- account_alias 仅作为显示名称保留，不用于选择 OANDA 账户。
+- 修改此文件是为了避免 bot 配置继续保存第二份账户/环境配置。
+
+config_oanda.py：
+- 保留现有 practice/live token 和账户 ID 配置来源。
+- 将原 YAML 的环境绑定原样迁入 OANDA_PROFILE_ENV。
+- get_oanda_profile 不再读取 bot YAML。
+- 根据 profile 编号及环境选择对应账户和 token，创建小写 api。
+- 保留无 profile 参数时按 OANDA_ENV 选择默认环境的兼容行为。
+- 保留 env_override 接口。
+- 新增可选 account_override 参数，统一处理账户覆盖。
+- 本次未清理无关的旧兼容 helper 或账户发现工具。
+
+四、profile1–4 选择链路
+命令行 -p N 同时选择两个独立配置域：
+
+  PROFILE_NAME = f"profile{args.profile}"
+  P = load_profile(PROFILE_NAME)
+
+  oanda_ctx = get_oanda_profile(
+      profile_num=str(args.profile), account_override=args.account
+  )
+  api = oanda_ctx["api"]
+  OANDA_ACCOUNT_ID = oanda_ctx["account_id"]
+  IS_LIVE = oanda_ctx["is_live"]
+
+当前绑定（保持修改前行为）：
+  -p 1 -> profile1 -> params_conservative -> live     -> live 账户 1
+  -p 2 -> profile2 -> params_balanced     -> live     -> live 账户 2
+  -p 3 -> profile3 -> params_baseline     -> practice -> practice 账户 3
+  -p 4 -> profile4 -> params_aggressive   -> live     -> live 账户 4
+
+注意：profile1/2/4 的环境原本就是 live，并非本次切换为 live。
+策略参数集名称和参数值未修改。
+按用户确认，不新增 profile9；保留 CLI 原有选项，未配置时仍报错。
+
+五、--account 行为
+保留 --account，不再通过 load_profile 获取账户。
+
+短编号 001/002/003/004：
+- 在 -p N 所选 OANDA 环境中，解析相应编号的账户。
+- 不按覆盖账户编号重新选择策略、环境或 API key。
+- 例如 -p 3 --account 002 使用 practice 环境的账户 2。
+
+完整账户 ID：
+- 原样覆盖 account_id。
+- 不切换当前环境或 token。
+- 保留 bot 原有基本格式检查；未新增在线账户授权检查。
+- 使用者仍需确保完整账户 ID 属于当前环境并获当前 token 授权。
+
+六、bot 启动初始化调整
+- 小写 api 直接来自 get_oanda_profile 返回值。
+- 后续 DataFetcher、api.request 和交易组件没有重命名或重构。
+- MODE_RAW 从 OANDA context 的 env 读取，不再从 bot profile 读取环境。
+- BASE_DIR 使用脚本所在目录，避免现有返回结构导致 None 路径。
+- ACCOUNT_NAME 从 P["account_alias"] 读取。
+- COOLDOWN_FILE 从 S["COOLDOWN_FILE"] 读取。
+- RESULTS_DIR 从 S["RESULTS_DIR"] 读取。
+  上述字段使用当前已有配置值，修复原有不存在的顶层键访问。
+- 缺少所选环境 token 时，使用 parser.error 结束启动。
+- 保留 profile 选择提示，显示 OANDA environment、account、api initialized。
+- 不输出实际 API key。
+- DRY_RUN 表达式和交易执行代码均未修改。
+
+七、验证结果
+语法编译：通过。
+已对三个目标 Python 文件和新增测试执行 py_compile。
+
+离线回归测试：47 passed，退出码 0。
+覆盖：
+- config_bot_v7 和 config_oanda 配置模块导入。
+- profile1–4 策略绑定与 OANDA 环境、账户、token 选择。
+- 短编号及完整账户 ID 覆盖，不改变连接环境和 token。
+- 显式环境覆盖。
+- OANDA helper 不依赖当前工作目录中的 bot YAML。
+- 实际 bot CLI/初始化语句在隔离环境下运行。
+- 缺少 token 时明确失败。
+- 默认 api 兼容行为。
+- 未配置 profile 不擅自创建映射。
+- 启动输出不包含测试 token。
+
+运行测试的命令：
+/home/qili/miniconda3/envs/ai-sprint/bin/python -m pytest /home/qili/projects/ai_training_cnn/tests/test_oanda_profile_initialization.py -q --tb=short
+
+验证方式与限制：
+- 使用虚构 token 和账户 ID；不读取真实凭据文件。
+- 使用真实配置模块和 OANDA API 构造，阻止 OANDA request。
+- 提取实际 CLI/初始化代码执行，在审计与交易代码之前停止。
+- 不导入 bot 的完整重型运行时依赖，不执行完整交易循环。
+- 不发送 OANDA 请求，不发送 Telegram，不创建交易状态目录，不下单。
+- 未验证真实 token 有效性、账户授权或完整交易运行。
+- 没有直接执行可能进入交易流程的完整 -p 1/2/3/4 命令。
+
+八、修改前后差异核对
+以本次修改前的工作区快照为基准：
+- profiles_all.json 内容逐字节不变。
+- PROFILE_CFG 除删除 OANDA_ACCOUNT_ID 外，AST 内容一致。
+- bot YAML 除删除 account_id 和 mode 外，内容一致。
+- cfg() AST 内容一致。
+- fx_trade_bot_v71.py 从 TODAY_STR 初始化开始至文件末尾逐字节一致。
+- 所有检查通过，退出码 0。
+
+九、明确确认
+No trading logic, weights, thresholds, SL/TP formulas, or strategy parameters were changed.
+没有修改交易逻辑、权重、阈值、SL/TP 公式或策略参数。
+本次修复不构成对策略运行正确性、完整运行时或真实交易安全性的验证。
+
+十、验证记录（临时文件，可能被系统清理）
+/tmp/oanda_pytest.log
+/tmp/oanda_checked.log
+/tmp/oanda_before/
+
+本报告不包含 API key。

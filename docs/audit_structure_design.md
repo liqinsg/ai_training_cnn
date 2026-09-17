@@ -58,7 +58,7 @@ print(model.feature_importances_) # [0.4, 0.1, 0.1, 0.3, 0.1]
 优先级 | 方向 | 数据来源
 P0 | 调权重 | `feature_importances_` 告诉你S,X权重该加多少
 P1 | 动态阈值 | 牛市`MIN_SCORE=25` 熊市`MIN_SCORE=35`
-P2 | 踢掉垃圾对 | `groupby pair` 发现 `CADJPY` 一直亏就进 `EXCLUDE_CURRENCIES`
+P2 | 踢掉垃圾对 | `groupby pair` 发现 `CADJPY` 一直亏就进 `EXCLUDE_PAIRS`
 P3 | 冷却优化 | 统计刚平又开的胜率。如果<40%就把COOLDOWN=4
 ### *给你v7.0加Audit的最小代码*
 

@@ -4,7 +4,11 @@ import datetime
 import sys
 import os
 import json
+import csv
 from pathlib import Path
+from utils.logging_utils import get_logger
+
+logger = get_logger(__name__)
 
 BASE_DIR = Path(__file__).resolve().parent.parent  # 项目根目录，不是 utils/ 本身
 COOLDOWN_FILE = BASE_DIR / "cooldown.json"
@@ -99,3 +103,20 @@ def calculate_sl_zone(side: str, entry_price: float, h4_candles: list, pip_size:
         print(f"{GREEN}✅ SL ACCEPTED | {side} | Distance: {sl_pips:.1f} pips{RESET}")
 
     return sl_price, sl_pips, skip_trade
+
+def append_to_csv(filepath, row_dict):
+    try:
+        fn = list(row_dict.keys())
+        if filepath.exists():
+            with open(filepath, "r", newline="") as f:
+                eh = next(csv.reader(f), None)
+                if eh and list(eh) != fn:
+                    logger.warning(f"⚠️ Header mismatch: {filepath} — skipping")
+                    return
+        with open(filepath, "a", newline="") as f:
+            csv.DictWriter(f, fieldnames=fn).writerow(row_dict)
+    except Exception as e:
+        logger.warning(f"⚠️ Append failed {filepath}: {e}")
+
+def calculate_ema(series, period):
+    return series.ewm(span=period, adjust=False).mean()

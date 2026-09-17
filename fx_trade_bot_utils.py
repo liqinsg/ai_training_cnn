@@ -33,7 +33,9 @@ REQUIRED_H4_CANDLES = 4  # Only fully closed H4 — LOCKED
 # ──────────────────────────────────────────────────────────────────────
 # ✅ HYBRID SL: H4 PRIMARY + ATR GUARD — ALWAYS PICK CLOSER-TO-ENTRY
 # ──────────────────────────────────────────────────────────────────────
-def calculate_hybrid_sl(instrument, direction, entry_price, h4_closed, atr_value, pip_sz):
+def calculate_hybrid_sl(
+    instrument, direction, entry_price, h4_closed, atr_value, pip_sz
+):
     """
     Unified Hybrid SL — same logic for NEW orders + EXISTING positions
     Returns: (final_sl_price, h4_sl, atr_sl, chosen_source, total_pips, skip_trade)
@@ -55,7 +57,9 @@ def calculate_hybrid_sl(instrument, direction, entry_price, h4_closed, atr_value
         )
         h4_sl = round(h4_sl, decimals)
     except Exception:
-        logger.exception("H4 SL calculation failed for %s — falling back to ATR guard", instrument)
+        logger.exception(
+            "H4 SL calculation failed for %s — falling back to ATR guard", instrument
+        )
         h4_sl = h4_pips = h4_skip = None
 
     # Step 2: Calculate ATR Guard SL (ATR × 2.0)
@@ -68,7 +72,9 @@ def calculate_hybrid_sl(instrument, direction, entry_price, h4_closed, atr_value
         atr_pips = atr_offset / pip_sz
         atr_skip = atr_pips > SL_MAX_ALLOWED_PIPS
     except Exception:
-        logger.exception("ATR guard SL calculation failed for %s — falling back to H4", instrument)
+        logger.exception(
+            "ATR guard SL calculation failed for %s — falling back to H4", instrument
+        )
         atr_sl = atr_pips = atr_skip = None
 
     # Step 3: Fallback Logic — pick available
@@ -159,13 +165,22 @@ def calculate_stop_loss(
         logger.warning(
             "SL TOO LARGE — TRADE ABORTED | Side: %s | Ref: %.5f | "
             "Entry: %.5f | SL: %.5f | Distance: %.1f pips | MAX ALLOWED: %s",
-            side, ref_level, entry_price, sl_price, sl_pips, _cap,
+            side,
+            ref_level,
+            entry_price,
+            sl_price,
+            sl_pips,
+            _cap,
         )
     else:
         skip_trade = False
         logger.info(
             "SL ACCEPTED | Side: %s | Ref: %.5f | Entry: %.5f | SL: %.5f | Distance: %.1f pips",
-            side, ref_level, entry_price, sl_price, sl_pips,
+            side,
+            ref_level,
+            entry_price,
+            sl_price,
+            sl_pips,
         )
 
     return sl_price, sl_pips, skip_trade
@@ -237,8 +252,8 @@ def forex_market_closed_schedule() -> bool:
     now = datetime.now(ZoneInfo("Europe/London"))
     wd = now.weekday()
     return (
-        wd == 5                      # Saturday all-day
-        or (wd == 6 and now.hour < 21)   # Sunday before 21:00 London
+        wd == 5  # Saturday all-day
+        or (wd == 6 and now.hour < 21)  # Sunday before 21:00 London
         or (wd == 4 and now.hour >= 21)  # Friday after 21:00 London
     )
 
@@ -317,7 +332,9 @@ def attach_tp_to_open_positions(engine, instrument=None, dry_run: bool = False):
         # Send TP update to OANDA
         data = {"takeProfit": {"price": f"{tp_price}", "timeInForce": "GTC"}}
         if dry_run:
-            logger.info(f"🧊 DRY-RUN — would ATTACH TP: {inst} trade={tid} → {tp_price}")
+            logger.info(
+                f"🧊 DRY-RUN — would ATTACH TP: {inst} trade={tid} → {tp_price}"
+            )
             attached_count += 1
             continue
         try:
@@ -358,7 +375,9 @@ def get_open_position(api, oanda_account_id: str, instrument: str):
         return None
 
 
-def close_position(api, oanda_account_id: str, instrument: str, telegram_send=None, dry_run=False):
+def close_position(
+    api, oanda_account_id: str, instrument: str, telegram_send=None, dry_run=False
+):
     """Close existing position for instrument."""
     if dry_run:
         logger.info(f"🧊 DRY-RUN — would CLOSE: {instrument}")
@@ -394,6 +413,88 @@ def close_position(api, oanda_account_id: str, instrument: str, telegram_send=No
         logger.error(f"Close failed for {instrument}: {e}")
 
 
+# ============================================================================
+# MARGIN GUARD — prevent INSUFFICIENT_MARGIN rejections on live accounts
+# ============================================================================
+def get_account_margin_context(api, oanda_account_id: str) -> dict:
+    """Fetch account margin info ONCE — cacheable across multiple order checks."""
+    try:
+        from oandapyV20.endpoints.accounts import AccountDetails
+
+        resp = api.request(AccountDetails(accountID=oanda_account_id))
+        acc = resp.get("account", {})
+        return {
+            "margin_available": float(acc.get("marginAvailable", 0)),
+            "balance": float(acc.get("balance", 0)),
+            "margin_rate": float(acc.get("marginRate", 0.05)),
+            "leverage": 1.0 / float(acc.get("marginRate", 0.05)) if acc.get("marginRate") else 20.0,
+        }
+    except Exception as e:
+        logger.warning(f"Margin context fetch failed: {e}")
+        return {}
+
+
+def check_margin_available(
+    api,
+    oanda_account_id: str,
+    instrument: str,
+    units: int,
+    current_price: float,
+    account_ctx: dict | None = None,
+    safety_buffer: float = 1.2,
+) -> tuple[bool, str]:
+    """
+    Pre-flight margin check. Uses OANDA account's real marginRate + current price.
+    Returns (is_available, message). Never crashes — returns True on any API error.
+    """
+    try:
+        ctx = account_ctx or get_account_margin_context(api, oanda_account_id)
+        if not ctx:
+            return (True, "Margin check skipped (no account context)")
+
+        margin_available = ctx["margin_available"]
+        margin_rate = ctx["margin_rate"]
+
+        notional = abs(units) * current_price
+        required = notional * margin_rate * safety_buffer
+
+        if margin_available < required:
+            return (
+                False,
+                f"INSUFFICIENT MARGIN — avail={margin_available:.2f}, need={required:.2f} "
+                f"(notional={notional:.0f}, units={units}, px={current_price:.5f}, rate={margin_rate})",
+            )
+        return (
+            True,
+            f"Margin OK — avail={margin_available:.2f}, need={required:.2f} "
+            f"(notional={notional:.0f}, units={units})",
+        )
+    except Exception as e:
+        return (True, f"Margin check skipped (API err: {e})")
+
+
+def compute_max_safe_units(
+    api,
+    oanda_account_id: str,
+    instrument: str,
+    current_price: float,
+    account_ctx: dict | None = None,
+    safety_buffer: float = 1.2,
+) -> int:
+    """Calculate maximum units that fit within available margin. Returns int (min 0)."""
+    try:
+        ctx = account_ctx or get_account_margin_context(api, oanda_account_id)
+        if not ctx or current_price <= 0:
+            return 0
+        margin_available = ctx["margin_available"]
+        margin_rate = ctx["margin_rate"]
+        max_notional = margin_available / (margin_rate * safety_buffer)
+        max_units = int(max_notional / current_price)
+        return max(0, max_units)
+    except Exception:
+        return 0
+
+
 # ✅ Drop-in replacement — matches YOUR call signature exactly
 def open_oanda_order_simple(
     api,
@@ -407,25 +508,33 @@ def open_oanda_order_simple(
     client_id: str = "",
     comment: str = "",
     dry_run: bool = False,
+    max_confirm_wait: float = 5.0,
+    retry_interval: float = 0.8,
 ) -> dict:
-    if dry_run:
-        dec = price_decimals(instrument)
-        logger.info(f"🧊 DRY-RUN — would OPEN: {instrument} {direction} | SL={sl_price:.{dec}f} TP={tp_price:.{dec}f}")
-        return {"ok": True, "status": "DRY_RUN", "instrument": instrument, "direction": direction}
-
+    import time as _time
     from oandapyV20.endpoints.orders import OrderCreate
     from oandapyV20.endpoints.trades import TradeClientExtensions
 
     dec = price_decimals(instrument)
+    side = "BUY" if direction.upper() == "BUY" else "SELL"
+    signed_units = str(abs(units) if side == "BUY" else -abs(units))
+
+    if dry_run:
+        logger.info(
+            f"🧊 DRY-RUN — would OPEN: {instrument} {side} | SL={sl_price:.{dec}f} TP={tp_price:.{dec}f}"
+        )
+        return {
+            "ok": True,
+            "status": "DRY_RUN",
+            "instrument": instrument,
+            "direction": direction,
+        }
 
     client_extensions = {}
-
     if client_id:
         client_extensions["id"] = client_id
-
     if tag:
         client_extensions["tag"] = tag
-
     if comment:
         client_extensions["comment"] = comment
 
@@ -433,50 +542,103 @@ def open_oanda_order_simple(
         "order": {
             "type": "MARKET",
             "instrument": instrument,
-            "units": str(abs(units) if direction.upper() == "BUY" else -abs(units)),
+            "units": signed_units,
             "positionFill": "DEFAULT",
         }
     }
-
-    # Attach client extensions to order
     if client_extensions:
         order_payload["order"]["clientExtensions"] = client_extensions
 
     try:
-        resp = api.request(
-            OrderCreate(
-                accountID=oanda_account_id,
-                data=order_payload,
-            )
+        resp = api.request(OrderCreate(accountID=oanda_account_id, data=order_payload))
+    except Exception as e:
+        logger.error(f"❌ HTTP error placing MARKET order {instrument}: {e}")
+        return {"ok": False, "status": "NETWORK_ERROR", "error": str(e)}
+
+    # ── 1) Reject ──────────────────────────────────────────────────
+    if "orderRejectTransaction" in resp:
+        r = resp["orderRejectTransaction"]
+        reason = r.get("rejectReason", "UNKNOWN")
+        msg = r.get("errorMessage", "No message")
+        logger.error(f"❌ OANDA REJECT {instrument}: reason={reason} | {msg}")
+        return {"ok": False, "status": "REJECTED", "error": f"{reason}: {msg}"}
+
+    # ── 2) Cancel (order created but never filled) ─────────────────
+    if "orderCancelTransaction" in resp:
+        c = resp["orderCancelTransaction"]
+        reason = c.get("reason", c.get("type", "UNKNOWN"))
+        try:
+            reason = c.get("rejectReason", reason)
+        except Exception:
+            pass
+        logger.error(
+            f"❌ OANDA CANCEL {instrument}: reason={reason} "
+            f"(order was created but never filled — check margin/account state)"
         )
+        return {
+            "ok": False,
+            "status": "CANCELED",
+            "error": f"{reason}: order never filled",
+        }
 
-        logger.info(f"✅ OANDA accepted order for {instrument}")
+    # ── 3) Fill (the ONLY path where we have a real tradeID) ──────
+    trade_id = ""
+    trade_opened = {}
+    if "orderFillTransaction" in resp:
+        fill = resp["orderFillTransaction"]
+        trade_opened = fill.get("tradeOpened", {})
+        trade_closed = fill.get("tradeClosed", {})
+        trade_reduced = fill.get("tradeReduced", {})
 
-        trade_id = ""
+        trade_id = str(trade_opened.get("tradeID", ""))
+        if trade_closed:
+            logger.info(f"📦 Fill also closed existing trade: {trade_closed}")
+        if trade_reduced:
+            logger.info(f"📦 Fill also reduced trade: {trade_reduced}")
 
-        if "orderFillTransaction" in resp:
-            fill = resp["orderFillTransaction"]
+    if not trade_id:
+        logger.error(
+            f"❌ No tradeID after MARKET order! "
+            f"Response keys: {list(resp.keys())}. Full resp: {resp}"
+        )
+        return {
+            "ok": False,
+            "status": "NO_TRADE",
+            "error": f"No trade opened. Keys: {list(resp.keys())}",
+        }
 
-            trade_opened = fill.get("tradeOpened", {})
-            trade_id = str(trade_opened.get("tradeID", ""))
+    logger.info(f"📦 Trade filled! TradeID={trade_id} | instrument={instrument}")
 
-            logger.info(f"📦 Trade opened: TradeID={trade_id}")
+    # ── 4) Confirm trade visible (live env race-condition protection) ─
+    logger.info(f"⏳ Confirming trade T{trade_id} is visible...")
+    trade_confirmed = False
+    deadline = _time.monotonic() + max_confirm_wait
+    last_verify_err = None
+    while _time.monotonic() < deadline:
+        try:
+            # Reuse TradeList endpoint via the account — simplest portable check
+            from oandapyV20.endpoints.trades import TradesList
 
-        elif "orderCreateTransaction" in resp:
-            trade_id = str(resp["orderCreateTransaction"].get("id", ""))
+            verify_resp = api.request(TradesList(accountID=oanda_account_id))
+            existing_ids = [str(t.get("id", "")) for t in verify_resp.get("trades", [])]
+            if trade_id in existing_ids:
+                trade_confirmed = True
+                break
+        except Exception as ve:
+            last_verify_err = str(ve)
+        _time.sleep(retry_interval)
 
-            logger.info(f"📦 Order created: OrderID={trade_id}")
+    if not trade_confirmed:
+        logger.warning(
+            f"⚠️ Trade T{trade_id} not visible after {max_confirm_wait}s — "
+            f"proceeding anyway (may be a race condition). last_err={last_verify_err}"
+        )
+    else:
+        logger.info(f"✅ Trade T{trade_id} confirmed visible on account")
 
-        if not trade_id:
-            return {
-                "ok": False,
-                "status": "ERROR",
-                "error": "TradeID missing",
-                "message": "TradeID missing",
-            }
-
-        # Attach tag directly to trade
-        if client_extensions:
+    # ── 5) Attach metadata (with retry for live env) ───────────────
+    if client_extensions:
+        for attempt in range(3):
             try:
                 api.request(
                     TradeClientExtensions(
@@ -485,69 +647,82 @@ def open_oanda_order_simple(
                         data={"clientExtensions": client_extensions},
                     )
                 )
-
-                logger.info(
-                    f"🏷️ Trade tagged: " f"tag={tag}, id={client_id}, comment={comment}"
-                )
-
+                logger.info(f"🏷️ Trade T{trade_id} tagged: id={client_id}")
+                break
             except Exception as ce:
-                logger.warning(f"⚠️ Failed to set trade metadata: {ce}")
+                if attempt < 2 and "TRADE_DOESNT_EXIST" in str(ce):
+                    logger.warning(
+                        f"⚠️ Metadata attach attempt {attempt+1} failed (race) — retrying in {retry_interval}s"
+                    )
+                    _time.sleep(retry_interval)
+                else:
+                    logger.warning(f"⚠️ Failed to set trade metadata: {ce}")
 
-        # Stop Loss
-        if sl_price is not None:
-            api.request(
-                OrderCreate(
-                    accountID=oanda_account_id,
-                    data={
-                        "order": {
-                            "type": "STOP_LOSS",
-                            "tradeID": trade_id,
-                            "price": f"{float(sl_price):.{dec}f}",
-                            "timeInForce": "GTC",
-                        }
-                    },
+    # ── 6) Stop Loss (with retry) ──────────────────────────────────
+    if sl_price is not None:
+        for attempt in range(3):
+            try:
+                api.request(
+                    OrderCreate(
+                        accountID=oanda_account_id,
+                        data={
+                            "order": {
+                                "type": "STOP_LOSS",
+                                "tradeID": trade_id,
+                                "price": f"{float(sl_price):.{dec}f}",
+                                "timeInForce": "GTC",
+                            }
+                        },
+                    )
                 )
-            )
+                logger.info(f"✅ SL set at {sl_price}")
+                break
+            except Exception as se:
+                if attempt < 2 and "TRADE_DOESNT_EXIST" in str(se):
+                    logger.warning(
+                        f"⚠️ SL attach attempt {attempt+1} failed (race) — retrying in {retry_interval}s"
+                    )
+                    _time.sleep(retry_interval)
+                else:
+                    logger.error(f"❌ Failed to set SL: {se}")
 
-            logger.info(f"✅ SL set at {sl_price}")
-
-        # Take Profit
-        if tp_price is not None:
-            api.request(
-                OrderCreate(
-                    accountID=oanda_account_id,
-                    data={
-                        "order": {
-                            "type": "TAKE_PROFIT",
-                            "tradeID": trade_id,
-                            "price": f"{tp_price:.{dec}f}",
-                            "timeInForce": "GTC",
-                        }
-                    },
+    # ── 7) Take Profit (with retry) ───────────────────────────────
+    if tp_price is not None:
+        for attempt in range(3):
+            try:
+                api.request(
+                    OrderCreate(
+                        accountID=oanda_account_id,
+                        data={
+                            "order": {
+                                "type": "TAKE_PROFIT",
+                                "tradeID": trade_id,
+                                "price": f"{tp_price:.{dec}f}",
+                                "timeInForce": "GTC",
+                            }
+                        },
+                    )
                 )
-            )
+                logger.info(f"✅ TP set at {tp_price}")
+                break
+            except Exception as te:
+                if attempt < 2 and "TRADE_DOESNT_EXIST" in str(te):
+                    logger.warning(
+                        f"⚠️ TP attach attempt {attempt+1} failed (race) — retrying in {retry_interval}s"
+                    )
+                    _time.sleep(retry_interval)
+                else:
+                    logger.error(f"❌ Failed to set TP: {te}")
 
-            logger.info(f"✅ TP set at {tp_price}")
-
-        return {
-            "ok": True,
-            "status": "OK",
-            "trade_id": trade_id,
-            "tag": tag,
-            "client_id": client_id,
-            "comment": comment,
-            "response": resp,
-        }
-
-    except Exception as e:
-        logger.error(f"❌ FAILED {instrument}: " f"{type(e).__name__}: {e}")
-
-        return {
-            "ok": False,
-            "status": "ERROR",
-            "error": str(e),
-            "message": str(e),
-        }
+    return {
+        "ok": True,
+        "status": "OK",
+        "trade_id": trade_id,
+        "tag": tag,
+        "client_id": client_id,
+        "comment": comment,
+        "response": resp,
+    }
 
 
 # ============================================================================
@@ -618,8 +793,15 @@ def open_oanda_order(
         return {"status": "ERROR", "message": err}
 
     if dry_run:
-        logger.info(f"🧊 DRY-RUN — would OPEN: {pair_raw} {action} | SL={sl:.{dec}f} TP={tp:.{dec}f}")
-        return {"ok": True, "status": "DRY_RUN", "instrument": pair_raw, "direction": action}
+        logger.info(
+            f"🧊 DRY-RUN — would OPEN: {pair_raw} {action} | SL={sl:.{dec}f} TP={tp:.{dec}f}"
+        )
+        return {
+            "ok": True,
+            "status": "DRY_RUN",
+            "instrument": pair_raw,
+            "direction": action,
+        }
 
     # ✅ STEP 1: Send MARKET order WITHOUT attached SL/TP
     order_payload = {
@@ -726,7 +908,9 @@ def update_order_tp(
         new_tp_str = f"{new_tp_price:.{dec}f}"
 
         if dry_run:
-            logger.info(f"🧊 DRY-RUN — would RAISE TP: {instrument} trade={trade_id} → {new_tp_str}")
+            logger.info(
+                f"🧊 DRY-RUN — would RAISE TP: {instrument} trade={trade_id} → {new_tp_str}"
+            )
             return {"ok": True, "status": "DRY_RUN", "new_tp": new_tp_price}
 
         # ✅ OANDA: Update TP on the TRADE (not the order — orders are immutable once filled)
@@ -1050,14 +1234,21 @@ class DynamicPositionManager:
         now = datetime.now(timezone.utc)
         return now.hour >= 0 and now.minute >= 5
 
-    def _recalc_zone_sl(self, oanda_inst, side, pip, gran_override=None) -> float | None:
+    def _recalc_zone_sl(
+        self, oanda_inst, side, pip, gran_override=None
+    ) -> float | None:
         try:
             from oandapyV20.endpoints.instruments import InstrumentsCandles
+
             _gran = gran_override or "H4"
             resp = self.api.request(
                 InstrumentsCandles(
                     instrument=oanda_inst,
-                    params={"granularity": _gran, "count": self.sl_zone_lookback + 1, "price": "M"},
+                    params={
+                        "granularity": _gran,
+                        "count": self.sl_zone_lookback + 1,
+                        "price": "M",
+                    },
                 )
             )
             candles = resp.get("candles", [])
@@ -1078,6 +1269,7 @@ class DynamicPositionManager:
     def _h4_atr(self, oanda_inst) -> float:
         try:
             from oandapyV20.endpoints.instruments import InstrumentsCandles
+
             resp = self.api.request(
                 InstrumentsCandles(
                     instrument=oanda_inst,
@@ -1106,7 +1298,9 @@ class DynamicPositionManager:
 
     def _update_trade_sl(self, trade_id: str, new_sl: float, decimals: int):
         if self.dry_run:
-            logger.info(f"🧊 DRY-RUN — would MOVE SL: trade={trade_id} → {round(new_sl, decimals)}")
+            logger.info(
+                f"🧊 DRY-RUN — would MOVE SL: trade={trade_id} → {round(new_sl, decimals)}"
+            )
             return True
         try:
             data = {
@@ -1142,7 +1336,9 @@ class DynamicPositionManager:
 
     def update_all(self, pair_data: dict, close_position_fn=None):
         BAR_HOURS = {"15m": 0.25, "1H": 1, "H4": 4, "D": 24}
-        bar_hours_default = 4 if self.use_h4_escale else BAR_HOURS.get(self.timeframe, 4)
+        bar_hours_default = (
+            4 if self.use_h4_escale else BAR_HOURS.get(self.timeframe, 4)
+        )
         pip_size_map = lambda p: 0.01 if "JPY" in p.upper() else 0.0001
 
         for pair, info in pair_data.items():
@@ -1158,7 +1354,11 @@ class DynamicPositionManager:
             _sl_gran = _ov.get("sl_granularity", None)
             _use_d1_close_only = _ov.get("confirm_on_close", False)
 
-            atr_val = self._h4_atr(instrument) if self.use_h4_escale and not _ov else df.iloc[-1].get("atr")
+            atr_val = (
+                self._h4_atr(instrument)
+                if self.use_h4_escale and not _ov
+                else df.iloc[-1].get("atr")
+            )
             if atr_val is None or np.isnan(atr_val) or atr_val <= 0:
                 continue
 
@@ -1235,7 +1435,7 @@ class DynamicPositionManager:
                 # ── SL LOGIC → Breakeven → Trailing (均为 profit-gated) ──
                 new_sl = action = None
                 _jpy = "JPY" in instrument
-                _trig_mult = 2.0 if _jpy else 1.0   # JPY 门槛 ×2
+                _trig_mult = 2.0 if _jpy else 1.0  # JPY 门槛 ×2
                 _trail_mult = 1.5 if _jpy else 1.0  # JPY TRAIL 宽度 ×1.5
                 be_pips = self.be_trigger * _trig_mult * atr_val / pip
                 trail_pips = self.trail_trigger * _trig_mult * atr_val / pip
@@ -1252,7 +1452,9 @@ class DynamicPositionManager:
 
                 if profit_pips >= trail_pips:
                     if self.zone_trailing:
-                        cand = self._recalc_zone_sl(instrument, side, pip, gran_override=_sl_gran)
+                        cand = self._recalc_zone_sl(
+                            instrument, side, pip, gran_override=_sl_gran
+                        )
                         if cand is not None:
                             cand = round(cand, decimals)
                             favorable = (
@@ -1267,7 +1469,9 @@ class DynamicPositionManager:
                             if favorable and big_enough:
                                 new_sl, action = cand, "ZONE-TRAIL"
                         else:
-                            logger.debug(f"  ⚠️ {pair} #{tid}: zone SL recalc failed → skip")
+                            logger.debug(
+                                f"  ⚠️ {pair} #{tid}: zone SL recalc failed → skip"
+                            )
                     else:
                         trail_sl = (
                             current_price - self.trail_mult * _trail_mult * atr_val
@@ -1373,7 +1577,9 @@ class DynamicPositionManager_v2:
 
     def _update_trade_sl(self, trade_id: str, new_sl: float, decimals: int):
         if self.dry_run:
-            logger.info(f"🧊 DRY-RUN — would MOVE SL: trade={trade_id} → {round(new_sl, decimals)}")
+            logger.info(
+                f"🧊 DRY-RUN — would MOVE SL: trade={trade_id} → {round(new_sl, decimals)}"
+            )
             return True
         try:
             data = {

@@ -222,7 +222,7 @@ sl_pips = max(
 | `USE_TOP_PAIRS_ONLY`  | False | False    | True 时只扫 strongest/weakest 的 N 对           |
 | `TOP_PAIRS_COUNT`     | 4     | 4        | 用 top/bottom N 货币选 pair                     |
 | `TOP_PAIRS_MIN_GAP`   | 0.25  | 0.25     | top 模式下的 gap 门槛                           |
-| `EXCLUDE_CURRENCIES`  | []    | []       | 跳过含指定货币的 pair（例如`["JPY", "CHF"]`） |
+| `EXCLUDE_PAIRS`  | []    | []       | 跳过含指定货币的 pair（例如`["JPY", "CHF"]`） |
 | `SKIP_MC`             | False | False    | True 时跳过 Monte Carlo                         |
 | `MC_BAND_PCT`         | 90    | 90       | MC 置信区间（默认 90%）                         |
 | `MC_MAX_AGE_HOURS`    | 24    | 24       | MC cache 过期时间                               |

@@ -11,6 +11,7 @@ logger = logging.getLogger(__name__)
 # Contains: ensure_model(), globals needed for training
 
 from utils.logging_utils import get_logger
+
 logger = get_logger()
 
 
@@ -31,7 +32,9 @@ def ensure_model(
         needs_train = True
         logger.info("Model not found. Training...")
     else:
-        age_days = (pd.Timestamp.now(tz="UTC").timestamp() - MODEL_PATH.stat().st_mtime) / 86400
+        age_days = (
+            pd.Timestamp.now(tz="UTC").timestamp() - MODEL_PATH.stat().st_mtime
+        ) / 86400
         if age_days > getattr(FEAT_CFG, "retrain_every_n_days", 30):
             needs_train = True
             logger.info(f"Model stale ({age_days:.1f} days). Retraining...")
@@ -39,7 +42,7 @@ def ensure_model(
     # 尝试加载 —— 如果 scaler 不匹配则删掉 pickle 并标记重训
     if not needs_train:
         model_wrapper.load()
-        scaler_n = getattr(model_wrapper.scaler, 'n_features_in_', None)
+        scaler_n = getattr(model_wrapper.scaler, "n_features_in_", None)
         if scaler_n is not None and scaler_n != len(model_wrapper.feature_names):
             logger.warning(
                 f"Scaler feature count ({scaler_n}) != model features "
@@ -47,7 +50,7 @@ def ensure_model(
             )
             try:
                 MODEL_PATH.unlink()
-                json_path = MODEL_PATH.with_suffix('.features.json')
+                json_path = MODEL_PATH.with_suffix(".features.json")
                 if json_path.exists():
                     json_path.unlink()
             except Exception:

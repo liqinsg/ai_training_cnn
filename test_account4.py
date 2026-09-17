@@ -2,7 +2,7 @@
 """Test OANDA Account 004 connectivity & permissions."""
 
 # ─── CONFIG — Account 004 ──────────────────────────────────────
-OANDA_ACCOUNT_ID = "001-003-21515688-004"
+OANDA_ACCOUNT_ID = "101-003-21515688-004"
 OANDA_ENV = "practice"  # or "live"
 
 # ─── TEST EXECUTION ────────────────────────────────────────────

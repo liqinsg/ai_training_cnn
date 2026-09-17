@@ -1,0 +1,24 @@
+runtime:
+  version: v7.1
+  log_level: INFO
+profiles:
+  profile1:
+    account_alias: a/c1
+    param_set: params_conservative
+    dry_run: false
+  profile2:
+    account_alias: a/c2
+    param_set: params_balanced
+    dry_run: false
+  profile3:
+    account_alias: a/c3
+    param_set: params_baseline
+    dry_run: true
+  profile4:
+    account_alias: a/c4
+    param_set: params_aggressive
+    dry_run: false
+paths:
+  profile_defs: ./profiles_all.json
+  model_xgb: ./trade_model_xgb.pkl
+  trade_log: ./logs/trades.csv
