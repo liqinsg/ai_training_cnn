@@ -1,12 +1,12 @@
-# config_bot.py — v7.7 · Strict group3, no silent fallback
+# config_bot.py — v7.8 · Strict group3 + profile1
 """
 - forex_pairs.yml 是唯一货币对来源:
-    all_pairs → profile2/4 的 ACTIVE_PAIRS（全量）
+    all_pairs → profile1/2/4 的 ACTIVE_PAIRS（全量）
     group3    → profile3  的 ACTIVE_PAIRS（active pairs）
 - profile3 → exact group3 from YAML; ERROR if missing/empty
-- profile2/4 → all_pairs
+- profile1/2/4 → all_pairs
 - 自动去重（保持 YAML 顺序）— 重复项只取第一次
-- Full untruncated print for verification
+- CLI: --profile N / -p N  (N=1,2,3,4)
 """
 from __future__ import annotations
 from pathlib import Path
@@ -19,7 +19,6 @@ import sys
 # 📂 Load from YAML — EXACT values only
 # ==========================================
 _YAML_PATH = Path(__file__).resolve().parent / "forex_pairs.yml"
-
 def _load_pairs_from_yaml():
     if not _YAML_PATH.exists():
         raise FileNotFoundError(f"Cannot find {_YAML_PATH} — place it alongside config_bot.py")
@@ -42,7 +41,7 @@ def _load_pairs_from_yaml():
         seen = set()
         for name in names:
             if name in seen:
-                continue  # forex_pairs.yml 里的重复项只取第一次
+                continue
             seen.add(name)
             ys = f"{name}=X"
             os = f"{name[:3]}_{name[3:]}" if len(name) == 6 else name
@@ -67,42 +66,34 @@ ALL_PAIRS, YAHOO_TO_OANDA, PAIR_GROUPS, GROUP3_PAIRS = _load_pairs_from_yaml()
 ACTIVE_PAIRS = list(ALL_PAIRS)
 EXCLUDE_PAIRS = []
 EXCLUDE_OANDA = []
-
 YF_INTERVAL = "4h"
 YF_PERIOD_FULL = "30d"
 YF_PERIOD_RESAMPLE = "60d"
 YF_INTERVAL_D = "1d"
 YF_PERIOD_FULL_D = "120d"
 YF_PERIOD_RESAMPLE_D = "180d"
-
 PERIODS_YEAR = 252
 MC_BAND_PCT = 90
 MC_MAX_AGE_HOURS = 24
 SIMULATIONS = 5000
 CONFIDENCE = MC_BAND_PCT / 100.0
-
 ATR_PERIOD = 14
 BASE_TP_PIPS = 50
 EMA100_BUFFER_PIPS = 30
 MIN_SL_PIPS = 35
 MIN_SL_PIPS_JPY = MIN_SL_PIPS + 10
-
 DEBUG_MODE = False
 NO_COOLDOWN = True
 DEFAULT_LOT_SIZE = 10000
-
 MULTI_TF_CONFLUENCE = False
 CONFLUENCE_REQUIRED_TFS = 2
-
 TRAILING_TP = True
 DYNAMIC_TP = False
 TP_RAISE_THRESHOLD_PIPS = 15
-
 H4_LOOKBACK = 90
 H4_FORECAST = 8
 DAILY_LOOKBACK = 90
 DAILY_FORECAST = 5
-
 USE_ATR = True
 USE_MACD = True
 USE_RSI = True
@@ -117,6 +108,7 @@ TRAIN_LOOKBACK_BARS = 5000
 try:
     from config_oanda import api as OANDA_API
     from config_oanda import (
+        OANDA_ACCOUNT_ID_1 as OANDA_ACCOUNT_ID_PROFILE1,
         OANDA_ACCOUNT_ID_2 as OANDA_ACCOUNT_ID_PROFILE2,
         OANDA_ACCOUNT_ID_3 as OANDA_ACCOUNT_ID_PROFILE3,
         OANDA_ACCOUNT_ID_4 as OANDA_ACCOUNT_ID_PROFILE4,
@@ -125,7 +117,7 @@ try:
 except ImportError:
     _HAVE_OANDA = False
     OANDA_API = None
-    OANDA_ACCOUNT_ID_PROFILE2 = OANDA_ACCOUNT_ID_PROFILE3 = OANDA_ACCOUNT_ID_PROFILE4 = "NOT_CONFIGURED"
+    OANDA_ACCOUNT_ID_PROFILE1 = OANDA_ACCOUNT_ID_PROFILE2 = OANDA_ACCOUNT_ID_PROFILE3 = OANDA_ACCOUNT_ID_PROFILE4 = "NOT_CONFIGURED"
 
 # ==========================================
 # Exported Keys
@@ -149,6 +141,34 @@ _GLOBAL_CONSTANT_KEYS: tuple[str, ...] = (
 # 📊 Profile Config
 # ==========================================
 PROFILE_CFG = {
+    "profile1": {
+        "LABEL": "PROFILE1",
+        "ACCOUNT_NAME": "Account 001",
+        "OANDA_ACCOUNT_ID": OANDA_ACCOUNT_ID_PROFILE1,
+        "COOLDOWN_FILE": "cooldown_profile1.json",
+        "RESULTS_DIR": "daily_results_profile1",
+        "MODE": "LEVEL10",
+        "BASE_MIN_EDGE": 0.50,
+        "WEIGHT_STRENGTH": 0.35, "WEIGHT_RSI": 0.20, "WEIGHT_ADX": 0.15,
+        "WEIGHT_XGB": 0.20, "WEIGHT_MC": 0.10,
+        "MIN_CONVICTION_SCORE": 30.0, "MIN_SCORE_GAP": 0.10,
+        "MAX_OPEN_POSITIONS": 3, "MAX_OPEN_PER_RUN": 1,
+        "XGB_BULLISH_THRESHOLD": 0.52, "MC_BULLISH_THRESHOLD_PCT": 52.0,
+        "MC_STRONG_THRESHOLD": 0.60,
+        "REQUIRE_DIRECTION_CONSENSUS": True,
+        "CONSENSUS_THRESHOLD": 2, "CONSENSUS_REQUIRED_VOTES": 2,
+        "REQUIRE_STRONG_MOMENTUM": False, "ADX_SCALE_FACTOR": 2.0,
+        "TREND_FILTER_ENABLED": False, "WEEK_EMA100_FILTER_ENABLED": False,
+        "EMA_PERIOD_FAST": 20, "EMA_PERIOD_SLOW": 40,
+        "TP_MULT": 2.0, "TP_STRONG_MULT": 2.5,
+        "ATR_SL_MULT": 2.0, "ATR_TP_MULT": 2.5,
+        "USE_DYNAMIC_SL": 2, "DYNAMIC_SL_MULT": 1.5,
+        "BE_TRIGGER_ATR_MULT": 2.5, "TRAIL_TRIGGER_ATR_MULT": 3.5,
+        "TRAIL_ATR_MULT": 2.8, "MAX_HOLD_BARS": 24,
+        "SL_USE_ZONE_HIERARCHY": True, "USE_TOP_PAIRS_ONLY": False,
+        "TOP_PAIRS_COUNT": 4, "TOP_PAIRS_MIN_GAP": 0.25,
+        "SKIP_MC": False,
+    },
     "profile2": {
         "LABEL": "PROFILE2",
         "ACCOUNT_NAME": "Account 002",
@@ -177,7 +197,6 @@ PROFILE_CFG = {
         "TOP_PAIRS_COUNT": 4, "TOP_PAIRS_MIN_GAP": 0.25,
         "SKIP_MC": False,
     },
-
     "profile3": {
         "LABEL": "PROFILE3",
         "ACCOUNT_NAME": "Account 003",
@@ -206,7 +225,6 @@ PROFILE_CFG = {
         "USE_TOP_PAIRS_ONLY": True, "TOP_PAIRS_COUNT": 3, "TOP_PAIRS_MIN_GAP": 0.22,
         "SKIP_MC": False,
     },
-
     "profile4": {
         "LABEL": "PROFILE4",
         "ACCOUNT_NAME": "Account 004",
@@ -256,52 +274,47 @@ EXCLUDE_CURRENCIES_GLOBAL = []
 def load_profile(profile_name: str) -> dict:
     import copy
     base_dir = Path(__file__).resolve().parent
-
     template = PROFILE_CFG.get(profile_name, PROFILE_CFG["profile2"])
     final: dict[str, Any] = copy.deepcopy(template)
-
+    
     for key in _GLOBAL_CONSTANT_KEYS:
         if key in final:
             continue
         final[key] = globals()[key]
-
+    
     # Exact assignment — no silent fallback ✅
     if profile_name == "profile3":
         final["ACTIVE_PAIRS"] = list(GROUP3_PAIRS)
-        final["_ACTIVE_SOURCE"] = (
-            f"forex_pairs.yml → group3 ({len(GROUP3_PAIRS)} pairs)"
-        )
+        final["_ACTIVE_SOURCE"] = f"forex_pairs.yml → group3 ({len(GROUP3_PAIRS)} pairs)"
     else:
         final["ACTIVE_PAIRS"] = list(ALL_PAIRS)
-        final["_ACTIVE_SOURCE"] = (
-            f"forex_pairs.yml → all_pairs ({len(ALL_PAIRS)} pairs)"
-        )
-
+        final["_ACTIVE_SOURCE"] = f"forex_pairs.yml → all_pairs ({len(ALL_PAIRS)} pairs)"
+    
     final["EXCLUDE_PAIRS"] = []
     final["EXCLUDE_OANDA"] = []
-
+    
     if profile_name == "profile3":
         final["INSTRUMENT_OVERRIDES"] = D_STRATEGY_GROUPS
         final["EXCLUDE_CURRENCIES"] = list(EXCLUDE_CURRENCIES_GLOBAL)
     else:
         final["INSTRUMENT_OVERRIDES"] = {}
         final["EXCLUDE_CURRENCIES"] = []
-
+    
     if _HAVE_OANDA:
         final["OANDA_API"] = OANDA_API
+    
     final["BASE_DIR"] = base_dir
     final["PROFILE_NAME"] = profile_name
     final["COOLDOWN_FILE_PATH"] = base_dir / final.get("COOLDOWN_FILE", f"cooldown_{profile_name}.json")
     final["RESULTS_DIR_PATH"] = base_dir / final.get("RESULTS_DIR", f"daily_results_{profile_name}")
-
+    
     return final
-
 
 def cfg(P: dict, key: str, default: Any = None) -> Any:
     return P.get(key, default) if P else default
 
 # ==========================================
-# 🧪 Test CLI — Full untruncated print
+# 🧪 Test CLI — NEW SYNTAX: --profile N / -p N
 # ==========================================
 def _format_value(v):
     if isinstance(v, list):
@@ -316,7 +329,6 @@ def _print_profile(P: dict, profile_name: str):
     print(f"\n{sep}")
     print(f"📊 PROFILE: {profile_name}  |  {P.get('ACCOUNT_NAME')}")
     print(sep)
-
     sections = [
         ("🔑 Identity", ["LABEL", "ACCOUNT_NAME", "OANDA_ACCOUNT_ID", "MODE"]),
         ("📈 Pairs — FULL LIST", ["ALL_PAIRS", "ACTIVE_PAIRS", "_ACTIVE_SOURCE", "PAIR_GROUPS"]),
@@ -328,33 +340,22 @@ def _print_profile(P: dict, profile_name: str):
         ("🛡️ SL/TP", ["ATR_SL_MULT", "ATR_TP_MULT", "TP_MULT", "MAX_HOLD_BARS"]),
         ("📁 Paths", ["COOLDOWN_FILE_PATH", "RESULTS_DIR_PATH"]),
     ]
-
     for title, keys in sections:
         print(f"\n{title}")
         print("-" * 50)
         for k in keys:
             v = P.get(k, "—")
             print(f"  {k:<35} {_format_value(v)}")
-
     print(f"\n{sep}\n")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Config Bot — Exact Group3 Print")
-    parser.add_argument("--profile2", action="store_true")
-    parser.add_argument("--profile3", action="store_true")
-    parser.add_argument("--profile4", action="store_true")
+    g = parser.add_mutually_exclusive_group(required=True)
+    g.add_argument("--profile", "-p", type=int, choices=[1, 2, 3, 4],
+                   help="Profile number: 1, 2, 3, or 4")
     args = parser.parse_args()
-
-    if args.profile3:
-        name = "profile3"
-    elif args.profile4:
-        name = "profile4"
-    elif args.profile2:
-        name = "profile2"
-    else:
-        print("Usage: python config_bot.py --profile2|--profile3|--profile4")
-        sys.exit(1)
-
+    name = f"profile{args.profile}"
+    
     try:
         P = load_profile(name)
         _print_profile(P, name)

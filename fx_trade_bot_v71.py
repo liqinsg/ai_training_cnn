@@ -59,31 +59,6 @@ logger = get_logger(
 )  # 统一从 logging_utils 获取（禁止 basicConfig/重复 handler）
 
 # ─── PARSE ARGS & SELECT PROFILE ─────────────────────────────────────────────
-# parser = argparse.ArgumentParser(description="FX Trading Bot v7 · Unified Config")
-# parser.add_argument("--profile2", action="store_true", help="Use Profile2 / Account002")
-# parser.add_argument("--profile3", action="store_true", help="Use Profile3 / Account003")
-# parser.add_argument(
-#     "--profile4", action="store_true", help="Use Profile4 / Account004 · DEMO"
-# )  # ✅ ADD
-# parser.add_argument("--timeframe", type=str, default="15m", choices=["15m", "1H", "H4"])
-# parser.add_argument(
-#     "--trend-filter-enabled",
-#     type=str.lower,
-#     choices=["true", "false", "1", "0"],
-#     default=None,
-# )
-# parser.add_argument("--confluence", action="store_true", default=None)
-# parser.add_argument("--no-confluence", action="store_false", dest="confluence")
-# parser.add_argument("--skip-mc", action="store_true")
-# parser.add_argument("--mc-only", action="store_true")
-# parser.add_argument(
-#     "--dry-run",
-#     action="store_true",
-#     default=False,
-#     help="Dry-run: show actions, NO real orders",
-# )
-# args = parser.parse_args()
-
 # ─── PARSE ARGS & SELECT PROFILE ─────────────────────────────────────────────
 parser = argparse.ArgumentParser(description="FX Trading Bot v7 · Unified Config")
 
