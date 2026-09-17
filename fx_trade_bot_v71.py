@@ -51,6 +51,8 @@ from fx_trade_bot_utils import (
 from fx_trade_bot_mc import MCGenerator, MCConfig
 from fx_trade_bot_ml import ensure_model
 
+VERSION = "7.1"
+
 # ─── ✅ 使用统一日志配置 ──────────────────────────────────────────────────────
 from utils.logging_utils import get_logger
 
@@ -64,8 +66,8 @@ parser = argparse.ArgumentParser(description="FX Trading Bot v7 · Unified Confi
 
 # Profile selection: --profile N / -p N  (N=1,2,3,4)
 g_profile = parser.add_mutually_exclusive_group(required=True)
-g_profile.add_argument("--profile", "-p", type=int, choices=[1, 2, 3, 4],
-                       help="Profile number: 1 / 2 / 3 / 4")
+g_profile.add_argument("--profile", "-p", type=int, choices=[1, 2, 3, 4, 9],
+                       help="Profile number: 1 / 2 / 3 / 4 / 9(DEMO)")
 
 parser.add_argument("--timeframe", type=str, default="15m", choices=["15m", "1H", "H4"])
 parser.add_argument(
@@ -83,6 +85,19 @@ parser.add_argument(
     action="store_true",
     default=False,
     help="Dry-run: show actions, NO real orders",
+)
+parser.add_argument(
+    "--account",
+    type=str,
+    default=None,
+    help="Override OANDA account id: accepts 001/002/003 or full account id",
+)
+parser.add_argument(
+    "--zero-strength-guard",
+    type=str.lower,
+    choices=["on", "off"],
+    default=None,
+    help="Override ZERO_STRENGTH_GUARD at runtime (on/off)",
 )
 args = parser.parse_args()
 
@@ -103,6 +118,15 @@ PROFILE_LABEL = cfg(P, "LABEL", PROFILE_NAME.upper())
 ACCOUNT_NAME = cfg(P, "ACCOUNT_NAME", "Unknown")
 COOLDOWN_FILE = cfg(P, "COOLDOWN_FILE_PATH")
 RESULTS_DIR = cfg(P, "RESULTS_DIR_PATH")
+
+# CLI OVERRIDE: --account (short id 001/002/003 or full account id)
+if args.account is not None:
+    _short_map = {"001": "profile1", "002": "profile2", "003": "profile3", "004": "profile4"}
+    if args.account in _short_map:
+        OANDA_ACCOUNT_ID = load_profile(_short_map[args.account])["OANDA_ACCOUNT_ID"]
+    else:
+        OANDA_ACCOUNT_ID = args.account
+    logger.info(f"🔧 CLI OVERRIDE --account → {OANDA_ACCOUNT_ID}")
 
 if not OANDA_ACCOUNT_ID or len(OANDA_ACCOUNT_ID) < 10 or "-" not in OANDA_ACCOUNT_ID:
     logger.critical(f"💥 FATAL: Invalid OANDA_ACCOUNT_ID = '{OANDA_ACCOUNT_ID}'")
@@ -147,10 +171,21 @@ for _p, _h in ((TRADE_LOG_PATH, _TRADE_LOG_HEADER), (SIGNAL_LOG_PATH, _SIGNAL_LO
 
 
 def append_to_csv(filepath, row_dict):
-    """Append 1 row to CSV via csv.DictWriter."""
+    """Append 1 row to CSV via csv.DictWriter. Validates against existing header."""
     try:
+        _fieldnames = list(row_dict.keys())
+        if filepath.exists():
+            with open(filepath, "r", newline="") as _f:
+                _reader = csv.reader(_f)
+                _existing_header = next(_reader, None)
+            if _existing_header and list(_existing_header) != _fieldnames:
+                logger.warning(
+                    f"⚠️ AUDIT header mismatch on {filepath}: "
+                    f"expected {_existing_header}, got {_fieldnames} — skipping append"
+                )
+                return
         with open(filepath, "a", newline="") as _f:
-            csv.DictWriter(_f, fieldnames=list(row_dict.keys())).writerow(row_dict)
+            csv.DictWriter(_f, fieldnames=_fieldnames).writerow(row_dict)
     except Exception as _e:
         logger.warning(f"⚠️ AUDIT append failed {filepath}: {_e}")
 
@@ -258,16 +293,14 @@ XGB_BULLISH_THRESHOLD = cfg(P, "XGB_BULLISH_THRESHOLD", 0.55)
 MC_BULLISH_THRESHOLD = cfg(P, "MC_BULLISH_THRESHOLD_PCT", 55.0)
 REQUIRE_STRONG_MOMENTUM = cfg(P, "REQUIRE_STRONG_MOMENTUM", False)
 
-# Weights — auto-normalize if sum ≠ 1.0
+# Weights — must sum to exactly 1.0
 W_S = cfg(P, "WEIGHT_STRENGTH", 0.40)
 W_R = cfg(P, "WEIGHT_RSI", 0.15)
 W_A = cfg(P, "WEIGHT_ADX", 0.15)
 W_X = cfg(P, "WEIGHT_XGB", 0.20)
 W_M = cfg(P, "WEIGHT_MC", 0.10)
-_WEIGHT_SUM = W_S + W_R + W_A + W_X + W_M
-if abs(_WEIGHT_SUM - 1.00) > 0.001:
-    logger.warning(f"⚠️ Weight sum = {_WEIGHT_SUM:.4f} ≠ 1.00 — normalizing")
-    W_S, W_R, W_A, W_X, W_M = [w / _WEIGHT_SUM for w in [W_S, W_R, W_A, W_X, W_M]]
+assert abs(W_S + W_R + W_A + W_X + W_M - 1.0) < 1e-9, \
+    f"FATAL: weights sum to {W_S + W_R + W_A + W_X + W_M}, must be exactly 1.0"
 
 CONSENSUS_THRESHOLD = cfg(P, "CONSENSUS_THRESHOLD", 2)
 CONSENSUS_REQUIRED_VOTES = cfg(P, "CONSENSUS_REQUIRED_VOTES", 2)
@@ -563,7 +596,7 @@ def calc_weighted_score(
 def main():
     global model_wrapper, strat_engine
     logger.info(
-        f"\n🤖 RUN v6.8.6 {PROFILE_LABEL} — {ACCOUNT_NAME} | "
+        f"\n🤖 RUN v{VERSION} {PROFILE_LABEL} — {ACCOUNT_NAME} | "
         f"FILTERS={'ON' if TREND_FILTER_ENABLED else 'OFF'} | "
         f"EMA100_WK={'ON' if WEEK_EMA100_FILTER_ENABLED else 'OFF'} | "
         f"DRY-RUN={'ON 🧊' if args.dry_run else 'OFF LIVE'} | "
@@ -619,11 +652,27 @@ def main():
     strength_scores = build_strength_matrix()
     logger.info(format_strength_ranking(strength_scores))
 
+    ZERO_STRENGTH_GUARD = cfg(P, "ZERO_STRENGTH_GUARD", False)
+    if args.zero_strength_guard is not None:
+        ZERO_STRENGTH_GUARD = (args.zero_strength_guard == "on")
+        logger.info(f"🔧 CLI OVERRIDE --zero-strength-guard → {ZERO_STRENGTH_GUARD}")
+    _zero_ccys = []
+    if ZERO_STRENGTH_GUARD:
+        _MAJORS_8 = ["USD", "EUR", "GBP", "JPY", "AUD", "NZD", "CAD", "CHF"]
+        _zero_ccys = [c for c in _MAJORS_8
+                      if c not in strength_scores
+                      or strength_scores[c] == 0.0
+                      or (isinstance(strength_scores[c], float) and np.isnan(strength_scores[c]))]
+        if _zero_ccys:
+            logger.warning(f"⚠️ currency strength suspiciously zero: [{', '.join(_zero_ccys)}]")
+
     USE_TOP_PAIRS_ONLY = cfg(P, "USE_TOP_PAIRS_ONLY", True)
     TOP_PAIRS_COUNT = cfg(P, "TOP_PAIRS_COUNT", 4)
     TOP_PAIRS_MIN_GAP = cfg(P, "TOP_PAIRS_MIN_GAP", 0.25)
 
-    EXCLUDE_CURRENCIES = cfg(P, "EXCLUDE_CURRENCIES", [])
+    EXCLUDE_CURRENCIES = list(cfg(P, "EXCLUDE_CURRENCIES", []) or [])
+    if ZERO_STRENGTH_GUARD and _zero_ccys:
+        EXCLUDE_CURRENCIES = list(EXCLUDE_CURRENCIES) + _zero_ccys
 
     if USE_TOP_PAIRS_ONLY:
         selected_pairs, _ = build_top_pairs(
@@ -824,6 +873,7 @@ def main():
 
     all_candidates = []
     _audit_sig_rows = {}   # AUDIT: signal-log rows keyed by OANDA instrument
+    _xgb_drift_check = []  # TASK 4: (pair, strength_dir, xgb_dir) for USD pairs
 
     for pair in selected_pairs:
         if pair not in pair_data:
@@ -848,6 +898,15 @@ def main():
         # Already Open → SKIP DUPLICATE
         if open_pos_by_oanda.get(oanda, False):
             logger.info(f"⏭️ {pair}: position already open — SKIP")
+            append_to_csv(SIGNAL_LOG_PATH, {
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "profile": PROFILE_NAME,
+                "account": ACCOUNT_NAME,
+                "pair": pair,
+                "score_final": "", "score_s": "", "score_r": "",
+                "score_a": "", "score_x": "", "score_m": "",
+                "action_taken": "POSITION_ALREADY_OPEN",
+            })
             continue
 
         # Current Price
@@ -867,10 +926,19 @@ def main():
         gap = strength_scores.get(base, 0) - strength_scores.get(quote, 0)
         if abs(gap) < MIN_STRENGTH_GAP:
             logger.info(f"⏭️ {pair}: gap={abs(gap):.2f} < MIN={MIN_STRENGTH_GAP} — SKIP")
+            append_to_csv(SIGNAL_LOG_PATH, {
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "profile": PROFILE_NAME,
+                "account": ACCOUNT_NAME,
+                "pair": pair,
+                "score_final": "", "score_s": "", "score_r": "",
+                "score_a": "", "score_x": "", "score_m": "",
+                "action_taken": "GAP_TOO_SMALL",
+            })
             continue
         logger.info(f"📈 {pair}: gap={abs(gap):.2f} ≥ {MIN_STRENGTH_GAP} — QUALIFIED")
         # FIX 3: every pair that passes gap filter MUST get a signal row.
-        # Start with PENDING; downgrade to SKIP_LOW_SCORE / NO_CONSENSUS / PASS_GATE below.
+        # Start with PENDING; downgrade to BELOW_SCORE_THRESHOLD / NO_CONSENSUS / PASS_GATE below.
         _sig_row = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "profile": PROFILE_NAME,
@@ -908,10 +976,17 @@ def main():
         direction, w = calc_weighted_score(
             pair, gap, rsi_val, adx_val, prob_raw, mc_pct_up
         )
+
+        # TASK 4: XGB model drift observation (non-blocking, USD pairs only)
+        if "USD" in base or "USD" in quote:
+            _s_dir = "BUY" if gap >= MIN_STRENGTH_GAP else "SELL" if gap <= -MIN_STRENGTH_GAP else None
+            _x_dir = "BUY" if (prob_raw or 0.0) >= XGB_BULLISH_THRESHOLD else "SELL"
+            if _s_dir:
+                _xgb_drift_check.append((pair, _s_dir, _x_dir))
+
         if not (direction and w and w["PASS"]):
             if w and not w["PASS"]:
                 logger.info(f"➖ REASON: FINAL {w['FINAL']:.1f} < {w['THRESHOLD']}")
-                # FIX 3: write signal row — SKIP_LOW_SCORE
                 _sig_row.update({
                     "score_final": round(w["FINAL"], 2),
                     "score_s": round(w["S"], 2),
@@ -919,7 +994,7 @@ def main():
                     "score_a": round(w["A"], 2),
                     "score_x": round(w["X"], 2),
                     "score_m": round(w["M"], 2),
-                    "action_taken": "SKIP_LOW_SCORE",
+                    "action_taken": "BELOW_SCORE_THRESHOLD",
                 })
                 append_to_csv(SIGNAL_LOG_PATH, _sig_row)
                 _audit_sig_rows.pop(oanda, None)  # discard — not reaching exec loop
@@ -1049,6 +1124,16 @@ def main():
     # AUDIT: NO_CONSENSUS flush for non-executed candidates runs AFTER the
     # execution loop — PASS_GATE entries are already finalized by then.
 
+    # TASK 4: XGB model drift observation (non-blocking)
+    if _xgb_drift_check:
+        _n_total = len(_xgb_drift_check)
+        _n_disagree = sum(1 for _, _sd, _xd in _xgb_drift_check if _sd != _xd)
+        if _n_disagree / _n_total > 0.5:
+            logger.warning(
+                f"⚠️ XGB model drift: disagrees with currency strength on {_n_disagree}/{_n_total} USD pairs — "
+                f"consider retraining trade_model_xgb.pkl"
+            )
+
     all_candidates.sort(key=lambda x: x[0])
 
     # Execute Top Candidates
@@ -1150,9 +1235,9 @@ def main():
     #    Runs AFTER the execution loop so PASS_GATE rows are never double-logged.
     for _oanda, _srow in list(_audit_sig_rows.items()):
         if _srow.get("action_taken") == "PENDING":
-            _srow["action_taken"] = "NO_CONSENSUS"
+            _srow["action_taken"] = "NO_SLOT_MAX_OPEN"
             append_to_csv(SIGNAL_LOG_PATH, _srow)
-            logger.info(f"📝 AUDIT signal NO_CONSENSUS pair={_srow.get('pair')}")
+            logger.info(f"📝 AUDIT signal NO_SLOT_MAX_OPEN pair={_srow.get('pair')}")
 
     logger.info(f"\n✅ {PROFILE_LABEL} RUN COMPLETE")
 

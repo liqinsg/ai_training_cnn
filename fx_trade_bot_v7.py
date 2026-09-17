@@ -19,7 +19,7 @@ import numpy as np, pandas as pd
 
 # ─── ✅ ONLY ONE CONFIG IMPORT ───
 # load_profile() 是唯一入口。内部完成所有装配：PROFILE_CFG 模板 + 全局常量 merge + 全局共享资源注入
-from config_bot_v7 import load_profile, cfg
+from config_bot import load_profile, cfg
 
 from utils.strategy_helpers import (
     build_strength_matrix,
@@ -59,39 +59,12 @@ logger = get_logger(
 )  # 统一从 logging_utils 获取（禁止 basicConfig/重复 handler）
 
 # ─── PARSE ARGS & SELECT PROFILE ─────────────────────────────────────────────
-# parser = argparse.ArgumentParser(description="FX Trading Bot v7 · Unified Config")
-# parser.add_argument("--profile2", action="store_true", help="Use Profile2 / Account002")
-# parser.add_argument("--profile3", action="store_true", help="Use Profile3 / Account003")
-# parser.add_argument(
-#     "--profile4", action="store_true", help="Use Profile4 / Account004 · DEMO"
-# )  # ✅ ADD
-# parser.add_argument("--timeframe", type=str, default="15m", choices=["15m", "1H", "H4"])
-# parser.add_argument(
-#     "--trend-filter-enabled",
-#     type=str.lower,
-#     choices=["true", "false", "1", "0"],
-#     default=None,
-# )
-# parser.add_argument("--confluence", action="store_true", default=None)
-# parser.add_argument("--no-confluence", action="store_false", dest="confluence")
-# parser.add_argument("--skip-mc", action="store_true")
-# parser.add_argument("--mc-only", action="store_true")
-# parser.add_argument(
-#     "--dry-run",
-#     action="store_true",
-#     default=False,
-#     help="Dry-run: show actions, NO real orders",
-# )
-# args = parser.parse_args()
-
-# ─── PARSE ARGS & SELECT PROFILE ─────────────────────────────────────────────
 parser = argparse.ArgumentParser(description="FX Trading Bot v7 · Unified Config")
-
-# Profile selection: --profile N / -p N  (N=1,2,3,4)
-g_profile = parser.add_mutually_exclusive_group(required=True)
-g_profile.add_argument("--profile", "-p", type=int, choices=[1, 2, 3, 4],
-                       help="Profile number: 1 / 2 / 3 / 4")
-
+parser.add_argument("--profile2", action="store_true", help="Use Profile2 / Account002")
+parser.add_argument("--profile3", action="store_true", help="Use Profile3 / Account003")
+parser.add_argument(
+    "--profile4", action="store_true", help="Use Profile4 / Account004 · DEMO"
+)  # ✅ ADD
 parser.add_argument("--timeframe", type=str, default="15m", choices=["15m", "1H", "H4"])
 parser.add_argument(
     "--trend-filter-enabled",
@@ -111,10 +84,14 @@ parser.add_argument(
 )
 args = parser.parse_args()
 
-# 映射到 profile 名称
-PROFILE_NAME = f"profile{args.profile}"
 
 # ─── ✅ LOAD SELECTED PROFILE — NO separate files ────────────────────────────
+if args.profile4:
+    PROFILE_NAME = "profile4"
+elif args.profile3:
+    PROFILE_NAME = "profile3"
+else:
+    PROFILE_NAME = "profile2"
 
 P = load_profile(PROFILE_NAME)  # 唯一入口 — 内部装配好一切
 
@@ -663,11 +640,7 @@ def main():
     # ─── APPLY EXCLUSION — BOTH BRANCHES ───────────────────────────────────────
     if EXCLUDE_CURRENCIES:
         before_count = len(selected_pairs)
-        selected_pairs = [
-            p
-            for p in selected_pairs
-            if not any(skip in p for skip in EXCLUDE_CURRENCIES)
-        ]
+        selected_pairs = [ p for p in selected_pairs if not in EXCLUDE_CURRENCIES]
         skipped = sorted(set(ALL_PAIRS) - set(selected_pairs))
         logger.info(
             f"🚫 EXCLUSION: Skipped {before_count - len(selected_pairs)} pairs containing {EXCLUDE_CURRENCIES}: {', '.join(skipped)}"
