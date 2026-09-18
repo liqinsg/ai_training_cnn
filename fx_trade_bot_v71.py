@@ -328,8 +328,6 @@ def calculate_ema(series, period):
 
 
 def fetch_weekly_ema100(oanda_instrument, api):
-    if not WEEK_EMA100_FILTER_ENABLED:
-        return None
     try:
         resp = api.request(
             InstrumentsCandles(
@@ -382,14 +380,21 @@ def evaluate_trend_and_tp(
         ema_slow = calculate_ema(df["Close"], slow_period)
         fv, sv = ema_fast.iloc[-1], ema_slow.iloc[-1]
         if direction == "BUY" and not (current_price > fv and fv > sv):
-            return False, 0.0, f"TREND MISALIGNED: Price>{fv:.5f}>{sv:.5f}"
+            return (
+                False,
+                0.0,
+                f"TREND_FILTER_BLOCKED: TREND MISALIGNED: Price>{fv:.5f}>{sv:.5f}",
+                1.0,
+                1.0,
+            )
         if direction == "SELL" and not (current_price < fv and fv < sv):
-            return False, 0.0, f"TREND MISALIGNED: Price<{fv:.5f}<{sv:.5f}"
-    if weekly_ema100 is not None:
-        if direction == "BUY" and current_price < weekly_ema100:
-            return False, 0.0, f"BELOW WEEKLY EMA100 {weekly_ema100:.5f}"
-        if direction == "SELL" and current_price > weekly_ema100:
-            return False, 0.0, f"ABOVE WEEKLY EMA100 {weekly_ema100:.5f}"
+            return (
+                False,
+                0.0,
+                f"TREND_FILTER_BLOCKED: TREND MISALIGNED: Price<{fv:.5f}<{sv:.5f}",
+                1.0,
+                1.0,
+            )
     mc_momentum = mc_pct_up / 100.0
     tp_pips = (
         base_tp_pips * tp_strong_mult
@@ -406,7 +411,44 @@ def evaluate_trend_and_tp(
                 current_price - (weekly_ema100 - ema100_buffer_pips * pip_value)
             ) / pip_value
         tp_pips = max(tp_pips, min_tp_pips)
-    return True, tp_pips, f"TP={tp_pips:.1f}p"
+    lot_mult = 1.0
+    tp_mult_reduce = 1.0
+    if weekly_ema100 is not None and pip_value > 0:
+        dist_pips = abs(current_price - weekly_ema100) / pip_value
+        if dist_pips <= ema100_buffer_pips:
+            if direction == "BUY" and current_price < weekly_ema100:
+                return (
+                    False,
+                    0.0,
+                    f"WAIT_EMA_ALIGNMENT: WAIT_ABOVE_WEEKLY_EMA100 {weekly_ema100:.5f} dist={dist_pips:.1f}p",
+                    1.0,
+                    1.0,
+                )
+            if direction == "SELL" and current_price > weekly_ema100:
+                return (
+                    False,
+                    0.0,
+                    f"WAIT_EMA_ALIGNMENT: WAIT_BELOW_WEEKLY_EMA100 {weekly_ema100:.5f} dist={dist_pips:.1f}p",
+                    1.0,
+                    1.0,
+                )
+            lot_mult = 0.5
+            tp_mult_reduce = 0.8
+            tp_pips = tp_pips * tp_mult_reduce
+            logger.info(
+                f"⚡ BUFFER ZONE {direction}: dist={dist_pips:.1f}p ≤ {ema100_buffer_pips}p → lot×{lot_mult} TP×{tp_mult_reduce}"
+            )
+        else:
+            logger.info(
+                f"🛡️ SAFE ZONE {direction}: dist={dist_pips:.1f}p > {ema100_buffer_pips}p"
+            )
+    return (
+        True,
+        tp_pips,
+        f"TP={tp_pips:.1f}p (lot×{lot_mult} TP×{tp_mult_reduce})",
+        lot_mult,
+        tp_mult_reduce,
+    )
 
 
 def build_top_pairs(strength_scores, all_pairs, top_n=4, min_gap=0.25):
@@ -950,11 +992,15 @@ def main():
                 "score_m": round(w["M"], 2),
             }
         )
-        # Trend Filter + Smart TP
-        weekly_ema100_price = (
-            weekly_ema_cache.get(oanda) if WEEK_EMA100_FILTER_ENABLED else None
-        )
-        allow_entry, smart_tp_pips, tp_info = evaluate_trend_and_tp(
+        # Trend Filter + Smart TP + Weekly EMA100 Buffer Zone
+        weekly_ema100_price = weekly_ema_cache.get(oanda)
+        (
+            allow_entry,
+            smart_tp_pips,
+            tp_info,
+            lot_mult,
+            tp_mult_reduce,
+        ) = evaluate_trend_and_tp(
             PROFILE_NAME,
             direction,
             mc_pct_up,
@@ -974,8 +1020,9 @@ def main():
         )
         if not allow_entry:
             _step7_blocked_trend += 1
-            logger.info(f"🚫 TREND BLOCKED {pair} {direction}: {tp_info}")
-            _sig_row["action_taken"] = "TREND_FILTER_BLOCKED"
+            action_label, _, human_reason = tp_info.partition(": ")
+            logger.info(f"🚫 {action_label} {pair} {direction}: {human_reason}")
+            _sig_row["action_taken"] = action_label
             append_to_csv(SIGNAL_LOG_PATH, _sig_row)
             continue
         # SL & TP
@@ -1037,6 +1084,7 @@ def main():
                 tp_price,
                 dec,
                 smart_tp_pips,
+                lot_mult,
             )
         )
         _audit_sig_rows[oanda] = _sig_row
@@ -1071,6 +1119,7 @@ def main():
         tp_price,
         dec,
         tp_pips,
+        lot_mult,
     ) in all_candidates:
         if executed_count >= open_slots_remaining:
             logger.info(
@@ -1084,10 +1133,10 @@ def main():
             logger.info(f"⏭️ {pair}: already selected THIS run — SKIP")
             continue
 
+        lot = int(DEFAULT_LOT_SIZE * lot_mult)
         logger.info(
-            f"📤 EXECUTE: {pair} {direction} | SL={sl_price:.{dec}f} | TP={tp_price:.{dec}f} | TP={tp_pips:.1f}p"
+            f"📤 EXECUTE: {pair} {direction} | SL={sl_price:.{dec}f} | TP={tp_price:.{dec}f} | TP={tp_pips:.1f}p | LOT={lot} (×{lot_mult})"
         )
-        lot = DEFAULT_LOT_SIZE
         if not args.dry_run:
             margin_ok, margin_msg = check_margin_available(
                 api, OANDA_ACCOUNT_ID, oanda, lot, current
@@ -1105,7 +1154,7 @@ def main():
                 lot,
                 sl_price=sl_price,
                 tp_price=tp_price,
-                client_id=oanda,  # BONUS: stable tag for OANDA client_id
+                client_id=oanda,
                 dry_run=args.dry_run,
             )
             if result.get("ok"):
