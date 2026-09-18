@@ -50,11 +50,11 @@ from fx_trade_bot_utils import (
 )
 from fx_trade_bot_mc import MCGenerator, MCConfig
 from fx_trade_bot_ml import ensure_model
-
-VERSION = "7.2"
-# ─── ✅ Unified Logging ──────────────────────────────────────────────────────
 from utils.logging_utils import get_logger
 
+VERSION = "7.2"
+
+# ─── ✅ Unified Logging ──────────────────────────────────────────────────────
 logger = get_logger(__name__)
 # ─── PARSE ARGS & SELECT PROFILE ─────────────────────────────────────────────
 parser = argparse.ArgumentParser(description="FX Trade Bot v7.2 · Unified Config")
@@ -413,22 +413,27 @@ def build_top_pairs(strength_scores, all_pairs, top_n=4, min_gap=0.25):
     ranked = sorted(strength_scores.items(), key=lambda x: x[1], reverse=True)
     strongest = [c for c, _ in ranked[:top_n]]
     weakest = [c for c, _ in ranked[-top_n:]]
-    candidates = []
-    for i in range(min(top_n, len(strongest), len(weakest))):
-        base, quote = strongest[i], weakest[-(i + 1)]
-        if base == quote:
-            continue
-        gap = strength_scores[base] - strength_scores[quote]
-        if abs(gap) >= min_gap:
+    best_by_sym = {}
+    for base in strongest:
+        for quote in weakest:
+            if base == quote:
+                continue
+            gap = strength_scores[base] - strength_scores[quote]
+            if abs(gap) < min_gap:
+                continue
             sym = (
                 f"{base}{quote}=X"
                 if f"{base}{quote}=X" in all_pairs
                 else f"{quote}{base}=X"
             )
-            if sym in all_pairs:
-                candidates.append((sym, abs(gap), base, quote))
-    candidates.sort(key=lambda x: x[1], reverse=True)
-    return [p[0] for p in candidates[:top_n]], candidates
+            if sym not in all_pairs:
+                continue
+            abs_gap = abs(gap)
+            prev = best_by_sym.get(sym)
+            if prev is None or abs_gap > prev[1]:
+                best_by_sym[sym] = (sym, abs_gap, base, quote)
+    result = sorted(best_by_sym.values(), key=lambda x: x[1], reverse=True)
+    return [p[0] for p in result[:top_n]], result[:top_n]
 
 
 def calc_weighted_score(pair, gap, rsi_val, adx_val, xgb_prob, mc_pct_up):
@@ -789,6 +794,10 @@ def main():
     all_candidates = []
     _audit_sig_rows = {}
     _xgb_drift_check = []
+    _step7_eval = 0
+    _step7_pass_score = 0
+    _step7_blocked_trend = 0
+    _step7_blocked_sl = 0
     for pair in selected_pairs:
         if pair not in pair_data:
             continue
@@ -859,6 +868,7 @@ def main():
                 },
             )
             continue
+        _step7_eval += 1
         _sig_row = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "profile": PROFILE_NAME,
@@ -963,7 +973,9 @@ def main():
             timeframe=TIMEFRAME,
         )
         if not allow_entry:
-            _sig_row["action_taken"] = "NO_CONSENSUS"
+            _step7_blocked_trend += 1
+            logger.info(f"🚫 TREND BLOCKED {pair} {direction}: {tp_info}")
+            _sig_row["action_taken"] = "TREND_FILTER_BLOCKED"
             append_to_csv(SIGNAL_LOG_PATH, _sig_row)
             continue
         # SL & TP
@@ -981,8 +993,9 @@ def main():
                     direction, current, h4_closed, pip_cache[pair]
                 )
                 if skip_trade:
+                    _step7_blocked_sl += 1
                     logger.warning(f"🚫 {pair}: SL > 200pips — abort")
-                    _sig_row["action_taken"] = "NO_CONSENSUS"
+                    _sig_row["action_taken"] = "SL_TOO_WIDE"
                     append_to_csv(SIGNAL_LOG_PATH, _sig_row)
                     continue
                 sl_price = round(sl_price, dec)
@@ -1011,6 +1024,7 @@ def main():
             if direction == "BUY"
             else round(current - smart_tp_pips * pip_cache[pair], dec)
         )
+        _step7_pass_score += 1
         all_candidates.append(
             (
                 -w["FINAL"],
@@ -1037,10 +1051,12 @@ def main():
             )
     all_candidates.sort(key=lambda x: x[0])
     logger.info(f"🔍 Total candidates after ranking: {len(all_candidates)}")
-    # Execute Top Candidates
-    logger.info(
-        f"🏆 RANKED: {len(all_candidates)} passed → opening top {open_slots_remaining} (slots={open_slots_remaining})"
-    )
+    if len(all_candidates) == 0:
+        logger.info("🏆 RANKED: 0 passed — no orders this run")
+    else:
+        logger.info(
+            f"🏆 RANKED: {len(all_candidates)} passed → opening top {open_slots_remaining} (slots={open_slots_remaining})"
+        )
 
     executed_in_this_run = set()
     executed_count = 0
@@ -1146,6 +1162,12 @@ def main():
             _srow["action_taken"] = "NO_SLOT_MAX_OPEN"
             append_to_csv(SIGNAL_LOG_PATH, _srow)
             logger.info(f"📝 AUDIT signal NO_SLOT_MAX_OPEN pair={_srow.get('pair')}")
+
+    logger.info(
+        f"📈 STEP7 summary: evaluated={_step7_eval} | passed_score={_step7_pass_score} | "
+        f"blocked_trend={_step7_blocked_trend} | blocked_sl={_step7_blocked_sl} | "
+        f"executed={executed_count}"
+    )
 
     logger.info(f"\n✅ {PROFILE_LABEL} RUN COMPLETE")
 
