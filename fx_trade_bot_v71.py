@@ -279,7 +279,8 @@ TP_STRONG_MULT = cfg(P, "TP_STRONG_MULT", 2.5)
 MC_STRONG_THRESHOLD = cfg(P, "MC_STRONG_THRESHOLD", 0.55)
 EMA_PERIOD_FAST = cfg(P, "EMA_PERIOD_FAST", 40)
 EMA_PERIOD_SLOW = cfg(P, "EMA_PERIOD_SLOW", 80)
-EMA100_BUFFER_PIPS = cfg(P, "EMA100_BUFFER_PIPS", 30)
+EMA100_BUFFER_PIPS = cfg(P, "EMA100_BUFFER_PIPS", 30)       # SAFE/BUFFER/WAIT zone distance
+EMA100_TP_FLOOR_PIPS = cfg(P, "EMA100_TP_FLOOR_PIPS", 30)   # Existing TP-floor clearance from weekly EMA100
 XGB_BULLISH_THRESHOLD = cfg(P, "XGB_BULLISH_THRESHOLD", 0.55)
 MC_BULLISH_THRESHOLD = cfg(P, "MC_BULLISH_THRESHOLD_PCT", 55.0)
 REQUIRE_STRONG_MOMENTUM = cfg(P, "REQUIRE_STRONG_MOMENTUM", False)
@@ -372,6 +373,8 @@ def evaluate_trend_and_tp(
     tp_mult,
     tp_strong_mult,
     ema100_buffer_pips=30,
+    ema100_tp_floor_pips=30,
+    week_ema100_filter_enabled=False,
     timeframe="15m",
 ):
     current_price = entry_price
@@ -401,14 +404,16 @@ def evaluate_trend_and_tp(
         if mc_momentum >= mc_strong_threshold
         else base_tp_pips * tp_mult
     )
+    if not week_ema100_filter_enabled:
+        return True, tp_pips, "OK: WEEKLY_EMA_SKIPPED", 1.0, 1.0
     if weekly_ema100 is not None and ema_cross_filter:
         if direction == "BUY":
             min_tp_pips = (
-                (weekly_ema100 + ema100_buffer_pips * pip_value) - current_price
+                (weekly_ema100 + ema100_tp_floor_pips * pip_value) - current_price
             ) / pip_value
         else:
             min_tp_pips = (
-                current_price - (weekly_ema100 - ema100_buffer_pips * pip_value)
+                current_price - (weekly_ema100 - ema100_tp_floor_pips * pip_value)
             ) / pip_value
         tp_pips = max(tp_pips, min_tp_pips)
     lot_mult = 1.0
@@ -432,6 +437,11 @@ def evaluate_trend_and_tp(
                     1.0,
                     1.0,
                 )
+            # RISK STRUCTURE:
+            # lot × 0.5 -> approximately 0.5× baseline position risk
+            # TP  × 0.8 -> approximately 0.4× baseline gross reward
+            # Therefore pip-based reward/risk changes from baseline R:1 to R:0.8.
+            # These values are experimental and have not yet been statistically validated.
             lot_mult = 0.5
             tp_mult_reduce = 0.8
             tp_pips = tp_pips * tp_mult_reduce
@@ -1016,6 +1026,8 @@ def main():
             tp_mult=TP_MULT,
             tp_strong_mult=TP_STRONG_MULT,
             ema100_buffer_pips=EMA100_BUFFER_PIPS,
+            ema100_tp_floor_pips=EMA100_TP_FLOOR_PIPS,
+            week_ema100_filter_enabled=WEEK_EMA100_FILTER_ENABLED,
             timeframe=TIMEFRAME,
         )
         if not allow_entry:
