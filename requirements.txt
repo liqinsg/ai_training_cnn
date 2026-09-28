@@ -16,3 +16,10 @@ pydantic
 six
 schedule
 yfinance
+joblib==1.5.3
+numba==0.61.2
+numpy==2.5.3
+pandas-ta==0.4.71b0
+pandas-ta-classic==0.6.52
+scikit-learn==1.9.1
+xgboost==3.3.0

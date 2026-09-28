@@ -1,0 +1,21 @@
+{
+  "use_atr": true,
+  "atr_period": 14,
+  "atr_sl_mult": 2.0,
+  "atr_tp_mult": 3.0,
+  "atr_position_sizing": true,
+  "risk_per_trade_pct": 0.01,
+  "use_returns": true,
+  "use_volatility": true,
+  "use_body_features": true,
+  "use_rsi": true,
+  "rsi_period": 14,
+  "use_macd": true,
+  "use_adx": true,
+  "adx_period": 14,
+  "model_type": "xgboost",
+  "target_horizon": 6,
+  "train_lookback_bars": 5000,
+  "retrain_every_n_days": 7,
+  "required_bars": 20
+}

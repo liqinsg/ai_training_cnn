@@ -1,0 +1,3 @@
+timestamp,profile,account,pair,score_final,score_s,score_r,score_a,score_x,score_m,action_taken
+2026-09-17T15:35:00.528511+00:00,profile4,Account 004,GBPUSD=X,54.5,81.3,0.0,36.4,65.0,35.2,PASS_GATE
+2026-09-17T15:39:38.926859+00:00,profile4,Account 004,GBPUSD=X,54.4,81.3,0.0,36.6,65.2,33.9,PASS_GATE

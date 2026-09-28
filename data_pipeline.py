@@ -5,6 +5,7 @@ ATR-aware, XGBoost-first, bulletproof feature engineering.
 import json
 import pickle
 import logging
+import warnings
 from pathlib import Path
 from typing import Optional, List, Dict, Tuple
 from dataclasses import dataclass
@@ -321,8 +322,32 @@ class ModelWrapper:
         self.model = None
         self.scaler = StandardScaler()
         self.feature_names: List[str] = []
-        self.model_path = model_path or Path("trade_model_xgb.pkl")
+        raw = model_path or Path("trade_model_xgb")
+        p = Path(raw)
+        if p.suffix in (".pkl", ".joblib"):
+            p = p.with_suffix("")
+        self.model_stem = p
         self.is_xgb = cfg.model_type == "xgboost" and xgboost_available
+
+    @property
+    def _xgb_json(self) -> Path:
+        return self.model_stem.with_suffix(".json")
+
+    @property
+    def _scaler_joblib(self) -> Path:
+        return self.model_stem.parent / "scaler.joblib"
+
+    @property
+    def _feat_json(self) -> Path:
+        return self.model_stem.with_suffix(".features.json")
+
+    @property
+    def _cfg_json(self) -> Path:
+        return self.model_stem.with_suffix(".cfg.json")
+
+    @property
+    def _legacy_pkl(self) -> Path:
+        return self.model_stem.with_suffix(".pkl")
 
 
     def _create_model(self):
@@ -407,25 +432,62 @@ class ModelWrapper:
 
 
     def save(self):
-        payload = {
-            "model": self.model,
-            "scaler": self.scaler,
-            "feature_names": self.feature_names,
-            "cfg": self.cfg,
-        }
-        with open(self.model_path, "wb") as f:
-            pickle.dump(payload, f)
-        with open(self.model_path.with_suffix(".features.json"), "w") as f:
-            json.dump(self.feature_names, f)
-
+        import joblib
+        if self.is_xgb and xgboost_available:
+            self.model.save_model(str(self._xgb_json))
+        else:
+            with open(self._xgb_json.with_suffix(".sklearn.pkl"), "wb") as f:
+                pickle.dump(self.model, f)
+        joblib.dump(self.scaler, self._scaler_joblib)
+        with open(self._feat_json, "w") as f:
+            json.dump(self.feature_names, f, indent=2)
+        with open(self._cfg_json, "w") as f:
+            json.dump(self.cfg.__dict__ if hasattr(self.cfg, "__dict__") else self.cfg, f, indent=2)
+        logger.info(f"Model saved → {self._xgb_json.parent}")
 
     def load(self):
-        with open(self.model_path, "rb") as f:
-            payload = pickle.load(f)
-        self.model = payload["model"]
-        self.scaler = payload["scaler"]
-        self.feature_names = payload["feature_names"]
-        self.cfg = payload.get("cfg", self.cfg)
+        import joblib
+        xgb_ok = self._xgb_json.exists()
+        scaler_ok = self._scaler_joblib.exists()
+        feat_ok = self._feat_json.exists()
+
+        if xgb_ok and scaler_ok and feat_ok:
+            if self.is_xgb and xgboost_available:
+                self.model = xgb.XGBClassifier()
+                self.model.load_model(str(self._xgb_json))
+            else:
+                with open(self._xgb_json.with_suffix(".sklearn.pkl"), "rb") as f:
+                    self.model = pickle.load(f)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", DeprecationWarning)
+                self.scaler = joblib.load(self._scaler_joblib)
+            with open(self._feat_json) as f:
+                self.feature_names = json.load(f)
+            if self._cfg_json.exists():
+                with open(self._cfg_json) as f:
+                    cfg_dict = json.load(f)
+                if isinstance(self.cfg, FeatureConfig):
+                    for k, v in cfg_dict.items():
+                        setattr(self.cfg, k, v)
+            logger.info(f"Loaded split model → {self._xgb_json.parent}")
+            return
+
+        if self._legacy_pkl.exists():
+            logger.warning(f"Split artifacts missing — falling back to legacy {self._legacy_pkl} and re-migrating")
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                with open(self._legacy_pkl, "rb") as f:
+                    payload = pickle.load(f)
+            self.model = payload["model"]
+            self.scaler = payload["scaler"]
+            self.feature_names = payload["feature_names"]
+            self.cfg = payload.get("cfg", self.cfg)
+            self.save()
+            return
+
+        raise FileNotFoundError(
+            f"No model found — looked for {self._xgb_json}, {self._scaler_joblib}, {self._feat_json}, {self._legacy_pkl}"
+        )
 
 
 

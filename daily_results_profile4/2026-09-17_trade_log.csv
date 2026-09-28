@@ -1,0 +1,3 @@
+timestamp,trade_id,profile,account,pair,direction,entry_price,sl_price,tp_price,score_final,score_s,score_r,score_a,score_x,score_m,pips,profit_usd,exit_reason,exit_time
+2026-09-17T15:35:02.328501+00:00,2663,profile4,Account 004,GBP_USD,SELL,1.33448,1.33798,1.32198,54.5,81.3,0.0,36.4,65.0,35.2,,-0.39,SL_OR_TP_HIT,2026-09-17T15:39:27.130936+00:00
+2026-09-17T15:39:40.755883+00:00,2676,profile4,Account 004,GBP_USD,SELL,1.3343,1.3378,1.3218,54.4,81.3,0.0,36.6,65.2,33.9,,,,

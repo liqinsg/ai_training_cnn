@@ -1,0 +1,5 @@
+timestamp,profile,account,pair,score_final,score_s,score_r,score_a,score_x,score_m,action_taken
+2026-09-17T03:41:36.922710+00:00,profile3,Account 003,GBPNZD=X,26.4,17.8,0.0,47.0,50.0,38.8,SKIP_LOW_SCORE
+2026-09-17T03:41:37.215254+00:00,profile3,Account 003,EURCHF=X,29.7,14.0,2.8,67.5,52.6,50.0,SKIP_LOW_SCORE
+2026-09-17T03:43:19.601476+00:00,profile3,Account 003,GBPNZD=X,26.5,17.8,0.0,47.0,50.0,39.6,SKIP_LOW_SCORE
+2026-09-17T03:43:19.903243+00:00,profile3,Account 003,EURCHF=X,29.7,14.0,5.0,67.5,50.0,50.0,SKIP_LOW_SCORE

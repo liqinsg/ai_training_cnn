@@ -1,0 +1,4 @@
+timestamp,profile,account,pair,score_final,score_s,score_r,score_a,score_x,score_m,action_taken
+2026-09-17T06:05:27.290258+00:00,profile1,Account 002,USDJPY=X,64.6,95.6,35.2,53.6,50.0,60.3,PASS_GATE
+2026-09-17T06:05:27.906096+00:00,profile1,Account 002,GBPAUD=X,39.7,31.6,0.0,100.0,50.0,36.9,PASS_GATE
+2026-09-17T06:05:28.411591+00:00,profile1,Account 002,EURNZD=X,38.2,23.5,0.0,88.1,63.9,39.5,PASS_GATE

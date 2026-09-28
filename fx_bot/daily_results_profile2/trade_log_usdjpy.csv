@@ -1,0 +1,2 @@
+timestamp,trade_id,tag,instrument,direction,units,open_price,close_price,sl,tp,status,close_reason,pl,reason,score_final
+2026-09-14T09:48:35.256756,7202,FXBOT-AUTO-P2,USD_JPY,BUY,1000,154.496,,153.491,155.991,OPEN,,,V8 TAG CALLCHAIN TEST,TEST

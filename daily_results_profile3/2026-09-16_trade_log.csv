@@ -1,0 +1,4 @@
+timestamp,trade_id,profile,account,pair,direction,entry_price,sl_price,tp_price,score_final,score_s,score_r,score_a,score_x,score_m,pips,profit_usd,exit_reason,exit_time
+2026-09-16T08:09:42.822533+00:00,9843,profile3,Account 003,NZD_USD,SELL,0.57494,0.57844,0.56244,32.0,13.6,0.0,83.0,50.0,40.5,,,,
+2026-09-16T08:09:43.932109+00:00,9848,profile3,Account 003,USD_CHF,BUY,0.81894,0.81544,0.83394,30.2,13.6,0.0,71.8,41.6,56.7,,,,
+2026-09-16T08:42:11.320407+00:00,9853,profile3,Account 003,GBP_AUD,SELL,1.89009,1.89359,1.87759,32.6,13.8,0.0,77.1,53.6,48.5,,,,

@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """
 RETRAIN XGBoost Model on RECENT market data
-Produces: trade_model_xgb.pkl
+Produces: trade_model_xgb.json, scaler.joblib, trade_model_xgb.features.json
 """
 
 import sys
 import logging
 import numpy as np
 import pandas as pd
-import pickle
+import json
+import shutil
 from pathlib import Path
 from datetime import datetime, timezone
 import xgboost as xgb
@@ -33,7 +34,7 @@ logger = logging.getLogger(__name__)
 TIMEFRAME = "15m"
 OANDA_GRANULARITY_MAP = {"15m": "M15", "1H": "H1", "H4": "H4"}
 OANDA_GRANULARITY = OANDA_GRANULARITY_MAP.get(TIMEFRAME, "M15")
-LOOKBACK_BARS = 500          # ✅ Within OANDA's hard limit per request
+LOOKBACK_BARS = 500
 TARGET_HORIZON = 6
 TRAIN_TEST_SPLIT = 0.20
 
@@ -47,8 +48,11 @@ FEAT_CFG = FeatureConfig(
     train_lookback_bars=LOOKBACK_BARS,
 )
 
-OUTPUT_MODEL_PATH = BASE_DIR / "trade_model_xgb.pkl"
-BACKUP_MODEL_PATH = BASE_DIR / f"trade_model_xgb_backup_{datetime.now().strftime('%Y%m%d_%H%M')}.pkl"
+MODEL_STEM = BASE_DIR / "trade_model_xgb"
+OUTPUT_XGB = MODEL_STEM.with_suffix(".json")
+OUTPUT_SCALER = BASE_DIR / "scaler.joblib"
+OUTPUT_FEAT = MODEL_STEM.with_suffix(".features.json")
+LEGACY_PKL = MODEL_STEM.with_suffix(".pkl")
 
 # ── FETCH SINGLE PAIR ────────────────────────────────────
 def fetch_pair_data(fetcher, pair, oanda):
@@ -168,35 +172,27 @@ def train_model(df):
 
 # ── SAVE ─────────────────────────────────────────────────
 def save_model(model, feature_cols):
-    """Backup old model → save new model WITH scaler"""
-    from sklearn.preprocessing import StandardScaler  # ✅ Add this
-    
-    if OUTPUT_MODEL_PATH.exists():
-        OUTPUT_MODEL_PATH.rename(BACKUP_MODEL_PATH)
-        logger.info(f"\n💾 Old model backed up: {BACKUP_MODEL_PATH.name}")
+    import joblib
+    from sklearn.preprocessing import StandardScaler
 
-    # Create empty scaler (model doesn't require scaling, but bot expects it)
+    stamp = datetime.now().strftime("%Y%m%d_%H%M")
+    for p in (OUTPUT_XGB, OUTPUT_SCALER, OUTPUT_FEAT, LEGACY_PKL):
+        if p.exists():
+            bak = p.with_name(f"{p.stem}_bak_{stamp}{p.suffix}")
+            shutil.copy2(p, bak)
+
     dummy_scaler = StandardScaler()
-    dummy_scaler.fit([[0.0]] * len(feature_cols))  # Minimal fit to satisfy structure
+    dummy_scaler.fit([[0.0]] * len(feature_cols))
 
-    # package = {
-    #     "model": model,
-    #     "feature_list": feature_cols,
-    #     "scaler": dummy_scaler,  # ✅ ADD THIS LINE
-    # }
+    model.save_model(str(OUTPUT_XGB))
+    joblib.dump(dummy_scaler, OUTPUT_SCALER)
+    with open(OUTPUT_FEAT, "w") as f:
+        json.dump(feature_cols, f, indent=2)
 
-
-    package = {
-        "model": model,
-        "feature_names": feature_cols,
-        "scaler": dummy_scaler,
-    }
-    
-    with open(OUTPUT_MODEL_PATH, "wb") as f:
-        pickle.dump(package, f)
-
-    logger.info(f"✅ NEW MODEL SAVED → {OUTPUT_MODEL_PATH}")
-    logger.info(f"   Trained on {TIMEFRAME} data | {len(feature_cols)} features")
+    logger.info(f"✅ Model saved → {OUTPUT_XGB.parent}")
+    logger.info(f"   xgb   : {OUTPUT_XGB.name}  ({OUTPUT_XGB.stat().st_size} B)")
+    logger.info(f"   scaler: {OUTPUT_SCALER.name}  ({OUTPUT_SCALER.stat().st_size} B)")
+    logger.info(f"   feat  : {OUTPUT_FEAT.name}  ({len(feature_cols)} features)")
 
 # ── MAIN ─────────────────────────────────────────────────
 if __name__ == "__main__":
