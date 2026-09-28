@@ -31,17 +31,19 @@ def _oanda_format(candles_df: pd.DataFrame) -> List[Dict]:
     formatted = []
     for timestamp, row in candles_df.iterrows():
         time_str = timestamp.strftime("%Y-%m-%dT%H:%M:%S.000000000Z")
-        formatted.append({
-            "complete": True,
-            "volume": int(row.get("Volume", 0)),
-            "time": time_str,
-            "mid": {
-                "o": f"{float(row['Open']):.6f}",
-                "h": f"{float(row['High']):.6f}",
-                "l": f"{float(row['Low']):.6f}",
-                "c": f"{float(row['Close']):.6f}"
+        formatted.append(
+            {
+                "complete": True,
+                "volume": int(row.get("Volume", 0)),
+                "time": time_str,
+                "mid": {
+                    "o": f"{float(row['Open']):.6f}",
+                    "h": f"{float(row['High']):.6f}",
+                    "l": f"{float(row['Low']):.6f}",
+                    "c": f"{float(row['Close']):.6f}",
+                },
             }
-        })
+        )
     return formatted
 
 
@@ -55,7 +57,7 @@ def get_candles(
     granularity: str = "D",
     count: int = 50,
     start: Optional[datetime] = None,
-    end: Optional[datetime] = None
+    end: Optional[datetime] = None,
 ) -> List[Dict]:
     """
     Get candles from Yahoo Finance — matches OANDA API parameters and output format
@@ -70,7 +72,7 @@ def get_candles(
         "H4": "240m",
         "D": "1d",
         "W": "1wk",
-        "M": "1mo"
+        "M": "1mo",
     }
 
     yahoo_interval = interval_map.get(granularity.upper(), "1d")
@@ -84,7 +86,7 @@ def get_candles(
                 end=end,
                 interval=yahoo_interval,
                 progress=False,
-                auto_adjust=False
+                auto_adjust=False,
             )
         else:
             period = "60d" if count <= 60 else "1y" if count <= 365 else "max"
@@ -93,7 +95,7 @@ def get_candles(
                 period=period,
                 interval=yahoo_interval,
                 progress=False,
-                auto_adjust=False
+                auto_adjust=False,
             )
             hist = hist.tail(count)
 

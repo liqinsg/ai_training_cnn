@@ -1,11 +1,13 @@
-#utils/calculate_pivots.py
+# utils/calculate_pivots.py
 """
 Test script: calculate & verify all pivot types
 Matches TradingView / OANDA standard formulas
 """
 
 
-def calculate_pivots(prev_high: float, prev_low: float, prev_close: float, pivot_type: str = "Classic") -> dict:
+def calculate_pivots(
+    prev_high: float, prev_low: float, prev_close: float, pivot_type: str = "Classic"
+) -> dict:
     """
     Calculate support/resistance pivot levels using standard methods
     Supported: Classic, Fibonacci, Camarilla, Woodie
@@ -50,9 +52,13 @@ def calculate_pivots(prev_high: float, prev_low: float, prev_close: float, pivot
         l3 = close - (high - low) * 1.1 / 6
         l4 = close - (high - low) * 1.1 / 4
         return {
-            "R3": round(h3, 3), "R2": round(h2, 3), "R1": round(h1, 3),
+            "R3": round(h3, 3),
+            "R2": round(h2, 3),
+            "R1": round(h1, 3),
             "P": round((high + low + close) / 3, 3),
-            "S1": round(l1, 3), "S2": round(l2, 3), "S3": round(l3, 3),
+            "S1": round(l1, 3),
+            "S2": round(l2, 3),
+            "S3": round(l3, 3),
         }
 
     elif pivot_type == "Woodie":
@@ -91,4 +97,6 @@ if __name__ == "__main__":
         for k in ["R3", "R2", "R1", "P", "S1", "S2", "S3"]:
             print(f"   {k:3} = {levels[k]:.3f}")
 
-    print("\n✅ Compare these with your TradingView/OANDA table — they will match exactly!")
+    print(
+        "\n✅ Compare these with your TradingView/OANDA table — they will match exactly!"
+    )

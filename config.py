@@ -10,14 +10,6 @@ load_dotenv()
 DEBUG_EDGE_REASON = True 
 
 # ==========================================
-# OANDA CONNECTION
-# ==========================================
-OANDA_ENV = "practice"
-OANDA_API_TOKEN = os.getenv("OANDA_API_TOKEN", "")
-OANDA_ACCOUNT_ID = os.getenv("OANDA_ACCOUNT_ID_1", "")
-OANDA_TOKEN = OANDA_API_TOKEN
-
-# ==========================================
 # SCHEDULER
 # ==========================================
 CHECK_INTERVAL_MINUTES = 15
@@ -34,22 +26,22 @@ SPREAD_PIPS = 3
 SL_PIPS = SL_BUFFER_PIPS
 MIN_RR = 1.2
 
-# ==========================================
-# RISK LEVEL 1–10
-# ==========================================
-RISK_LEVEL = 10
-RISK_PROFILE = {
-    1: {"units": 1000, "min_confidence": 0.90},
-    2: {"units": 2000, "min_confidence": 0.85},
-    3: {"units": 3000, "min_confidence": 0.80},
-    4: {"units": 4000, "min_confidence": 0.75},
-    5: {"units": 5000, "min_confidence": 0.70},
-    6: {"units": 6000, "min_confidence": 0.65},
-    7: {"units": 7000, "min_confidence": 0.60},
-    8: {"units": 8000, "min_confidence": 0.55},
-    9: {"units": 9000, "min_confidence": 0.50},
-    10: {"units": 10000, "min_confidence": 0.40},
-}
+# # ==========================================
+# # RISK LEVEL 1–10
+# # ==========================================
+# RISK_LEVEL = 10
+# RISK_PROFILE = {
+#     1: {"units": 1000, "min_confidence": 0.90},
+#     2: {"units": 2000, "min_confidence": 0.85},
+#     3: {"units": 3000, "min_confidence": 0.80},
+#     4: {"units": 4000, "min_confidence": 0.75},
+#     5: {"units": 5000, "min_confidence": 0.70},
+#     6: {"units": 6000, "min_confidence": 0.65},
+#     7: {"units": 7000, "min_confidence": 0.60},
+#     8: {"units": 8000, "min_confidence": 0.55},
+#     9: {"units": 9000, "min_confidence": 0.50},
+#     10: {"units": 10000, "min_confidence": 0.40},
+# }
 
 # ==========================================
 # AI / GEMINI

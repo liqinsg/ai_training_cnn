@@ -3,11 +3,7 @@
 Main entry point for currency strength calculation
 Now with professional logging
 """
-from config import (
-    STRENGTH_PAIRS,
-    STRENGTH_TIMEFRAMES,
-    STRENGTH_SLOW_LOOKBACK
-)
+from config import STRENGTH_PAIRS, STRENGTH_TIMEFRAMES, STRENGTH_SLOW_LOOKBACK
 from .calculate_currency_strength import calculate_currency_strength
 from .logger import logger
 
@@ -26,10 +22,7 @@ def get_currency_strength():
     logger.info(f"Timeframes: {timeframes}, Weights: {weights}, Lookback: {lookback}")
 
     scores = calculate_currency_strength(
-        pairs=STRENGTH_PAIRS,
-        timeframes=timeframes,
-        weights=weights,
-        lookback=lookback
+        pairs=STRENGTH_PAIRS, timeframes=timeframes, weights=weights, lookback=lookback
     )
 
     sorted_ranking = sorted(scores.items(), key=lambda x: x[1], reverse=True)
@@ -49,5 +42,7 @@ if __name__ == "__main__":
     ranking, _ = get_currency_strength()
     print("\n=== Final Ranking ===")
     for curr, score in ranking:
-        bar = "█" * max(0, int(score * 8)) if score > 0 else "░" * max(0, int(-score * 8))
+        bar = (
+            "█" * max(0, int(score * 8)) if score > 0 else "░" * max(0, int(-score * 8))
+        )
         print(f"{curr:4s}: {score:+.4f} {'▲' if score > 0 else '▼'} {bar}")

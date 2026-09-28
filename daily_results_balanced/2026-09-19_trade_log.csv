@@ -1,0 +1,3 @@
+timestamp,trade_id,profile,account,pair,direction,entry_price,sl_price,tp_price,score_final,score_s,score_r,score_a,score_x,score_m,pips,profit_usd,exit_reason,exit_time
+2026-09-19T09:11:42.698597+00:00,DRY_RUN_GBP_JPY,profile2,a/c2,GBP_JPY,BUY,210.069,208.382,211.869,69.1,82.3,0.0,100.0,74.1,63.4,,,,
+2026-09-19T09:23:02.786354+00:00,DRY_RUN_GBP_JPY,profile2,a/c2,GBP_JPY,BUY,210.069,208.382,211.869,69.0,82.3,0.0,100.0,74.1,62.5,,,,

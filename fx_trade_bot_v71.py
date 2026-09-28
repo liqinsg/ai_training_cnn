@@ -11,8 +11,8 @@ Usage:
     python fx_trade_bot_v7.py -p 3 --timeframe H4
     python fx_trade_bot_v7.py -p 3 --trend-filter-enabled false
 """
-import re
-import contextlib, argparse, csv
+import os
+import contextlib, argparse, csv, functools
 from datetime import datetime, timezone
 from pathlib import Path
 import numpy as np, pandas as pd
@@ -47,6 +47,14 @@ from fx_trade_bot_utils import (
     calculate_stop_loss,
     forex_market_closed_schedule as forex_market_closed,
     check_margin_available,
+    calculate_ema,
+    fetch_weekly_ema100,
+    evaluate_trend_and_tp,
+    build_top_pairs,
+    calc_weighted_score,
+    init_csv,
+    append_to_csv,
+    update_trade_on_close,
 )
 from fx_trade_bot_mc import MCGenerator, MCConfig
 from fx_trade_bot_ml import ensure_model
@@ -84,6 +92,12 @@ parser.add_argument(
     help="Dry-run: show actions, NO real orders",
 )
 parser.add_argument(
+    "--live",
+    action="store_true",
+    default=False,
+    help="Use LIVE (real) OANDA environment for this profile (otherwise DEMO/practice)",
+)
+parser.add_argument(
     "--account",
     type=str,
     default=None,
@@ -96,6 +110,12 @@ parser.add_argument(
     default=None,
     help="Override ZERO_STRENGTH_GUARD at runtime (on/off)",
 )
+parser.add_argument(
+    "--debug",
+    action="store_true",
+    default=False,
+    help="Debug mode: bypass market-closed guard + extra logs",
+)
 args = parser.parse_args()
 PROFILE_NAME = f"profile{args.profile}"
 print(f"🔹 Selected profile → {PROFILE_NAME!r}")
@@ -104,13 +124,20 @@ P = load_profile(PROFILE_NAME)
 S = P["strategy"]
 # ─── OANDA Connection ───────────────────────────────────────────────────────
 oanda_ctx = get_oanda_profile(
-    profile_num=str(args.profile), account_override=args.account
+    profile_num=str(args.profile),
+    account_override=args.account,
+    env_override="live" if args.live else None,
 )
 api = oanda_ctx["api"]
 OANDA_ACCOUNT_ID = oanda_ctx["account_id"]
 IS_LIVE = oanda_ctx["is_live"]
+FORCE_LIVE = bool(args.live)
 MODE_RAW = oanda_ctx["env"]
-DRY_RUN = args.dry_run or P.get("dry_run", False)
+DRY_RUN = args.dry_run or os.getenv("DRY_RUN", "").strip().lower() in (
+    "true",
+    "1",
+    "yes",
+)
 # ─── Core Identifiers ───────────────────────────────────────────────────────
 BASE_DIR = Path(__file__).resolve().parent
 PROFILE_LABEL = S["LABEL"]
@@ -137,13 +164,15 @@ if not OANDA_ACCOUNT_ID or len(OANDA_ACCOUNT_ID) < 10 or "-" not in OANDA_ACCOUN
     exit(1)
 print(
     f"""
-✅ PROFILE {args.profile} LOADED
-   Name      : {ACCOUNT_NAME}
-   Strategy  : {P['param_set']} ({PROFILE_LABEL})
-   Mode      : {MODE_RAW} {'(DRY-RUN)' if DRY_RUN else '🔴 LIVE' if IS_LIVE else '🟢 DEMO'}
-   OANDA environment: {oanda_ctx['env']}
-   OANDA account: {OANDA_ACCOUNT_ID}
-   OANDA api: initialized
+╔══════════════════════════════════════════════════════════════╗
+║  FX TRADE BOT v7.2 — STARTUP BANNER                          ║
+╠══════════════════════════════════════════════════════════════╣
+║  Profile   : {args.profile} — {ACCOUNT_NAME} ({P['param_set']})
+║  Strategy  : {PROFILE_LABEL}
+║  Mode      : {'🧊 DRY-RUN — NO EXECUTION' if DRY_RUN else '🔴 REAL ACCOUNT — LIVE' if FORCE_LIVE else '🔴 LIVE' if IS_LIVE else '🟢 DEMO/PRACTICE'}
+║  Account   : {OANDA_ACCOUNT_ID}
+║  Env       : {oanda_ctx['env']}{' ⚠️ CLI --live override' if FORCE_LIVE else ''}
+╚══════════════════════════════════════════════════════════════╝
 """
 )
 # ─── Dates & Audit Paths ─────────────────────────────────────────────────────
@@ -187,71 +216,8 @@ _SIGNAL_LOG_HEADER = [
     "action_taken",
 ]
 
-
-def _init_csv(path, header):
-    if not path.exists():
-        try:
-            with open(path, "w", newline="") as f:
-                csv.DictWriter(f, fieldnames=header).writeheader()
-            logger.info(f"📝 AUDIT init: {path}")
-        except Exception as e:
-            logger.warning(f"⚠️ AUDIT init failed {path}: {e}")
-
-
-_init_csv(TRADE_LOG_PATH, _TRADE_LOG_HEADER)
-_init_csv(SIGNAL_LOG_PATH, _SIGNAL_LOG_HEADER)
-
-
-def append_to_csv(filepath, row_dict):
-    try:
-        fn = list(row_dict.keys())
-        if filepath.exists():
-            with open(filepath, "r", newline="") as f:
-                eh = next(csv.reader(f), None)
-                if eh and list(eh) != fn:
-                    logger.warning(f"⚠️ Header mismatch: {filepath} — skipping")
-                    return
-        with open(filepath, "a", newline="") as f:
-            csv.DictWriter(f, fieldnames=fn).writerow(row_dict)
-    except Exception as e:
-        logger.warning(f"⚠️ Append failed {filepath}: {e}")
-
-
-def update_trade_on_close(instrument, exit_reason="UNKNOWN"):
-    try:
-        if not TRADE_LOG_PATH.exists():
-            return
-        df = pd.read_csv(TRADE_LOG_PATH, dtype={"trade_id": str})
-        for c in ("pips", "profit_usd", "exit_reason", "exit_time"):
-            if c in df.columns:
-                df[c] = df[c].astype(object)
-        if df.empty:
-            return
-        mask = (df["pair"] == instrument) & df["exit_time"].isna()
-        match = df.loc[mask].head(1)
-        if match.empty:
-            return
-        tid = str(match.iloc[0]["trade_id"])
-        if tid.startswith("DRY_RUN_"):
-            df.loc[match.index, "exit_reason"] = exit_reason
-            df.loc[match.index, "exit_time"] = datetime.now(timezone.utc).isoformat()
-            df.to_csv(TRADE_LOG_PATH, index=False)
-            return
-        realized_pl = 0.0
-        with contextlib.suppress(Exception):
-            from oandapyV20.endpoints.trades import TradeDetails
-
-            t = api.request(TradeDetails(accountID=OANDA_ACCOUNT_ID, tradeID=tid)).get(
-                "trade", {}
-            )
-            realized_pl = float(t.get("realizedPL", 0.0))
-        df.loc[match.index, "profit_usd"] = round(realized_pl, 2)
-        df.loc[match.index, "exit_reason"] = exit_reason
-        df.loc[match.index, "exit_time"] = datetime.now(timezone.utc).isoformat()
-        df.to_csv(TRADE_LOG_PATH, index=False)
-    except Exception as e:
-        logger.warning(f"⚠️ Backfill error {instrument}: {e}")
-
+init_csv(TRADE_LOG_PATH, _TRADE_LOG_HEADER)
+init_csv(SIGNAL_LOG_PATH, _SIGNAL_LOG_HEADER)
 
 # ─── Trend Filter Config ─────────────────────────────────────────────────────
 TREND_FILTER_ENABLED = cfg(P, "TREND_FILTER_ENABLED", False)
@@ -269,7 +235,9 @@ OANDA_GRANULARITY = OANDA_GRANULARITY_MAP.get(TIMEFRAME, "H4")
 MIN_CONVICTION_SCORE = cfg(P, "MIN_CONVICTION_SCORE", 30.0)
 BASE_MIN_EDGE = cfg(P, "BASE_MIN_EDGE", 0.50)
 MAX_OPEN_POSITIONS = cfg(P, "MAX_OPEN_POSITIONS", 4)
-DEFAULT_LOT_SIZE = cfg(P, "DEFAULT_LOT_SIZE", 10000)
+DEFAULT_LOT_SIZE = int(os.getenv("DEFAULT_LOT_SIZE", cfg(P, "DEFAULT_LOT_SIZE", 10000)))
+if IS_LIVE or FORCE_LIVE:
+    DEFAULT_LOT_SIZE = int(os.getenv("DEFAULT_LOT_SIZE", 1))
 ATR_SL_MULT = cfg(P, "ATR_SL_MULT", 2.0)
 ATR_TP_MULT = cfg(P, "ATR_TP_MULT", 3.0)
 ATR_PERIOD = cfg(P, "ATR_PERIOD", 14)
@@ -279,8 +247,10 @@ TP_STRONG_MULT = cfg(P, "TP_STRONG_MULT", 2.5)
 MC_STRONG_THRESHOLD = cfg(P, "MC_STRONG_THRESHOLD", 0.55)
 EMA_PERIOD_FAST = cfg(P, "EMA_PERIOD_FAST", 40)
 EMA_PERIOD_SLOW = cfg(P, "EMA_PERIOD_SLOW", 80)
-EMA100_BUFFER_PIPS = cfg(P, "EMA100_BUFFER_PIPS", 30)       # SAFE/BUFFER/WAIT zone distance
-EMA100_TP_FLOOR_PIPS = cfg(P, "EMA100_TP_FLOOR_PIPS", 30)   # Existing TP-floor clearance from weekly EMA100
+EMA100_BUFFER_PIPS = cfg(P, "EMA100_BUFFER_PIPS", 30)  # SAFE/BUFFER/WAIT zone distance
+EMA100_TP_FLOOR_PIPS = cfg(
+    P, "EMA100_TP_FLOOR_PIPS", 30
+)  # Existing TP-floor clearance from weekly EMA100
 XGB_BULLISH_THRESHOLD = cfg(P, "XGB_BULLISH_THRESHOLD", 0.55)
 MC_BULLISH_THRESHOLD = cfg(P, "MC_BULLISH_THRESHOLD_PCT", 55.0)
 REQUIRE_STRONG_MOMENTUM = cfg(P, "REQUIRE_STRONG_MOMENTUM", False)
@@ -321,220 +291,6 @@ if args.confluence is not None:
 USE_TOP_PAIRS_ONLY = cfg(P, "USE_TOP_PAIRS_ONLY", True)
 TOP_PAIRS_COUNT = cfg(P, "TOP_PAIRS_COUNT", 4)
 TOP_PAIRS_MIN_GAP = cfg(P, "TOP_PAIRS_MIN_GAP", 0.25)
-
-
-# ─── Helper Functions ────────────────────────────────────────────────────────
-def calculate_ema(series, period):
-    return series.ewm(span=period, adjust=False).mean()
-
-
-def fetch_weekly_ema100(oanda_instrument, api):
-    try:
-        resp = api.request(
-            InstrumentsCandles(
-                instrument=oanda_instrument,
-                params={"granularity": "W", "count": 105, "price": "M"},
-            )
-        )
-        candles = resp.get("candles") or []
-        if len(candles) < 100:
-            logger.warning(f"⚠️ Weekly EMA100 {oanda_instrument}: insufficient candles")
-            return None
-        closes = []
-        for c in candles:
-            mid = c.get("mid") or {}
-            with contextlib.suppress(Exception):
-                closes.append(float(mid["c"]))
-        if len(closes) < 100:
-            return None
-        ema100 = float(calculate_ema(pd.Series(closes), 100).iloc[-1])
-        last_close = float(closes[-1])
-        if not np.isfinite(ema100) or ema100 <= 0 or last_close <= 0:
-            return None
-        return ema100
-    except Exception as e:
-        logger.warning(f"⚠️ EMA100 fetch failed: {e}")
-        return None
-
-
-def evaluate_trend_and_tp(
-    profile_name,
-    direction,
-    mc_pct_up,
-    entry_price,
-    pip_value,
-    df,
-    weekly_ema100,
-    ema_cross_filter,
-    fast_period,
-    slow_period,
-    base_tp_pips,
-    mc_strong_threshold,
-    tp_mult,
-    tp_strong_mult,
-    ema100_buffer_pips=30,
-    ema100_tp_floor_pips=30,
-    week_ema100_filter_enabled=False,
-    timeframe="15m",
-):
-    current_price = entry_price
-    if ema_cross_filter:
-        ema_fast = calculate_ema(df["Close"], fast_period)
-        ema_slow = calculate_ema(df["Close"], slow_period)
-        fv, sv = ema_fast.iloc[-1], ema_slow.iloc[-1]
-        if direction == "BUY" and not (current_price > fv and fv > sv):
-            return (
-                False,
-                0.0,
-                f"TREND_FILTER_BLOCKED: TREND MISALIGNED: Price>{fv:.5f}>{sv:.5f}",
-                1.0,
-                1.0,
-            )
-        if direction == "SELL" and not (current_price < fv and fv < sv):
-            return (
-                False,
-                0.0,
-                f"TREND_FILTER_BLOCKED: TREND MISALIGNED: Price<{fv:.5f}<{sv:.5f}",
-                1.0,
-                1.0,
-            )
-    mc_momentum = mc_pct_up / 100.0
-    tp_pips = (
-        base_tp_pips * tp_strong_mult
-        if mc_momentum >= mc_strong_threshold
-        else base_tp_pips * tp_mult
-    )
-    if not week_ema100_filter_enabled:
-        return True, tp_pips, "OK: WEEKLY_EMA_SKIPPED", 1.0, 1.0
-    if weekly_ema100 is not None and ema_cross_filter:
-        if direction == "BUY":
-            min_tp_pips = (
-                (weekly_ema100 + ema100_tp_floor_pips * pip_value) - current_price
-            ) / pip_value
-        else:
-            min_tp_pips = (
-                current_price - (weekly_ema100 - ema100_tp_floor_pips * pip_value)
-            ) / pip_value
-        tp_pips = max(tp_pips, min_tp_pips)
-    lot_mult = 1.0
-    tp_mult_reduce = 1.0
-    if weekly_ema100 is not None and pip_value > 0:
-        dist_pips = abs(current_price - weekly_ema100) / pip_value
-        if dist_pips <= ema100_buffer_pips:
-            if direction == "BUY" and current_price < weekly_ema100:
-                return (
-                    False,
-                    0.0,
-                    f"WAIT_EMA_ALIGNMENT: WAIT_ABOVE_WEEKLY_EMA100 {weekly_ema100:.5f} dist={dist_pips:.1f}p",
-                    1.0,
-                    1.0,
-                )
-            if direction == "SELL" and current_price > weekly_ema100:
-                return (
-                    False,
-                    0.0,
-                    f"WAIT_EMA_ALIGNMENT: WAIT_BELOW_WEEKLY_EMA100 {weekly_ema100:.5f} dist={dist_pips:.1f}p",
-                    1.0,
-                    1.0,
-                )
-            # RISK STRUCTURE:
-            # lot × 0.5 -> approximately 0.5× baseline position risk
-            # TP  × 0.8 -> approximately 0.4× baseline gross reward
-            # Therefore pip-based reward/risk changes from baseline R:1 to R:0.8.
-            # These values are experimental and have not yet been statistically validated.
-            lot_mult = 0.5
-            tp_mult_reduce = 0.8
-            tp_pips = tp_pips * tp_mult_reduce
-            logger.info(
-                f"⚡ BUFFER ZONE {direction}: dist={dist_pips:.1f}p ≤ {ema100_buffer_pips}p → lot×{lot_mult} TP×{tp_mult_reduce}"
-            )
-        else:
-            logger.info(
-                f"🛡️ SAFE ZONE {direction}: dist={dist_pips:.1f}p > {ema100_buffer_pips}p"
-            )
-    return (
-        True,
-        tp_pips,
-        f"TP={tp_pips:.1f}p (lot×{lot_mult} TP×{tp_mult_reduce})",
-        lot_mult,
-        tp_mult_reduce,
-    )
-
-
-def build_top_pairs(strength_scores, all_pairs, top_n=4, min_gap=0.25):
-    ranked = sorted(strength_scores.items(), key=lambda x: x[1], reverse=True)
-    strongest = [c for c, _ in ranked[:top_n]]
-    weakest = [c for c, _ in ranked[-top_n:]]
-    best_by_sym = {}
-    for base in strongest:
-        for quote in weakest:
-            if base == quote:
-                continue
-            gap = strength_scores[base] - strength_scores[quote]
-            if abs(gap) < min_gap:
-                continue
-            sym = (
-                f"{base}{quote}=X"
-                if f"{base}{quote}=X" in all_pairs
-                else f"{quote}{base}=X"
-            )
-            if sym not in all_pairs:
-                continue
-            abs_gap = abs(gap)
-            prev = best_by_sym.get(sym)
-            if prev is None or abs_gap > prev[1]:
-                best_by_sym[sym] = (sym, abs_gap, base, quote)
-    result = sorted(best_by_sym.values(), key=lambda x: x[1], reverse=True)
-    return [p[0] for p in result[:top_n]], result[:top_n]
-
-
-def calc_weighted_score(pair, gap, rsi_val, adx_val, xgb_prob, mc_pct_up):
-    strength_dir = (
-        "BUY"
-        if gap >= MIN_STRENGTH_GAP
-        else "SELL" if gap <= -MIN_STRENGTH_GAP else "NEUTRAL"
-    )
-    xgb_dir = "BUY" if (xgb_prob or 0.0) >= XGB_BULLISH_THRESHOLD else "SELL"
-    mc_dir = "BUY" if (mc_pct_up or 50.0) >= MC_BULLISH_THRESHOLD else "SELL"
-    buy_votes = sum(1 for d in (strength_dir, xgb_dir, mc_dir) if d == "BUY")
-    sell_votes = sum(1 for d in (strength_dir, xgb_dir, mc_dir) if d == "SELL")
-    logger.info(
-        f"🤝 {pair}: Strength={strength_dir} | XGB={xgb_dir} | MC={mc_dir} | BUY={buy_votes}/3"
-    )
-    if REQUIRE_DIRECTION_CONSENSUS:
-        if buy_votes >= CONSENSUS_THRESHOLD:
-            direction = "BUY"
-            logger.info(f"✅ {pair}: BUY consensus ({buy_votes}/3)")
-        elif sell_votes >= CONSENSUS_THRESHOLD:
-            direction = "SELL"
-            logger.info(f"✅ {pair}: SELL consensus ({sell_votes}/3)")
-        else:
-            logger.info(f"⏭️ {pair}: NO CONSENSUS")
-            return None, None
-    else:
-        direction = "BUY" if gap > 0 else "SELL"
-    S = max(0.0, min(100.0, abs(gap) / 3.5 * 100.0))
-    rsi = max(0.0, min(100.0, rsi_val))
-    R = (
-        max(0.0, min(100.0, (50.0 - rsi) * 2.0))
-        if direction == "BUY"
-        else max(0.0, min(100.0, (rsi - 50.0) * 2.0))
-    )
-    A = max(0.0, min(100.0, adx_val * cfg(P, "ADX_SCALE_FACTOR", 2.0)))
-    X = max(0.0, min(100.0, (xgb_prob or 0.0) * 100.0)) or 50.0
-    M = max(0.0, min(100.0, mc_pct_up if mc_pct_up is not None else 50.0))
-    FINAL = S * W_S + R * W_R + A * W_A + X * W_X + M * W_M
-    return direction, {
-        "S": round(S, 1),
-        "R": round(R, 1),
-        "A": round(A, 1),
-        "X": round(X, 1),
-        "M": round(M, 1),
-        "FINAL": round(FINAL, 1),
-        "PASS": FINAL >= MIN_CONVICTION_SCORE,
-        "THRESHOLD": round(MIN_CONVICTION_SCORE, 1),
-    }
-
 
 # ─── MC Timeframe Config ─────────────────────────────────────────────────────
 _tf_cfg = (
@@ -596,13 +352,26 @@ model_wrapper = ModelWrapper(FEAT_CFG, model_path=MODEL_PATH)
 last_closed = {} if REMOVE_COOLDOWN else load_cooldown(COOLDOWN_FILE, Direction)
 
 
+def _close_wrap(instr, api=None, account_id=None, trade_log=None, dry_run=False):
+    _ok = close_position(api, account_id, instr, send_telegram_message, dry_run=dry_run)
+    _closed = True
+    with contextlib.suppress(Exception):
+        _closed = get_open_position(api, account_id, instr) is None
+    update_trade_on_close(
+        instr, trade_log, api, account_id,
+        "ROTATION_OR_TIME_EXIT" if _closed else "CLOSE_FAILED",
+    )
+    return _ok
+
+
 # ─── MAIN ────────────────────────────────────────────────────────────────────
 def main():
     global model_wrapper, strat_engine, EXCLUDE_PAIRS, _zero_ccys
     logger.info(
         f"\n🤖 RUN v{VERSION} {PROFILE_LABEL} — {ACCOUNT_NAME} | "
         f"FILTERS={'ON' if TREND_FILTER_ENABLED else 'OFF'} | "
-        f"DRY-RUN={'ON 🧊' if DRY_RUN else 'OFF LIVE'} | "
+        f"DRY-RUN={'ON 🧊' if DRY_RUN else 'OFF'} | "
+        f"ENV={'LIVE 🔴' if IS_LIVE else 'DEMO 🟢'}{' ⚠️CLI' if FORCE_LIVE else ''} | "
         f"{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')} | MAX_OPEN={MAX_OPEN_POSITIONS}"
     )
     # Audit reconciliation
@@ -626,11 +395,13 @@ def main():
                 if not tid or tid.startswith("DRY_RUN_"):
                     continue
                 if tid not in _open_ids:
-                    update_trade_on_close(str(row.get("pair", "")), "SL_OR_TP_HIT")
+                    update_trade_on_close(str(row.get("pair", "")), TRADE_LOG_PATH, api, OANDA_ACCOUNT_ID, "SL_OR_TP_HIT")
     except Exception as e:
         logger.warning(f"⚠️ Reconciliation failed: {e}")
-    if forex_market_closed():
+    if not args.debug and forex_market_closed():
         return
+    if args.debug:
+        logger.info("🛠️ DEBUG MODE — market-closed guard bypassed")
     model_wrapper, strat_engine = ensure_model(
         MODEL_PATH,
         FEAT_CFG,
@@ -782,17 +553,11 @@ def main():
     # Step 5 — Dynamic Exit Manager
     logger.info("[STEP 5] Dynamic Exit Manager...")
 
-    def close_wrap(instr):
-        _ok = close_position(
-            api, OANDA_ACCOUNT_ID, instr, send_telegram_message, dry_run=args.dry_run
-        )
-        _closed = True
-        with contextlib.suppress(Exception):
-            _closed = get_open_position(api, OANDA_ACCOUNT_ID, instr) is None
-        update_trade_on_close(
-            instr, "ROTATION_OR_TIME_EXIT" if _closed else "CLOSE_FAILED"
-        )
-        return _ok
+    close_wrap = functools.partial(
+        _close_wrap,
+        api=api, account_id=OANDA_ACCOUNT_ID,
+        trade_log=TRADE_LOG_PATH, dry_run=DRY_RUN,
+    )
 
     dyn_mgr = DynamicPositionManager(
         api,
@@ -805,7 +570,7 @@ def main():
         dynamic_tp=DYNAMIC_TP,
         tp_raise_thresh_pips=TP_RAISE_THRESHOLD_PIPS,
         telegram_send=send_telegram_message,
-        dry_run=args.dry_run,
+        dry_run=DRY_RUN,
         zone_trailing=cfg(P, "SL_ZONE_TRAILING", False),
         min_sl_step_pips=cfg(P, "SL_MIN_MOVE_PIPS", 15),
         sl_buffer_pips=cfg(P, "SL_TRAIL_BUFFER_PIPS", 25),
@@ -843,13 +608,11 @@ def main():
     logger.info("[STEP 7] Scoring + Trend Filter + SMART TP...")
     pip_cache = {p: pip_size(p) for p in selected_pairs}
     pair_parts = {p: (p[:3], p[3:].replace("=X", "")) for p in selected_pairs}
-    all_candidates = []
-    _audit_sig_rows = {}
-    _xgb_drift_check = []
-    _step7_eval = 0
-    _step7_pass_score = 0
-    _step7_blocked_trend = 0
-    _step7_blocked_sl = 0
+    _ts_now = lambda: datetime.now(timezone.utc).isoformat()
+    _empty_scores = {"score_final": "", "score_s": "", "score_r": "", "score_a": "", "score_x": "", "score_m": ""}
+    _sig_base = lambda pair, action: {"timestamp": _ts_now(), "profile": PROFILE_NAME, "account": ACCOUNT_NAME, "pair": pair, **_empty_scores, "action_taken": action}
+    all_candidates, _audit_sig_rows, _xgb_drift_check = [], {}, []
+    _step7_eval = _step7_pass_score = _step7_blocked_trend = _step7_blocked_sl = 0
     for pair in selected_pairs:
         if pair not in pair_data:
             continue
@@ -870,22 +633,7 @@ def main():
         # Already open
         if open_pos_by_oanda.get(oanda, False):
             logger.info(f"⏭️ {pair}: already open — skip")
-            append_to_csv(
-                SIGNAL_LOG_PATH,
-                {
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                    "profile": PROFILE_NAME,
-                    "account": ACCOUNT_NAME,
-                    "pair": pair,
-                    "score_final": "",
-                    "score_s": "",
-                    "score_r": "",
-                    "score_a": "",
-                    "score_x": "",
-                    "score_m": "",
-                    "action_taken": "POSITION_ALREADY_OPEN",
-                },
-            )
+            append_to_csv(SIGNAL_LOG_PATH, _sig_base(pair, "POSITION_ALREADY_OPEN"))
             continue
         # Current price
         try:
@@ -903,37 +651,10 @@ def main():
         gap = strength_scores.get(base, 0) - strength_scores.get(quote, 0)
         if abs(gap) < MIN_STRENGTH_GAP:
             logger.info(f"⏭️ {pair}: gap={abs(gap):.2f} < {MIN_STRENGTH_GAP} — skip")
-            append_to_csv(
-                SIGNAL_LOG_PATH,
-                {
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                    "profile": PROFILE_NAME,
-                    "account": ACCOUNT_NAME,
-                    "pair": pair,
-                    "score_final": "",
-                    "score_s": "",
-                    "score_r": "",
-                    "score_a": "",
-                    "score_x": "",
-                    "score_m": "",
-                    "action_taken": "GAP_TOO_SMALL",
-                },
-            )
+            append_to_csv(SIGNAL_LOG_PATH, _sig_base(pair, "GAP_TOO_SMALL"))
             continue
         _step7_eval += 1
-        _sig_row = {
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "profile": PROFILE_NAME,
-            "account": ACCOUNT_NAME,
-            "pair": pair,
-            "score_final": "",
-            "score_s": "",
-            "score_r": "",
-            "score_a": "",
-            "score_x": "",
-            "score_m": "",
-            "action_taken": "PENDING",
-        }
+        _sig_row = _sig_base(pair, "PENDING")
         # Confluence
         if MULTI_TF_CONFLUENCE and not tf_confluence.get(pair, {}).get("passes", True):
             logger.info(f"🚫 {pair}: confluence fail — skip")
@@ -1039,6 +760,7 @@ def main():
             continue
         # SL & TP
         dec = 3 if "JPY" in pair else 5
+        sl_price = None
         if cfg(P, "SL_USE_ZONE_HIERARCHY", True):
             try:
                 h4_df = fetch_candles(api, oanda, "H4", count=5)
@@ -1059,16 +781,8 @@ def main():
                     continue
                 sl_price = round(sl_price, dec)
             except Exception:
-                sl_pips = max(
-                    MIN_SL_PIPS_JPY if "JPY" in pair else MIN_SL_PIPS,
-                    round(atr_val / pip_cache[pair] * ATR_SL_MULT, 1),
-                )
-                sl_price = (
-                    round(current - sl_pips * pip_cache[pair], dec)
-                    if direction == "BUY"
-                    else round(current + sl_pips * pip_cache[pair], dec)
-                )
-        else:
+                pass
+        if sl_price is None:
             sl_pips = max(
                 MIN_SL_PIPS_JPY if "JPY" in pair else MIN_SL_PIPS,
                 round(atr_val / pip_cache[pair] * ATR_SL_MULT, 1),
@@ -1145,11 +859,11 @@ def main():
             logger.info(f"⏭️ {pair}: already selected THIS run — SKIP")
             continue
 
-        lot = int(DEFAULT_LOT_SIZE * lot_mult)
+        lot = max(1, int(DEFAULT_LOT_SIZE * lot_mult))
         logger.info(
             f"📤 EXECUTE: {pair} {direction} | SL={sl_price:.{dec}f} | TP={tp_price:.{dec}f} | TP={tp_pips:.1f}p | LOT={lot} (×{lot_mult})"
         )
-        if not args.dry_run:
+        if not DRY_RUN:
             margin_ok, margin_msg = check_margin_available(
                 api, OANDA_ACCOUNT_ID, oanda, lot, current
             )
@@ -1167,7 +881,7 @@ def main():
                 sl_price=sl_price,
                 tp_price=tp_price,
                 client_id=oanda,
-                dry_run=args.dry_run,
+                dry_run=DRY_RUN,
             )
             if result.get("ok"):
                 executed_in_this_run.add(oanda)
@@ -1231,7 +945,6 @@ def main():
     )
 
     logger.info(f"\n✅ {PROFILE_LABEL} RUN COMPLETE")
-
 
 # ─── ENTRY POINT ─────────────────────────────────────────────────────────────
 if __name__ == "__main__":

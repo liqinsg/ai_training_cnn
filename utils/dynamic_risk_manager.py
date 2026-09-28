@@ -37,18 +37,21 @@ from typing import Optional
 # Enums & structured outputs
 # ---------------------------------------------------------------------------
 
+
 class RiskStateEnum(Enum):
     """Position lifecycle states for the risk manager's internal state machine."""
-    INIT = "INIT"                                  # Initial ATR-based SL, no BE yet
-    BREAK_EVEN = "BREAK_EVEN"                       # SL moved to entry + buffer
-    TRAILING_CHANDELIER = "TRAILING_CHANDELIER"     # Actively trailing via Chandelier Exit
-    TIME_DECAY_REDUCE = "TIME_DECAY_REDUCE"         # Partial close issued due to stagnation
-    TIME_DECAY_EXIT = "TIME_DECAY_EXIT"             # Full close issued due to thesis decay
-    CLOSED = "CLOSED"                               # Position fully closed, manager inert
+
+    INIT = "INIT"  # Initial ATR-based SL, no BE yet
+    BREAK_EVEN = "BREAK_EVEN"  # SL moved to entry + buffer
+    TRAILING_CHANDELIER = "TRAILING_CHANDELIER"  # Actively trailing via Chandelier Exit
+    TIME_DECAY_REDUCE = "TIME_DECAY_REDUCE"  # Partial close issued due to stagnation
+    TIME_DECAY_EXIT = "TIME_DECAY_EXIT"  # Full close issued due to thesis decay
+    CLOSED = "CLOSED"  # Position fully closed, manager inert
 
 
 class ActionType(Enum):
     """Discrete actions the risk manager can instruct the execution layer to take."""
+
     NO_CHANGE = "NO_CHANGE"
     UPDATE_SL = "UPDATE_SL"
     PARTIAL_CLOSE = "PARTIAL_CLOSE"
@@ -70,6 +73,7 @@ class RiskAction:
         reason: Human-readable explanation, safe to log verbatim.
         state: The RiskStateEnum the position is in *after* this update.
     """
+
     action: ActionType
     new_sl: Optional[float] = None
     close_ratio: Optional[float] = None
@@ -87,36 +91,54 @@ class RiskConfig:
     All new behavior is opt-in via the `enable_*` flags so this can be
     integrated into custom_strategy_v1.py incrementally.
     """
+
     # --- Initial SL sizing ---
-    atr_multiplier_init: float = 2.0        # N in SL = entry - N*ATR (trend default)
+    atr_multiplier_init: float = 2.0  # N in SL = entry - N*ATR (trend default)
 
     # --- Break-even ---
-    be_trigger_r: float = 1.0               # Move to BE once profit >= this many R
-    be_buffer_atr_frac: float = 0.05        # BE buffer = this fraction of current ATR (spread/slippage guard)
+    be_trigger_r: float = 1.0  # Move to BE once profit >= this many R
+    be_buffer_atr_frac: float = (
+        0.05  # BE buffer = this fraction of current ATR (spread/slippage guard)
+    )
 
     # --- Chandelier trailing ---
     chandelier_lookback_note: str = "caller supplies rolling highest_high/lowest_low"
     chandelier_k_default: float = 3.0
     chandelier_k_tighten_at_2r: float = 2.0
     chandelier_k_tighten_at_1_5r: float = 2.5
-    chandelier_k_time_decay_lock: float = 1.0   # aggressive lock-in once time-decayed but in profit
+    chandelier_k_time_decay_lock: float = (
+        1.0  # aggressive lock-in once time-decayed but in profit
+    )
 
     # --- Time-decay / time-stop ---
     enable_time_stop: bool = True
-    t_expected_hours: float = 48.0           # historical median hours-to-TP for this setup; calibrate per strategy
-    time_reduce_threshold: float = 1.0      # t/T ratio to trigger partial reduce if under 1R
-    time_reduce_ratio: float = 0.5          # fraction of position to close on time-reduce
-    time_exit_threshold: float = 1.5        # t/T ratio to trigger full exit if still under 1R
-    time_tighten_threshold: float = 1.5     # t/T ratio to force aggressive trail if position IS in profit
-    vol_compression_frac: float = 0.6       # ATR_now < this * ATR_entry => volatility compressed (stagnation confirm)
+    t_expected_hours: float = (
+        48.0  # historical median hours-to-TP for this setup; calibrate per strategy
+    )
+    time_reduce_threshold: float = (
+        1.0  # t/T ratio to trigger partial reduce if under 1R
+    )
+    time_reduce_ratio: float = 0.5  # fraction of position to close on time-reduce
+    time_exit_threshold: float = 1.5  # t/T ratio to trigger full exit if still under 1R
+    time_tighten_threshold: float = (
+        1.5  # t/T ratio to force aggressive trail if position IS in profit
+    )
+    vol_compression_frac: float = (
+        0.6  # ATR_now < this * ATR_entry => volatility compressed (stagnation confirm)
+    )
 
     # --- Safety / edge cases ---
-    min_sl_step_atr_frac: float = 0.02      # ignore SL updates smaller than this (avoid order-spam on noise)
-    slippage_buffer_atr_frac: float = 0.03  # extra buffer added to BE/trail levels to absorb fill slippage
+    min_sl_step_atr_frac: float = (
+        0.02  # ignore SL updates smaller than this (avoid order-spam on noise)
+    )
+    slippage_buffer_atr_frac: float = (
+        0.03  # extra buffer added to BE/trail levels to absorb fill slippage
+    )
 
     def to_dict(self) -> dict:
         """Serialize to a plain dict of built-in types (safe for json.dumps)."""
         from dataclasses import asdict
+
         return asdict(self)
 
     @classmethod
@@ -137,6 +159,7 @@ class RiskConfig:
 # ---------------------------------------------------------------------------
 # Core risk manager
 # ---------------------------------------------------------------------------
+
 
 class DynamicRiskManager:
     """
@@ -177,7 +200,9 @@ class DynamicRiskManager:
             ValueError: if direction is not +1 or -1, or atr_entry <= 0.
         """
         if direction not in (1, -1):
-            raise ValueError(f"direction must be +1 (long) or -1 (short), got {direction}")
+            raise ValueError(
+                f"direction must be +1 (long) or -1 (short), got {direction}"
+            )
         if atr_entry <= 0:
             raise ValueError(f"atr_entry must be positive, got {atr_entry}")
 
@@ -195,7 +220,9 @@ class DynamicRiskManager:
 
         self.state: RiskStateEnum = RiskStateEnum.INIT
         self.chandelier_k: float = self.cfg.chandelier_k_default
-        self.time_reduce_fired: bool = False  # has the ONE-TIME partial time-reduce already fired?
+        self.time_reduce_fired: bool = (
+            False  # has the ONE-TIME partial time-reduce already fired?
+        )
 
         self._current_sl: float = self._compute_initial_sl(structural_sl_level)
         self._r_unit_0: float = abs(self._entry_price_0 - self._current_sl)
@@ -229,12 +256,19 @@ class DynamicRiskManager:
 
     def _compute_initial_sl(self, structural_sl_level: Optional[float]) -> float:
         """ATR-based SL, clamped to never sit inside a supplied structural level."""
-        raw_sl = self._entry_price_0 - self.direction * self.cfg.atr_multiplier_init * self.atr_entry
+        raw_sl = (
+            self._entry_price_0
+            - self.direction * self.cfg.atr_multiplier_init * self.atr_entry
+        )
         if structural_sl_level is not None:
             if self.direction == 1:
-                raw_sl = min(raw_sl, structural_sl_level)  # SL must be <= structural support
+                raw_sl = min(
+                    raw_sl, structural_sl_level
+                )  # SL must be <= structural support
             else:
-                raw_sl = max(raw_sl, structural_sl_level)  # SL must be >= structural resistance
+                raw_sl = max(
+                    raw_sl, structural_sl_level
+                )  # SL must be >= structural resistance
         return raw_sl
 
     # ------------------------------------------------------------------
@@ -294,7 +328,11 @@ class DynamicRiskManager:
               insignificant noise.
         """
         if self.state == RiskStateEnum.CLOSED:
-            return RiskAction(action=ActionType.NO_CHANGE, reason="Position already closed.", state=self.state)
+            return RiskAction(
+                action=ActionType.NO_CHANGE,
+                reason="Position already closed.",
+                state=self.state,
+            )
 
         if hours_elapsed is None:
             if current_time is None:
@@ -309,23 +347,38 @@ class DynamicRiskManager:
 
         # ---- 1. Break-even check ----
         if self.state == RiskStateEnum.INIT and r >= self.cfg.be_trigger_r:
-            buffer = (self.cfg.be_buffer_atr_frac + self.cfg.slippage_buffer_atr_frac) * atr_now
+            buffer = (
+                self.cfg.be_buffer_atr_frac + self.cfg.slippage_buffer_atr_frac
+            ) * atr_now
             sl_candidate = self._entry_price_0 + self.direction * buffer
             self.state = RiskStateEnum.BREAK_EVEN
             reason_parts.append(f"BE triggered at {r:.2f}R.")
 
         # ---- 2. Chandelier trail (active once BE has been reached or passed) ----
-        if self.state in (RiskStateEnum.BREAK_EVEN, RiskStateEnum.TRAILING_CHANDELIER,
-                          RiskStateEnum.TIME_DECAY_REDUCE):
+        if self.state in (
+            RiskStateEnum.BREAK_EVEN,
+            RiskStateEnum.TRAILING_CHANDELIER,
+            RiskStateEnum.TIME_DECAY_REDUCE,
+        ):
             if r >= 2.0:
-                self.chandelier_k = min(self.chandelier_k, self.cfg.chandelier_k_tighten_at_2r)
+                self.chandelier_k = min(
+                    self.chandelier_k, self.cfg.chandelier_k_tighten_at_2r
+                )
             elif r >= 1.5:
-                self.chandelier_k = min(self.chandelier_k, self.cfg.chandelier_k_tighten_at_1_5r)
+                self.chandelier_k = min(
+                    self.chandelier_k, self.cfg.chandelier_k_tighten_at_1_5r
+                )
 
             extreme = highest_high if self.direction == 1 else lowest_low
             chandelier_sl = extreme - self.direction * self.chandelier_k * atr_now
-            sl_candidate = chandelier_sl if sl_candidate is None else (
-                max(sl_candidate, chandelier_sl) if self.direction == 1 else min(sl_candidate, chandelier_sl)
+            sl_candidate = (
+                chandelier_sl
+                if sl_candidate is None
+                else (
+                    max(sl_candidate, chandelier_sl)
+                    if self.direction == 1
+                    else min(sl_candidate, chandelier_sl)
+                )
             )
             if self.state == RiskStateEnum.BREAK_EVEN:
                 self.state = RiskStateEnum.TRAILING_CHANDELIER
@@ -335,7 +388,10 @@ class DynamicRiskManager:
         # Guard the whole block on state: once TIME_DECAY_EXIT (or CLOSED) has been reached,
         # no further time-decay action should fire — prevents a stale/lagging execution layer
         # from re-triggering time-decay logic on a position that's already being wound down.
-        if self.cfg.enable_time_stop and self.state not in (RiskStateEnum.TIME_DECAY_EXIT, RiskStateEnum.CLOSED):
+        if self.cfg.enable_time_stop and self.state not in (
+            RiskStateEnum.TIME_DECAY_EXIT,
+            RiskStateEnum.CLOSED,
+        ):
             t_frac = hours_elapsed / self.cfg.t_expected_hours
             vol_compressed = atr_now < self.cfg.vol_compression_frac * self.atr_entry
 
@@ -355,7 +411,11 @@ class DynamicRiskManager:
                     f"{self.cfg.vol_compression_frac}*{self.atr_entry:.5f})."
                 )
 
-            elif not self.time_reduce_fired and t_frac > self.cfg.time_reduce_threshold and r < 1.0:
+            elif (
+                not self.time_reduce_fired
+                and t_frac > self.cfg.time_reduce_threshold
+                and r < 1.0
+            ):
                 # Partial reduction fires ONCE: give it less time/size, tighten toward invalidation.
                 # If stagnation continues afterward, the full-exit branch above can still fire later.
                 action = ActionType.PARTIAL_CLOSE
@@ -372,9 +432,17 @@ class DynamicRiskManager:
                 if self.chandelier_k > self.cfg.chandelier_k_time_decay_lock:
                     self.chandelier_k = self.cfg.chandelier_k_time_decay_lock
                     extreme = highest_high if self.direction == 1 else lowest_low
-                    tightened_sl = extreme - self.direction * self.chandelier_k * atr_now
-                    sl_candidate = tightened_sl if sl_candidate is None else (
-                        max(sl_candidate, tightened_sl) if self.direction == 1 else min(sl_candidate, tightened_sl)
+                    tightened_sl = (
+                        extreme - self.direction * self.chandelier_k * atr_now
+                    )
+                    sl_candidate = (
+                        tightened_sl
+                        if sl_candidate is None
+                        else (
+                            max(sl_candidate, tightened_sl)
+                            if self.direction == 1
+                            else min(sl_candidate, tightened_sl)
+                        )
                     )
                     reason_parts.append(
                         f"Stalled-in-profit tighten: t/T={t_frac:.2f}, r={r:.2f}R, chandelier_k -> "
@@ -395,7 +463,11 @@ class DynamicRiskManager:
 
         return RiskAction(
             action=action,
-            new_sl=self.current_sl if action in (ActionType.UPDATE_SL, ActionType.PARTIAL_CLOSE) else None,
+            new_sl=(
+                self.current_sl
+                if action in (ActionType.UPDATE_SL, ActionType.PARTIAL_CLOSE)
+                else None
+            ),
             close_ratio=close_ratio,
             reason=reason,
             state=self.state,
@@ -414,7 +486,11 @@ class DynamicRiskManager:
             True if current_sl was actually updated, False if suppressed
             (either non-favorable direction or below min-step threshold).
         """
-        favorable = (candidate_sl > self._current_sl) if self.direction == 1 else (candidate_sl < self._current_sl)
+        favorable = (
+            (candidate_sl > self._current_sl)
+            if self.direction == 1
+            else (candidate_sl < self._current_sl)
+        )
         if not favorable:
             return False
 
@@ -505,7 +581,9 @@ class DynamicRiskManager:
         obj.state = RiskStateEnum(data["state"])
         obj.chandelier_k = data["chandelier_k"]
         obj.time_reduce_fired = data["time_reduce_fired"]
-        obj._last_action_reason = data.get("last_action_reason", "Restored from saved state.")
+        obj._last_action_reason = data.get(
+            "last_action_reason", "Restored from saved state."
+        )
         obj.cfg = RiskConfig.from_dict(data["config"])
         return obj
 
@@ -522,13 +600,13 @@ if __name__ == "__main__":
     cfg = RiskConfig(
         atr_multiplier_init=2.0,
         be_trigger_r=1.0,
-        t_expected_hours=48,     # e.g. ~2 days, calibrate from backtest history (hours-to-TP)
+        t_expected_hours=48,  # e.g. ~2 days, calibrate from backtest history (hours-to-TP)
         enable_time_stop=True,
     )
 
     rm = DynamicRiskManager(
         entry_price=98.50,
-        direction=1,             # long
+        direction=1,  # long
         atr_entry=0.35,
         entry_time=entry_time,
         config=cfg,
@@ -543,9 +621,27 @@ if __name__ == "__main__":
     # -> the full exit must still be reachable afterward (previously suppressed by time_reduced).
     simulated_cycles = [
         (98.70, 0.34, 98.70, 98.40, 4),
-        (98.90, 0.33, 98.90, 98.40, 55),   # t/T=1.15, r=0.57R < 1.0R -> expect PARTIAL_CLOSE (time-reduce)
-        (98.85, 0.30, 98.90, 98.40, 60),   # still stalled, t/T=1.25 -> time_reduce_fired blocks re-firing partial
-        (98.80, 0.20, 98.90, 98.40, 75),   # t/T=1.56, r=0.43R < 1.0R, ATR compressed -> expect FULL_CLOSE now
+        (
+            98.90,
+            0.33,
+            98.90,
+            98.40,
+            55,
+        ),  # t/T=1.15, r=0.57R < 1.0R -> expect PARTIAL_CLOSE (time-reduce)
+        (
+            98.85,
+            0.30,
+            98.90,
+            98.40,
+            60,
+        ),  # still stalled, t/T=1.25 -> time_reduce_fired blocks re-firing partial
+        (
+            98.80,
+            0.20,
+            98.90,
+            98.40,
+            75,
+        ),  # t/T=1.56, r=0.43R < 1.0R, ATR compressed -> expect FULL_CLOSE now
     ]
 
     for price, atr_now, hh, ll, hours in simulated_cycles:

@@ -31,14 +31,24 @@ PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from utils.dynamic_risk_manager import ActionType, DynamicRiskManager, RiskConfig, RiskStateEnum
+from utils.dynamic_risk_manager import (
+    ActionType,
+    DynamicRiskManager,
+    RiskConfig,
+    RiskStateEnum,
+)
 from utils.pyramid_cluster import CloseAllocationMethod, PositionUnit, PyramidCluster
-from utils.cluster_state_store import ClusterStateStore, ClusterStateStoreError, SCHEMA_VERSION
+from utils.cluster_state_store import (
+    ClusterStateStore,
+    ClusterStateStoreError,
+    SCHEMA_VERSION,
+)
 
 
 # ---------------------------------------------------------------------------
 # 1. DynamicRiskManager round-trip
 # ---------------------------------------------------------------------------
+
 
 class TestDynamicRiskManagerRoundTrip(unittest.TestCase):
     def _build_and_advance(self) -> DynamicRiskManager:
@@ -53,8 +63,20 @@ class TestDynamicRiskManagerRoundTrip(unittest.TestCase):
             config=cfg,
             structural_sl_level=97.80,
         )
-        rm.update(price=99.30, atr_now=0.34, highest_high=99.30, lowest_low=98.40, hours_elapsed=8)
-        rm.update(price=99.60, atr_now=0.32, highest_high=99.60, lowest_low=98.40, hours_elapsed=20)
+        rm.update(
+            price=99.30,
+            atr_now=0.34,
+            highest_high=99.30,
+            lowest_low=98.40,
+            hours_elapsed=8,
+        )
+        rm.update(
+            price=99.60,
+            atr_now=0.32,
+            highest_high=99.60,
+            lowest_low=98.40,
+            hours_elapsed=20,
+        )
         return rm
 
     def test_round_trip_preserves_all_fields(self):
@@ -95,8 +117,20 @@ class TestDynamicRiskManagerRoundTrip(unittest.TestCase):
         rm = self._build_and_advance()
         restored = DynamicRiskManager.from_dict(rm.to_dict())
 
-        action_original = rm.update(price=99.55, atr_now=0.30, highest_high=99.60, lowest_low=98.40, hours_elapsed=30)
-        action_restored = restored.update(price=99.55, atr_now=0.30, highest_high=99.60, lowest_low=98.40, hours_elapsed=30)
+        action_original = rm.update(
+            price=99.55,
+            atr_now=0.30,
+            highest_high=99.60,
+            lowest_low=98.40,
+            hours_elapsed=30,
+        )
+        action_restored = restored.update(
+            price=99.55,
+            atr_now=0.30,
+            highest_high=99.60,
+            lowest_low=98.40,
+            hours_elapsed=30,
+        )
 
         self.assertEqual(action_original.action, action_restored.action)
         self.assertEqual(action_original.new_sl, action_restored.new_sl)
@@ -107,8 +141,14 @@ class TestDynamicRiskManagerRoundTrip(unittest.TestCase):
         __init__ would (from atr_entry/structural_sl_level) — it must use the
         exact trailed value that was saved, even though atr_entry is also stored."""
         rm = self._build_and_advance()
-        naive_init_sl = rm.entry_price_0 - rm.direction * rm.cfg.atr_multiplier_init * rm.atr_entry
-        self.assertNotEqual(rm.current_sl, naive_init_sl, "test setup should have trailed the SL past its initial value")
+        naive_init_sl = (
+            rm.entry_price_0 - rm.direction * rm.cfg.atr_multiplier_init * rm.atr_entry
+        )
+        self.assertNotEqual(
+            rm.current_sl,
+            naive_init_sl,
+            "test setup should have trailed the SL past its initial value",
+        )
 
         restored = DynamicRiskManager.from_dict(rm.to_dict())
         self.assertEqual(restored.current_sl, rm.current_sl)
@@ -118,6 +158,7 @@ class TestDynamicRiskManagerRoundTrip(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # 2 & 3. PyramidCluster multi-unit round-trip, including trade_id
 # ---------------------------------------------------------------------------
+
 
 class TestPyramidClusterRoundTrip(unittest.TestCase):
     def _build_pyramided_cluster(self) -> PyramidCluster:
@@ -134,19 +175,35 @@ class TestPyramidClusterRoundTrip(unittest.TestCase):
             initial_trade_id="TRADE-BASE-001",
         )
         # push to BE so pyramiding is allowed
-        cluster.update(price=99.30, atr_now=0.34, highest_high=99.30, lowest_low=98.40, hours_elapsed=8)
+        cluster.update(
+            price=99.30,
+            atr_now=0.34,
+            highest_high=99.30,
+            lowest_low=98.40,
+            hours_elapsed=8,
+        )
         max_allowed_risk = 10_000_000  # generous cap, not the focus of this test
         check1 = cluster.add_unit(
-            new_size=5_000, new_entry_price=99.30,
+            new_size=5_000,
+            new_entry_price=99.30,
             entry_time=datetime(2026, 8, 1, 8, 0),
-            max_allowed_risk=max_allowed_risk, trade_id="TRADE-ADD-002",
+            max_allowed_risk=max_allowed_risk,
+            trade_id="TRADE-ADD-002",
         )
         assert check1.status.value == "OK", check1.reason
-        cluster.update(price=99.80, atr_now=0.32, highest_high=99.80, lowest_low=98.40, hours_elapsed=18)
+        cluster.update(
+            price=99.80,
+            atr_now=0.32,
+            highest_high=99.80,
+            lowest_low=98.40,
+            hours_elapsed=18,
+        )
         check2 = cluster.add_unit(
-            new_size=2_500, new_entry_price=99.80,
+            new_size=2_500,
+            new_entry_price=99.80,
             entry_time=datetime(2026, 8, 1, 18, 0),
-            max_allowed_risk=max_allowed_risk, trade_id="TRADE-ADD-003",
+            max_allowed_risk=max_allowed_risk,
+            trade_id="TRADE-ADD-003",
         )
         assert check2.status.value == "OK", check2.reason
         return cluster
@@ -160,7 +217,9 @@ class TestPyramidClusterRoundTrip(unittest.TestCase):
         self.assertEqual(restored.total_size, cluster.total_size)
         self.assertEqual(restored.blended_entry, cluster.blended_entry)
         self.assertEqual(restored.max_size_decay_ratio, cluster.max_size_decay_ratio)
-        self.assertEqual(restored.risk_manager.current_sl, cluster.risk_manager.current_sl)
+        self.assertEqual(
+            restored.risk_manager.current_sl, cluster.risk_manager.current_sl
+        )
         self.assertEqual(restored.risk_manager.state, cluster.risk_manager.state)
         # R-anchor must still be the ORIGINAL base entry, not blended
         self.assertEqual(restored.risk_manager.entry_price_0, 98.50)
@@ -168,7 +227,9 @@ class TestPyramidClusterRoundTrip(unittest.TestCase):
     def test_trade_ids_survive_serialization(self):
         cluster = self._build_pyramided_cluster()
         original_ids = [u.trade_id for u in cluster.units]
-        self.assertEqual(original_ids, ["TRADE-BASE-001", "TRADE-ADD-002", "TRADE-ADD-003"])
+        self.assertEqual(
+            original_ids, ["TRADE-BASE-001", "TRADE-ADD-002", "TRADE-ADD-003"]
+        )
 
         restored = PyramidCluster.from_dict(cluster.to_dict())
         restored_ids = [u.trade_id for u in restored.units]
@@ -180,7 +241,10 @@ class TestPyramidClusterRoundTrip(unittest.TestCase):
         json_str = json.dumps(cluster.to_dict())
         reparsed = json.loads(json_str)
         restored = PyramidCluster.from_dict(reparsed)
-        self.assertEqual([u.trade_id for u in restored.units], ["TRADE-BASE-001", "TRADE-ADD-002", "TRADE-ADD-003"])
+        self.assertEqual(
+            [u.trade_id for u in restored.units],
+            ["TRADE-BASE-001", "TRADE-ADD-002", "TRADE-ADD-003"],
+        )
 
     def test_close_allocation_after_restore_uses_correct_trade_ids(self):
         """The whole point of persisting trade_id: a FIFO close computed on a
@@ -190,7 +254,9 @@ class TestPyramidClusterRoundTrip(unittest.TestCase):
 
         instructions = restored.close_allocation(0.5, method=CloseAllocationMethod.FIFO)
         self.assertEqual(instructions[0].trade_id, "TRADE-BASE-001")
-        self.assertGreater(instructions[0].close_size, 0)  # FIFO drains the oldest unit first
+        self.assertGreater(
+            instructions[0].close_size, 0
+        )  # FIFO drains the oldest unit first
         self.assertEqual(instructions[1].trade_id, "TRADE-ADD-002")
         self.assertEqual(instructions[2].trade_id, "TRADE-ADD-003")
 
@@ -211,14 +277,29 @@ class TestPyramidClusterRoundTrip(unittest.TestCase):
         self.assertIn("trade_id", str(ctx.exception))
         # Cluster state must be untouched after the rejected call.
         self.assertEqual(len(cluster.units), 3)
-        self.assertEqual([u.trade_id for u in cluster.units], ["TRADE-BASE-001", "TRADE-ADD-002", "TRADE-ADD-003"])
+        self.assertEqual(
+            [u.trade_id for u in cluster.units],
+            ["TRADE-BASE-001", "TRADE-ADD-002", "TRADE-ADD-003"],
+        )
 
     def test_restored_cluster_continues_behaving_identically(self):
         cluster = self._build_pyramided_cluster()
         restored = PyramidCluster.from_dict(cluster.to_dict())
 
-        action_original = cluster.update(price=99.00, atr_now=0.30, highest_high=99.80, lowest_low=98.40, hours_elapsed=60)
-        action_restored = restored.update(price=99.00, atr_now=0.30, highest_high=99.80, lowest_low=98.40, hours_elapsed=60)
+        action_original = cluster.update(
+            price=99.00,
+            atr_now=0.30,
+            highest_high=99.80,
+            lowest_low=98.40,
+            hours_elapsed=60,
+        )
+        action_restored = restored.update(
+            price=99.00,
+            atr_now=0.30,
+            highest_high=99.80,
+            lowest_low=98.40,
+            hours_elapsed=60,
+        )
 
         self.assertEqual(action_original.action, action_restored.action)
         self.assertEqual(action_original.close_ratio, action_restored.close_ratio)
@@ -231,7 +312,9 @@ class TestPyramidClusterRoundTrip(unittest.TestCase):
         data = cluster.to_dict()
         self.assertNotIn("risk_calculator", data)
 
-        custom_calc = lambda size, distance: size * distance * 2  # arbitrary distinct calculator
+        custom_calc = (
+            lambda size, distance: size * distance * 2
+        )  # arbitrary distinct calculator
         restored = PyramidCluster.from_dict(data, risk_calculator=custom_calc)
         self.assertIs(restored.risk_calculator, custom_calc)
 
@@ -242,6 +325,7 @@ class TestPyramidClusterRoundTrip(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # 4. ClusterStateStore: missing / corrupt file handling
 # ---------------------------------------------------------------------------
+
 
 class TestClusterStateStoreCorruption(unittest.TestCase):
     def setUp(self):
@@ -309,13 +393,24 @@ class TestClusterStateStoreCorruption(unittest.TestCase):
     def test_save_and_reload_round_trip_via_store(self):
         cfg = RiskConfig()
         rm = DynamicRiskManager(
-            entry_price=149.5, direction=1, atr_entry=0.2,
-            entry_time=datetime(2026, 8, 10, 3, 15), config=cfg, structural_sl_level=149.0,
+            entry_price=149.5,
+            direction=1,
+            atr_entry=0.2,
+            entry_time=datetime(2026, 8, 10, 3, 15),
+            config=cfg,
+            structural_sl_level=149.0,
         )
         cluster = PyramidCluster.__new__(PyramidCluster)
         cluster.max_size_decay_ratio = 0.7
         cluster.risk_calculator = lambda s, d: s * d
-        cluster.units = [PositionUnit(size=10000, entry_price=149.5, entry_time=datetime(2026, 8, 10, 3, 15), trade_id="T1")]
+        cluster.units = [
+            PositionUnit(
+                size=10000,
+                entry_price=149.5,
+                entry_time=datetime(2026, 8, 10, 3, 15),
+                trade_id="T1",
+            )
+        ]
         cluster.risk_manager = rm
 
         store = ClusterStateStore(self.state_path)
@@ -334,12 +429,16 @@ class TestClusterStateStoreCorruption(unittest.TestCase):
         store.save_cluster_dict("USD_JPY", {"dummy": True})
         self.assertTrue(store.delete_cluster("USD_JPY"))
         self.assertIsNone(store.load_cluster_dict("USD_JPY"))
-        self.assertFalse(store.delete_cluster("USD_JPY"))  # already gone -> False, not an error
+        self.assertFalse(
+            store.delete_cluster("USD_JPY")
+        )  # already gone -> False, not an error
 
     def test_atomic_save_leaves_no_tmp_file_behind(self):
         store = ClusterStateStore(self.state_path)
         store.save_cluster_dict("USD_JPY", {"dummy": True})
-        leftover_tmp = [f for f in os.listdir(self.tmpdir) if f.startswith(".cluster_state_")]
+        leftover_tmp = [
+            f for f in os.listdir(self.tmpdir) if f.startswith(".cluster_state_")
+        ]
         self.assertEqual(leftover_tmp, [])
 
     def test_read_operations_do_not_rewrite_the_state_file(self):
@@ -351,14 +450,18 @@ class TestClusterStateStoreCorruption(unittest.TestCase):
         store.save_cluster_dict("USD_JPY", {"dummy": True})  # establishes the file
 
         mtime_before = os.path.getmtime(self.state_path)
-        time.sleep(0.05)  # ensure a rewrite (if it happened) would be detectable via mtime
+        time.sleep(
+            0.05
+        )  # ensure a rewrite (if it happened) would be detectable via mtime
 
         _ = store.load_cluster_dict("USD_JPY")
         _ = store.load_cluster_dict("EUR_JPY")  # miss case too
         _ = store.list_managed_instruments()
 
         mtime_after = os.path.getmtime(self.state_path)
-        self.assertEqual(mtime_before, mtime_after, "A read-only call rewrote the state file")
+        self.assertEqual(
+            mtime_before, mtime_after, "A read-only call rewrote the state file"
+        )
 
     def test_read_locked_yields_state_without_persisting_mutations(self):
         """Mutating the dict yielded by read_locked() must have no effect —
@@ -376,6 +479,7 @@ class TestClusterStateStoreCorruption(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # 5. Concurrent access protected by the file lock
 # ---------------------------------------------------------------------------
+
 
 class TestConcurrentAccess(unittest.TestCase):
     def setUp(self):
@@ -413,12 +517,18 @@ class TestConcurrentAccess(unittest.TestCase):
         for t in threads:
             t.join(timeout=20)
 
-        self.assertEqual(errors, [], f"Unexpected errors during concurrent writes: {errors}")
+        self.assertEqual(
+            errors, [], f"Unexpected errors during concurrent writes: {errors}"
+        )
 
         final_store = ClusterStateStore(self.state_path)
         managed = set(final_store.list_managed_instruments())
         expected = {f"PAIR_{i}" for i in range(n_writers)}
-        self.assertEqual(managed, expected, "Some concurrent writes were lost — lock did not serialize access correctly")
+        self.assertEqual(
+            managed,
+            expected,
+            "Some concurrent writes were lost — lock did not serialize access correctly",
+        )
 
         # File must still be valid, parseable JSON (no interleaved/truncated writes)
         with open(self.state_path) as f:
@@ -462,7 +572,10 @@ class TestConcurrentAccess(unittest.TestCase):
             except Exception as e:
                 errors.append(e)
 
-        threads = [threading.Thread(target=read_modify_write, args=(i,)) for i in range(n_writers)]
+        threads = [
+            threading.Thread(target=read_modify_write, args=(i,))
+            for i in range(n_writers)
+        ]
         for t in threads:
             t.start()
         for t in threads:

@@ -14,13 +14,15 @@ P = load_profile(_DEFAULT_PROFILE)
 api = cfg(P, "OANDA_API")
 OANDA_ACCOUNT_ID = cfg(P, "OANDA_ACCOUNT_ID")
 
+
 def check_oanda_account(account_id: str = None):
     try:
         r = AccountSummary(account_id)
         resp = api.request(r)
-        print('✅ ACCOUNT OK:', resp['account']['id'], '—', resp['account']['currency'])
+        print("✅ ACCOUNT OK:", resp["account"]["id"], "—", resp["account"]["currency"])
     except Exception as e:
-        print('❌ FORBIDDEN / MISMATCH:', e)
+        print("❌ FORBIDDEN / MISMATCH:", e)
+
 
 # ==================================================
 def execute_market_trade(signal, units_override=None):
@@ -37,19 +39,29 @@ def execute_market_trade(signal, units_override=None):
             "type": "MARKET",
             "instrument": instrument,
             "units": str(units),
-            "stopLossOnFill": {
-                "price": str(round(signal.stop_loss, decimals)),
-                "triggerCondition": "DEFAULT"
-            } if signal.stop_loss else None,
-            "takeProfitOnFill": {
-                "price": str(round(signal.take_profit, decimals)),
-                "triggerCondition": "DEFAULT"
-            } if signal.take_profit else None
+            "stopLossOnFill": (
+                {
+                    "price": str(round(signal.stop_loss, decimals)),
+                    "triggerCondition": "DEFAULT",
+                }
+                if signal.stop_loss
+                else None
+            ),
+            "takeProfitOnFill": (
+                {
+                    "price": str(round(signal.take_profit, decimals)),
+                    "triggerCondition": "DEFAULT",
+                }
+                if signal.take_profit
+                else None
+            ),
         }
     }
 
     try:
-        entry_resp = api.request(OrderCreate(accountID=OANDA_ACCOUNT_ID, data=entry_data))
+        entry_resp = api.request(
+            OrderCreate(accountID=OANDA_ACCOUNT_ID, data=entry_data)
+        )
         fill_tx = entry_resp.get("orderFillTransaction", {})
         filled_price = float(fill_tx.get("price", 0))
         print(f"🔹 FILLED: {signal.action} {instrument} @ {filled_price}")

@@ -178,13 +178,15 @@ def get_oanda_profile(
     selected_token = OANDA_API_TOKEN_LIVE if is_live else OANDA_API_TOKEN_DEMO
 
     # 按 profile_num 选对应账号
+    # LIVE: 所有 profile 统一走 account 001（唯一真仓账号）
+    # DEMO: profile 编号 → 账号编号 1:1 映射，方便隔离测试
     if profile_num:
         idx = int(profile_num)
         if is_live:
-            account_id = globals()[f"OANDA_ACCOUNT_ID_{idx}_LIVE"]
+            account_id = OANDA_ACCOUNT_ID_1_LIVE
         else:
             account_id = globals()[f"OANDA_ACCOUNT_ID_DEMO_{idx}"]
-        account_list = [account_id]  # 只返回当前 profile 的账号
+        account_list = [account_id]
     else:
         # 无编号 → 返回该环境全部账号
         if is_live:
@@ -300,64 +302,114 @@ def _fetch_summary(account_id, token, env_name):
     try:
         client = oandapyV20.API(access_token=token, environment=env_name)
         resp = client.request(oanda_accounts.AccountSummary(account_id))["account"]
+        balance = float(resp.get("balance", 0))
+        unrealized = float(resp.get("unrealizedPL", 0))
+        nav = float(resp.get("NAV", balance + unrealized))
+        margin_used = float(resp.get("marginUsed", 0))
+        margin_avail = float(resp.get("marginAvailable", 0))
+        trades = resp.get("trades", [])
         print(f"\n   📊 {account_id}")
-        print(f"      Currency    : {resp.get('currency', '?')}")
-        print(f"      Balance     : {resp.get('balance', '?')}")
-        print(f"      NAV         : {resp.get('nav', '?')}")
-        print(f"      UnrealizedPL: {resp.get('unrealizedPL', '?')}")
-        print(f"      MarginUsed  : {resp.get('marginUsed', '?')}")
-        print(f"      MarginAvail : {resp.get('marginAvailable', '?')}")
-        print(f"      OpenTrades  : {resp.get('openTradeCount', '?')}")
+        print(f"      Currency    : {resp.get('currency', '?')}  MarginRate: {resp.get('marginRate', '?')}")
+        print(f"      Balance     : {balance:,.2f}  UnrealizedPL: {unrealized:+,.2f}  NAV: {nav:,.2f}")
+        print(f"      MarginUsed  : {margin_used:,.2f}  MarginAvail : {margin_avail:,.2f}")
+        print(f"      OpenTrades  : {resp.get('openTradeCount', len(trades))}")
+        for t in trades:
+            side = t.get("side", "?").upper()
+            units = float(t.get("currentUnits", 0))
+            pnl = float(t.get("unrealizedPL", 0))
+            instr = t.get("instrument", "?")
+            print(f"        📌 {side:4s} {units:>12.2f}  {instr:>10s}  P&L={pnl:+,.2f}")
+        if not trades:
+            print("        (no open trades)")
         return True
     except Exception as e:
-        print(f"\n   ❌ {account_id} — Summary failed: {str(e)[:120]}")
+        print(f"\n   ❌ {account_id} — Summary failed: {str(e)[:160]}")
         return False
 
 
-def main(show_summary=False, env_override=None):
-    profile = get_oanda_profile(env_override)
-
+def _run_env(env_label, env_name, token, configured_ids, show_summary):
     print("=" * 65)
-    print(f"🔍 OANDA VALIDATION | Env: {profile['env'].upper()}")
+    print(f"🔍 OANDA VALIDATION | Env: {env_label} ({env_name})")
     print("=" * 65)
-    print(f"Token Status : {'✅ SET' if profile['token'] else '❌ MISSING'}")
-    print(f"Target Accounts Count: {len(profile['account_ids'])}")
+    print(f"Token Status : {'✅ SET' if token else '❌ MISSING'}")
+    print(f"Configured Accounts: {len(configured_ids)}")
     print("─" * 65)
 
-    if not profile["token"]:
-        print("❌ API Token 未配置，退出校验")
-        return 1
+    if not token:
+        print("❌ API Token NOT SET — skipping")
+        return False
 
-    visible = _discover_accounts(
-        profile["token"], profile["env"], f"{profile['env'].upper()} Token"
-    )
-    matched_ok = bool(visible) and _compare_accounts(
-        profile["account_ids"], visible, profile["env"].upper()
-    )
+    visible = _discover_accounts(token, env_name, f"{env_label} Token")
+    matched_ok = bool(visible) and _compare_accounts(configured_ids, visible, env_label)
 
-    if show_summary and visible:
-        print(f"\n📋 {profile['env'].upper()} ACCOUNT SUMMARIES")
+    if visible:
+        print(f"\n📋 {env_label} ACCOUNT DETAILS (balance / margin / positions)")
         for acc in visible:
-            _fetch_summary(acc.get("id"), profile["token"], profile["env"])
+            _fetch_summary(acc.get("id"), token, env_name)
 
     print("\n" + "=" * 65)
-    print(
-        f"FINAL RESULT → {profile['env'].upper()}: {'✅ PASS' if matched_ok else '❌ FAIL'}"
-    )
-    return 0 if matched_ok else 1
+    print(f"FINAL RESULT → {env_label}: {'✅ PASS' if matched_ok else '❌ FAIL'}")
+    print("=" * 65)
+    return matched_ok
+
+
+def main(show_summary=False, env_override=None, demo_only=False, live_only=False):
+    results = []
+
+    if env_override:
+        profile = get_oanda_profile(env_override)
+        ok = _run_env(
+            profile["env"].upper(), profile["env"],
+            profile["token"], profile["account_ids"], show_summary,
+        )
+        return 0 if ok else 1
+
+    if not live_only:
+        demo_ids = [
+            OANDA_ACCOUNT_ID_DEMO_1, OANDA_ACCOUNT_ID_DEMO_2,
+            OANDA_ACCOUNT_ID_DEMO_3, OANDA_ACCOUNT_ID_DEMO_4,
+        ]
+        results.append(("PRACTICE/DEMO", _run_env(
+            "PRACTICE", OANDA_ENV_DEMO, OANDA_API_TOKEN_DEMO, demo_ids, True,
+        )))
+        print()
+
+    if not demo_only:
+        live_ids = [
+            OANDA_ACCOUNT_ID_1_LIVE, OANDA_ACCOUNT_ID_2_LIVE,
+            OANDA_ACCOUNT_ID_3_LIVE, OANDA_ACCOUNT_ID_4_LIVE,
+        ]
+        results.append(("LIVE/REAL", _run_env(
+            "LIVE", OANDA_ENV_LIVE, OANDA_API_TOKEN_LIVE, live_ids, True,
+        )))
+
+    print("\n" + "#" * 65)
+    print("🏁 FINAL SUMMARY")
+    print("#" * 65)
+    all_ok = True
+    for label, ok in results:
+        status = "✅ PASS" if ok else "❌ FAIL"
+        print(f"  {label:20s} : {status}")
+        all_ok = all_ok and ok
+    print("#" * 65)
+    return 0 if all_ok else 1
 
 
 if __name__ == "__main__":
-    show_summary_flag = "--summary" in sys.argv
-    if show_summary_flag:
-        sys.argv.remove("--summary")
-
+    argv = sys.argv[1:]
+    show_summary_flag = "--summary" in argv
     env_arg = None
-    if "--env" in sys.argv:
-        idx = sys.argv.index("--env")
-        if idx + 1 < len(sys.argv):
-            env_arg = sys.argv[idx + 1]
-            sys.argv.pop(idx + 1)
-            sys.argv.pop(idx)
+    if "--env" in argv:
+        idx = argv.index("--env")
+        if idx + 1 < len(argv):
+            env_arg = argv[idx + 1]
 
-    raise SystemExit(main(show_summary=show_summary_flag, env_override=env_arg))
+    demo_only = "--demo-only" in argv or "--practice-only" in argv
+    live_only = "--live-only" in argv
+
+    raise SystemExit(main(
+        show_summary=show_summary_flag,
+        env_override=env_arg,
+        demo_only=demo_only,
+        live_only=live_only,
+    ))

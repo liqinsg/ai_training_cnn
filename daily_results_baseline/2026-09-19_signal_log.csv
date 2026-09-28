@@ -1,0 +1,4 @@
+timestamp,profile,account,pair,score_final,score_s,score_r,score_a,score_x,score_m,action_taken
+2026-09-19T05:06:49.336050+00:00,profile3,a/c3,USDJPY=X,76.9,100.0,3.8,93.8,81.1,60.3,TREND_FILTER_BLOCKED
+2026-09-19T05:06:49.847758+00:00,profile3,a/c3,AUDJPY=X,71.6,89.0,0.0,100.0,74.4,61.1,TREND_FILTER_BLOCKED
+2026-09-19T05:06:50.174346+00:00,profile3,a/c3,GBPJPY=X,69.2,82.3,0.0,100.0,74.1,64.8,NO_SLOT_MAX_OPEN

@@ -8,7 +8,7 @@ import time
 # 1. 吃宿主机/容器的 TZ 环境变量
 logging.Formatter.converter = time.localtime
 
-TZ_NAME = os.getenv("TZ", "UTC").split("/")[-1] # Singapore
+TZ_NAME = os.getenv("TZ", "UTC").split("/")[-1]  # Singapore
 
 # ─── Log Directory ───
 LOG_DIR = Path(__file__).resolve().parent.parent / "logs"
@@ -46,19 +46,19 @@ if not logger.handlers:
 # 以后新库加在这里就行
 # ──────────────────────────────────────────────────────────
 SILENCE_LIST = [
-    "oandapyV20",              # OANDA的HTTP请求日志
-    "oandapyV20.endpoints", 
-    "requests",                # requests库
-    "urllib3",                 # requests底层
-    "httpx",                   # 以防以后换httpx
-    "httpcore",                
-    "asyncio",                 # 太吵
+    "oandapyV20",  # OANDA的HTTP请求日志
+    "oandapyV20.endpoints",
+    "requests",  # requests库
+    "urllib3",  # requests底层
+    "httpx",  # 以防以后换httpx
+    "httpcore",
+    "asyncio",  # 太吵
 ]
 
 for _lib in SILENCE_LIST:
     _lib_log = logging.getLogger(_lib)
-    _lib_log.setLevel(logging.WARNING) # INFO以下全干掉
-    _lib_log.propagate = False         # 不往上抛给root logger
+    _lib_log.setLevel(logging.WARNING)  # INFO以下全干掉
+    _lib_log.propagate = False  # 不往上抛给root logger
 
 
 # ─── 中央时间函数 ───

@@ -60,7 +60,9 @@ logger = logging.getLogger(__name__)
 
 SCHEMA_VERSION = 1
 
-DEFAULT_LOCK_TIMEOUT_SECONDS = 30  # fail loudly rather than hang forever if something is stuck
+DEFAULT_LOCK_TIMEOUT_SECONDS = (
+    30  # fail loudly rather than hang forever if something is stuck
+)
 
 
 class ClusterStateStoreError(Exception):
@@ -79,7 +81,9 @@ class ClusterStateStore:
     file locking and works across separate processes, not just threads).
     """
 
-    def __init__(self, path: str, lock_timeout_seconds: float = DEFAULT_LOCK_TIMEOUT_SECONDS) -> None:
+    def __init__(
+        self, path: str, lock_timeout_seconds: float = DEFAULT_LOCK_TIMEOUT_SECONDS
+    ) -> None:
         """
         Args:
             path: Path to the JSON state file (e.g. "state/open_clusters.json").
@@ -114,11 +118,17 @@ class ClusterStateStore:
             with open(self.path, "r", encoding="utf-8") as f:
                 raw = f.read()
         except OSError as e:
-            logger.error("cluster_state_store: could not read %s (%s) — treating as empty.", self.path, e)
+            logger.error(
+                "cluster_state_store: could not read %s (%s) — treating as empty.",
+                self.path,
+                e,
+            )
             return _empty_state()
 
         if not raw.strip():
-            logger.warning("cluster_state_store: %s is empty — treating as empty state.", self.path)
+            logger.warning(
+                "cluster_state_store: %s is empty — treating as empty state.", self.path
+            )
             return _empty_state()
 
         try:
@@ -128,7 +138,9 @@ class ClusterStateStore:
             return _empty_state()
 
         if not isinstance(data, dict) or "clusters" not in data:
-            self._quarantine_corrupt_file(raw, reason="missing 'clusters' key or not a dict")
+            self._quarantine_corrupt_file(
+                raw, reason="missing 'clusters' key or not a dict"
+            )
             return _empty_state()
 
         version = data.get("schema_version")
@@ -136,7 +148,9 @@ class ClusterStateStore:
             # Forward-compat placeholder: no migrations exist yet (schema_version
             # has never changed), so treat any mismatch as suspicious and quarantine
             # rather than guess at a migration path.
-            self._quarantine_corrupt_file(raw, reason=f"unexpected schema_version={version!r}")
+            self._quarantine_corrupt_file(
+                raw, reason=f"unexpected schema_version={version!r}"
+            )
             return _empty_state()
 
         return data
@@ -153,13 +167,18 @@ class ClusterStateStore:
                 "Treating as empty state — ALL managed positions will be re-discovered via "
                 "OANDA reconciliation on the next cycle, not lost, but review the quarantined "
                 "file before assuming that's sufficient.",
-                self.path, reason, quarantine_path,
+                self.path,
+                reason,
+                quarantine_path,
             )
         except OSError as e:
             logger.error(
                 "cluster_state_store: %s is corrupt (%s), AND quarantine copy failed (%s). "
                 "Original content follows in this log line: %r",
-                self.path, reason, e, raw_content,
+                self.path,
+                reason,
+                e,
+                raw_content,
             )
 
     def _save_unlocked(self, state: dict) -> None:
@@ -173,7 +192,9 @@ class ClusterStateStore:
         state["schema_version"] = SCHEMA_VERSION
 
         dir_name = os.path.dirname(self.path) or "."
-        fd, tmp_path = tempfile.mkstemp(prefix=".cluster_state_", dir=dir_name, suffix=".tmp")
+        fd, tmp_path = tempfile.mkstemp(
+            prefix=".cluster_state_", dir=dir_name, suffix=".tmp"
+        )
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 json.dump(state, f, indent=2, sort_keys=True)

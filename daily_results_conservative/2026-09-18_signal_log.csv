@@ -1,0 +1,3 @@
+timestamp,profile,account,pair,score_final,score_s,score_r,score_a,score_x,score_m,action_taken
+2026-09-18T01:02:36.237464+00:00,profile1,a/c1,GBPUSD=X,59.3,92.6,15.7,32.8,50.0,50.0,NO_CONSENSUS
+2026-09-18T01:02:36.525183+00:00,profile1,a/c1,AUDJPY=X,42.4,23.6,47.9,71.8,50.0,50.0,NO_CONSENSUS

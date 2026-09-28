@@ -424,6 +424,7 @@ def get_account_margin_context(api, oanda_account_id: str) -> dict:
         resp = api.request(AccountDetails(accountID=oanda_account_id))
         acc = resp.get("account", {})
         return {
+            "currency": acc.get("currency", "USD"),
             "margin_available": float(acc.get("marginAvailable", 0)),
             "balance": float(acc.get("balance", 0)),
             "margin_rate": float(acc.get("marginRate", 0.05)),
@@ -432,6 +433,41 @@ def get_account_margin_context(api, oanda_account_id: str) -> dict:
     except Exception as e:
         logger.warning(f"Margin context fetch failed: {e}")
         return {}
+
+
+def _fetch_cross_rate(api, from_ccy: str, to_ccy: str) -> float:
+    """Convert 1.0 `from_ccy` → how much `to_ccy`. Falls back via USD mid-leg."""
+    if from_ccy == to_ccy:
+        return 1.0
+    try:
+        from oandapyV20.endpoints.instruments import InstrumentsCandles
+
+        def _ask(pair):
+            r = InstrumentsCandles(
+                instrument=pair,
+                params={"count": 1, "granularity": "M1", "price": "A"},
+            )
+            return float(api.request(r)["candles"][0]["ask"]["c"])
+
+        for pair in (f"{from_ccy}_{to_ccy}", f"{to_ccy}_{from_ccy}"):
+            try:
+                rate = _ask(pair)
+                return rate if pair.startswith(from_ccy) else (1.0 / rate)
+            except Exception:
+                continue
+
+        try:
+            r1 = _ask(f"{from_ccy}_USD") if from_ccy != "USD" else 1.0
+            r2 = _ask(f"{to_ccy}_USD") if to_ccy != "USD" else 1.0
+            if r1 and r2:
+                return r2 / r1
+        except Exception:
+            pass
+
+        return 1.0
+    except Exception:
+       
+        return 1.0
 
 
 def check_margin_available(
@@ -445,6 +481,7 @@ def check_margin_available(
 ) -> tuple[bool, str]:
     """
     Pre-flight margin check. Uses OANDA account's real marginRate + current price.
+    Handles cross-currency (notional in quote ccy, margin in account ccy).
     Returns (is_available, message). Never crashes — returns True on any API error.
     """
     try:
@@ -454,20 +491,36 @@ def check_margin_available(
 
         margin_available = ctx["margin_available"]
         margin_rate = ctx["margin_rate"]
+        acc_currency = ctx.get("currency", "USD")
+
+        instrument_clean = instrument.replace("_", "")
+        if len(instrument_clean) >= 6:
+            quote_ccy = instrument_clean[3:6]
+        else:
+            quote_ccy = acc_currency
 
         notional = abs(units) * current_price
-        required = notional * margin_rate * safety_buffer
+
+        quote_to_acc = 1.0
+        if quote_ccy != acc_currency:
+            quote_to_acc = _fetch_cross_rate(api, quote_ccy, acc_currency)
+
+        notional_acc_ccy = notional * quote_to_acc
+        required = notional_acc_ccy * margin_rate * safety_buffer
 
         if margin_available < required:
             return (
                 False,
-                f"INSUFFICIENT MARGIN — avail={margin_available:.2f}, need={required:.2f} "
-                f"(notional={notional:.0f}, units={units}, px={current_price:.5f}, rate={margin_rate})",
+                f"INSUFFICIENT MARGIN — avail={margin_available:.2f} {acc_currency}, "
+                f"need={required:.2f} {acc_currency} "
+                f"(notional={notional:.0f} {quote_ccy} → {notional_acc_ccy:.0f} {acc_currency}, "
+                f"units={units}, px={current_price:.5f}, rate={margin_rate}, "
+                f"quote2acc={quote_to_acc:.4f})",
             )
         return (
             True,
-            f"Margin OK — avail={margin_available:.2f}, need={required:.2f} "
-            f"(notional={notional:.0f}, units={units})",
+            f"Margin OK — avail={margin_available:.2f} {acc_currency}, "
+            f"need={required:.2f} {acc_currency} (notional={notional_acc_ccy:.0f} {acc_currency})",
         )
     except Exception as e:
         return (True, f"Margin check skipped (API err: {e})")
@@ -488,8 +541,16 @@ def compute_max_safe_units(
             return 0
         margin_available = ctx["margin_available"]
         margin_rate = ctx["margin_rate"]
-        max_notional = margin_available / (margin_rate * safety_buffer)
-        max_units = int(max_notional / current_price)
+        acc_currency = ctx.get("currency", "USD")
+
+        instrument_clean = instrument.replace("_", "")
+        quote_ccy = instrument_clean[3:6] if len(instrument_clean) >= 6 else acc_currency
+        quote_to_acc = 1.0
+        if quote_ccy != acc_currency:
+            quote_to_acc = _fetch_cross_rate(api, quote_ccy, acc_currency)
+
+        max_notional_acc = margin_available / (margin_rate * safety_buffer)
+        max_units = int(max_notional_acc / (current_price * quote_to_acc))
         return max(0, max_units)
     except Exception:
         return 0
@@ -1743,3 +1804,310 @@ class DynamicPositionManager_v2:
                         self.telegram(
                             f"🎯 {action} on {pair} #{tid} | Price: {current_price} | New SL: {round(new_sl, decimals)} | Profit: {profit_pips:.1f} pips"
                         )
+
+
+# ============================================================================
+# EMA / INDICATOR HELPERS
+# ============================================================================
+def calculate_ema(series, period):
+    return series.ewm(span=period, adjust=False).mean()
+
+
+def fetch_weekly_ema100(oanda_instrument, api):
+    import contextlib
+    import pandas as pd
+    import numpy as np
+    from oandapyV20.endpoints.instruments import InstrumentsCandles
+
+    try:
+        resp = api.request(
+            InstrumentsCandles(
+                instrument=oanda_instrument,
+                params={"granularity": "W", "count": 105, "price": "M"},
+            )
+        )
+        candles = resp.get("candles") or []
+        if len(candles) < 100:
+            logger.warning(f"Weekly EMA100 {oanda_instrument}: insufficient candles")
+            return None
+        closes = []
+        for c in candles:
+            mid = c.get("mid") or {}
+            with contextlib.suppress(Exception):
+                closes.append(float(mid["c"]))
+        if len(closes) < 100:
+            return None
+        ema100 = float(calculate_ema(pd.Series(closes), 100).iloc[-1])
+        last_close = float(closes[-1])
+        if not np.isfinite(ema100) or ema100 <= 0 or last_close <= 0:
+            return None
+        return ema100
+    except Exception as e:
+        logger.warning(f"EMA100 fetch failed: {e}")
+        return None
+
+
+def evaluate_trend_and_tp(
+    profile_name,
+    direction,
+    mc_pct_up,
+    entry_price,
+    pip_value,
+    df,
+    weekly_ema100,
+    ema_cross_filter,
+    fast_period,
+    slow_period,
+    base_tp_pips,
+    mc_strong_threshold,
+    tp_mult,
+    tp_strong_mult,
+    ema100_buffer_pips=30,
+    ema100_tp_floor_pips=30,
+    week_ema100_filter_enabled=False,
+    timeframe="15m",
+):
+    current_price = entry_price
+    if ema_cross_filter:
+        ema_fast = calculate_ema(df["Close"], fast_period)
+        ema_slow = calculate_ema(df["Close"], slow_period)
+        fv, sv = ema_fast.iloc[-1], ema_slow.iloc[-1]
+        if direction == "BUY" and not (current_price > fv and fv > sv):
+            return (
+                False,
+                0.0,
+                f"TREND_FILTER_BLOCKED: TREND MISALIGNED: Price>{fv:.5f}>{sv:.5f}",
+                1.0,
+                1.0,
+            )
+        if direction == "SELL" and not (current_price < fv and fv < sv):
+            return (
+                False,
+                0.0,
+                f"TREND_FILTER_BLOCKED: TREND MISALIGNED: Price<{fv:.5f}<{sv:.5f}",
+                1.0,
+                1.0,
+            )
+    mc_momentum = mc_pct_up / 100.0
+    tp_pips = (
+        base_tp_pips * tp_strong_mult
+        if mc_momentum >= mc_strong_threshold
+        else base_tp_pips * tp_mult
+    )
+    if not week_ema100_filter_enabled:
+        return True, tp_pips, "OK: WEEKLY_EMA_SKIPPED", 1.0, 1.0
+    if weekly_ema100 is not None and ema_cross_filter:
+        if direction == "BUY":
+            min_tp_pips = (
+                (weekly_ema100 + ema100_tp_floor_pips * pip_value) - current_price
+            ) / pip_value
+        else:
+            min_tp_pips = (
+                current_price - (weekly_ema100 - ema100_tp_floor_pips * pip_value)
+            ) / pip_value
+        tp_pips = max(tp_pips, min_tp_pips)
+    lot_mult = 1.0
+    tp_mult_reduce = 1.0
+    if weekly_ema100 is not None and pip_value > 0:
+        dist_pips = abs(current_price - weekly_ema100) / pip_value
+        if dist_pips <= ema100_buffer_pips:
+            if direction == "BUY" and current_price < weekly_ema100:
+                return (
+                    False,
+                    0.0,
+                    f"WAIT_EMA_ALIGNMENT: WAIT_ABOVE_WEEKLY_EMA100 {weekly_ema100:.5f} dist={dist_pips:.1f}p",
+                    1.0,
+                    1.0,
+                )
+            if direction == "SELL" and current_price > weekly_ema100:
+                return (
+                    False,
+                    0.0,
+                    f"WAIT_EMA_ALIGNMENT: WAIT_BELOW_WEEKLY_EMA100 {weekly_ema100:.5f} dist={dist_pips:.1f}p",
+                    1.0,
+                    1.0,
+                )
+            lot_mult = 0.5
+            tp_mult_reduce = 0.8
+            tp_pips = tp_pips * tp_mult_reduce
+            logger.info(
+                f"BUFFER ZONE {direction}: dist={dist_pips:.1f}p ≤ {ema100_buffer_pips}p → lot×{lot_mult} TP×{tp_mult_reduce}"
+            )
+        else:
+            logger.info(
+                f"SAFE ZONE {direction}: dist={dist_pips:.1f}p > {ema100_buffer_pips}p"
+            )
+    return (
+        True,
+        tp_pips,
+        f"TP={tp_pips:.1f}p (lot×{lot_mult} TP×{tp_mult_reduce})",
+        lot_mult,
+        tp_mult_reduce,
+    )
+
+
+# ============================================================================
+# PAIR SELECTION
+# ============================================================================
+def build_top_pairs(strength_scores, all_pairs, top_n=4, min_gap=0.25):
+    ranked = sorted(strength_scores.items(), key=lambda x: x[1], reverse=True)
+    strongest = [c for c, _ in ranked[:top_n]]
+    weakest = [c for c, _ in ranked[-top_n:]]
+    best_by_sym = {}
+    for base in strongest:
+        for quote in weakest:
+            if base == quote:
+                continue
+            gap = strength_scores[base] - strength_scores[quote]
+            if abs(gap) < min_gap:
+                continue
+            sym = (
+                f"{base}{quote}=X"
+                if f"{base}{quote}=X" in all_pairs
+                else f"{quote}{base}=X"
+            )
+            if sym not in all_pairs:
+                continue
+            abs_gap = abs(gap)
+            prev = best_by_sym.get(sym)
+            if prev is None or abs_gap > prev[1]:
+                best_by_sym[sym] = (sym, abs_gap, base, quote)
+    result = sorted(best_by_sym.values(), key=lambda x: x[1], reverse=True)
+    return [p[0] for p in result[:top_n]], result[:top_n]
+
+
+# ============================================================================
+# WEIGHTED SCORE (v71's own scoring — separate from strategy_decision)
+# ============================================================================
+def calc_weighted_score(
+    pair, gap, rsi_val, adx_val, xgb_prob, mc_pct_up,
+    min_strength_gap=0.10,
+    xgb_bullish_threshold=0.55,
+    mc_bullish_threshold=55.0,
+    require_direction_consensus=True,
+    consensus_threshold=2,
+    min_conviction_score=30.0,
+    w_s=0.40, w_r=0.15, w_a=0.15, w_x=0.20, w_m=0.10,
+    adx_scale_factor=2.0,
+    _logger=None,
+):
+    log = _logger or logger
+    strength_dir = (
+        "BUY"
+        if gap >= min_strength_gap
+        else "SELL" if gap <= -min_strength_gap else "NEUTRAL"
+    )
+    xgb_dir = "BUY" if (xgb_prob or 0.0) >= xgb_bullish_threshold else "SELL"
+    mc_dir = "BUY" if (mc_pct_up or 50.0) >= mc_bullish_threshold else "SELL"
+    buy_votes = sum(1 for d in (strength_dir, xgb_dir, mc_dir) if d == "BUY")
+    sell_votes = sum(1 for d in (strength_dir, xgb_dir, mc_dir) if d == "SELL")
+    log.info(
+        f"{pair}: Strength={strength_dir} | XGB={xgb_dir} | MC={mc_dir} | BUY={buy_votes}/3"
+    )
+    if require_direction_consensus:
+        if buy_votes >= consensus_threshold:
+            direction = "BUY"
+            log.info(f"{pair}: BUY consensus ({buy_votes}/3)")
+        elif sell_votes >= consensus_threshold:
+            direction = "SELL"
+            log.info(f"{pair}: SELL consensus ({sell_votes}/3)")
+        else:
+            log.info(f"{pair}: NO CONSENSUS")
+            return None, None
+    else:
+        direction = "BUY" if gap > 0 else "SELL"
+    S = max(0.0, min(100.0, abs(gap) / 3.5 * 100.0))
+    rsi = max(0.0, min(100.0, rsi_val))
+    R = (
+        max(0.0, min(100.0, (50.0 - rsi) * 2.0))
+        if direction == "BUY"
+        else max(0.0, min(100.0, (rsi - 50.0) * 2.0))
+    )
+    A = max(0.0, min(100.0, adx_val * adx_scale_factor))
+    X = max(0.0, min(100.0, (xgb_prob or 0.0) * 100.0)) or 50.0
+    M = max(0.0, min(100.0, mc_pct_up if mc_pct_up is not None else 50.0))
+    FINAL = S * w_s + R * w_r + A * w_a + X * w_x + M * w_m
+    return direction, {
+        "S": round(S, 1),
+        "R": round(R, 1),
+        "A": round(A, 1),
+        "X": round(X, 1),
+        "M": round(M, 1),
+        "FINAL": round(FINAL, 1),
+        "PASS": FINAL >= min_conviction_score,
+        "THRESHOLD": round(min_conviction_score, 1),
+    }
+
+
+# ============================================================================
+# CSV AUDIT HELPERS
+# ============================================================================
+def init_csv(path, header, _logger=None):
+    import csv as _csv
+    log = _logger or logger
+    if not path.exists():
+        try:
+            with open(path, "w", newline="") as f:
+                _csv.DictWriter(f, fieldnames=header).writeheader()
+            log.info(f"AUDIT init: {path}")
+        except Exception as e:
+            log.warning(f"AUDIT init failed {path}: {e}")
+
+
+def append_to_csv(filepath, row_dict, _logger=None):
+    import csv as _csv
+    log = _logger or logger
+    try:
+        fn = list(row_dict.keys())
+        if filepath.exists():
+            with open(filepath, "r", newline="") as f:
+                eh = next(_csv.reader(f), None)
+                if eh and list(eh) != fn:
+                    log.warning(f"Header mismatch: {filepath} — skipping")
+                    return
+        with open(filepath, "a", newline="") as f:
+            _csv.DictWriter(f, fieldnames=fn).writerow(row_dict)
+    except Exception as e:
+        log.warning(f"Append failed {filepath}: {e}")
+
+
+def update_trade_on_close(
+    instrument, trade_log_path, api, oanda_account_id,
+    exit_reason="UNKNOWN", _logger=None,
+):
+    import contextlib
+    import pandas as pd
+    from datetime import datetime, timezone as _tz
+    log = _logger or logger
+    try:
+        if not trade_log_path.exists():
+            return
+        df = pd.read_csv(trade_log_path, dtype={"trade_id": str})
+        for c in ("pips", "profit_usd", "exit_reason", "exit_time"):
+            if c in df.columns:
+                df[c] = df[c].astype(object)
+        if df.empty:
+            return
+        mask = (df["pair"] == instrument) & df["exit_time"].isna()
+        match = df.loc[mask].head(1)
+        if match.empty:
+            return
+        tid = str(match.iloc[0]["trade_id"])
+        if tid.startswith("DRY_RUN_"):
+            df.loc[match.index, "exit_reason"] = exit_reason
+            df.loc[match.index, "exit_time"] = datetime.now(_tz.utc).isoformat()
+            df.to_csv(trade_log_path, index=False)
+            return
+        realized_pl = 0.0
+        with contextlib.suppress(Exception):
+            from oandapyV20.endpoints.trades import TradeDetails
+            t = api.request(TradeDetails(accountID=oanda_account_id, tradeID=tid)).get(
+                "trade", {}
+            )
+            realized_pl = float(t.get("realizedPL", 0.0))
+        df.loc[match.index, "profit_usd"] = round(realized_pl, 2)
+        df.loc[match.index, "exit_reason"] = exit_reason
+        df.loc[match.index, "exit_time"] = datetime.now(_tz.utc).isoformat()
+        df.to_csv(trade_log_path, index=False)
+    except Exception as e:
+        log.warning(f"Backfill error {instrument}: {e}")

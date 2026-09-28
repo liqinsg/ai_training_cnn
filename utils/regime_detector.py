@@ -17,15 +17,17 @@ import os
 from oandapyV20 import API
 import oandapyV20.endpoints.instruments as instruments_ep
 from retry import with_retry
+from config_oanda import OANDA_API_TOKEN, OANDA_ENV
 from config import (
-    OANDA_API_TOKEN, OANDA_ENV,
-    ADX_TREND_THRESHOLD, ADX_BREAKOUT_THRESHOLD,
-    ATR_GRANULARITY, ATR_CANDLE_COUNT
+    ADX_TREND_THRESHOLD,
+    ADX_BREAKOUT_THRESHOLD,
+    ATR_GRANULARITY,
+    ATR_CANDLE_COUNT,
 )
 
-REGIME_TRENDING  = "TRENDING"
-REGIME_RANGING   = "RANGING"
-REGIME_BREAKOUT  = "BREAKOUT_WATCH"
+REGIME_TRENDING = "TRENDING"
+REGIME_RANGING = "RANGING"
+REGIME_BREAKOUT = "BREAKOUT_WATCH"
 
 oanda_client = API(access_token=OANDA_API_TOKEN, environment=OANDA_ENV)
 
@@ -37,28 +39,32 @@ def compute_adx(pair: str, period: int = 14) -> dict | None:
     """
     params = {"count": ATR_CANDLE_COUNT + period + 5, "granularity": ATR_GRANULARITY}
     try:
+
         def _fetch():
             r = instruments_ep.InstrumentsCandles(instrument=pair, params=params)
             oanda_client.request(r)
             return [c for c in r.response.get("candles", []) if c["complete"]]
-        candles = with_retry(_fetch, max_attempts=3, delay=5, label=f"regime_candles_{pair}")
+
+        candles = with_retry(
+            _fetch, max_attempts=3, delay=5, label=f"regime_candles_{pair}"
+        )
         if len(candles) < period + 5:
             return None
 
-        highs  = [float(c["mid"]["h"]) for c in candles]
-        lows   = [float(c["mid"]["l"]) for c in candles]
+        highs = [float(c["mid"]["h"]) for c in candles]
+        lows = [float(c["mid"]["l"]) for c in candles]
         closes = [float(c["mid"]["c"]) for c in candles]
 
         # True Range
         trs, plus_dms, minus_dms = [], [], []
         for i in range(1, len(candles)):
-            h, l, pc = highs[i], lows[i], closes[i-1]
+            h, l, pc = highs[i], lows[i], closes[i - 1]
             tr = max(h - l, abs(h - pc), abs(l - pc))
             trs.append(tr)
-            up_move   = highs[i]  - highs[i-1]
-            down_move = lows[i-1] - lows[i]
-            plus_dms.append(up_move   if up_move   > down_move and up_move   > 0 else 0)
-            minus_dms.append(down_move if down_move > up_move   and down_move > 0 else 0)
+            up_move = highs[i] - highs[i - 1]
+            down_move = lows[i - 1] - lows[i]
+            plus_dms.append(up_move if up_move > down_move and up_move > 0 else 0)
+            minus_dms.append(down_move if down_move > up_move and down_move > 0 else 0)
 
         # Wilder RMA smoothing: seed = simple average of first n values,
         # then each subsequent value = prev * (n-1)/n + current * (1/n).
@@ -71,15 +77,15 @@ def compute_adx(pair: str, period: int = 14) -> dict | None:
                 result.append(result[-1] * (n - 1) / n + v / n)
             return result
 
-        atr14   = wilder_rma(trs,       period)
-        plus14  = wilder_rma(plus_dms,  period)
+        atr14 = wilder_rma(trs, period)
+        plus14 = wilder_rma(plus_dms, period)
         minus14 = wilder_rma(minus_dms, period)
 
         if not atr14:
             return None
 
         # +DI / -DI: scale directional movement by ATR
-        plus_di  = [100 * p / a if a > 0 else 0 for p, a in zip(plus14,  atr14)]
+        plus_di = [100 * p / a if a > 0 else 0 for p, a in zip(plus14, atr14)]
         minus_di = [100 * m / a if a > 0 else 0 for m, a in zip(minus14, atr14)]
 
         # DX: divergence between +DI and -DI, 0-100 scale
@@ -99,22 +105,22 @@ def compute_adx(pair: str, period: int = 14) -> dict | None:
 
         # Range metrics (recent ATR_CANDLE_COUNT candles)
         recent_highs = highs[-ATR_CANDLE_COUNT:]
-        recent_lows  = lows[-ATR_CANDLE_COUNT:]
-        range_high   = max(recent_highs)
-        range_low    = min(recent_lows)
-        mid_price    = closes[-1]
+        recent_lows = lows[-ATR_CANDLE_COUNT:]
+        range_high = max(recent_highs)
+        range_low = min(recent_lows)
+        mid_price = closes[-1]
         range_width_pct = (range_high - range_low) / mid_price * 100
 
         return {
-            "adx":             round(adx, 2),
-            "plus_di":         round(pdi, 2),
-            "minus_di":        round(mdi, 2),
+            "adx": round(adx, 2),
+            "plus_di": round(pdi, 2),
+            "minus_di": round(mdi, 2),
             "trend_direction": "BULLISH" if pdi > mdi else "BEARISH",
-            "range_high":      round(range_high, 5),
-            "range_low":       round(range_low,  5),
+            "range_high": round(range_high, 5),
+            "range_low": round(range_low, 5),
             "range_width_pct": round(range_width_pct, 3),
-            "current_price":   round(mid_price, 5),
-            "atr":             round(atr14[-1], 5),
+            "current_price": round(mid_price, 5),
+            "atr": round(atr14[-1], 5),
         }
 
     except Exception as e:
@@ -144,10 +150,14 @@ def detect_regime(pair: str) -> tuple[str, dict]:
         regime = REGIME_RANGING
 
     print(f"\n  [REGIME] {pair}")
-    print(f"    ADX={adx:.1f} | +DI={pdi:.1f} | -DI={mdi:.1f} | "
-          f"Direction={metrics['trend_direction']}")
-    print(f"    Range: {metrics['range_low']} – {metrics['range_high']} "
-          f"({metrics['range_width_pct']:.2f}% width)")
+    print(
+        f"    ADX={adx:.1f} | +DI={pdi:.1f} | -DI={mdi:.1f} | "
+        f"Direction={metrics['trend_direction']}"
+    )
+    print(
+        f"    Range: {metrics['range_low']} – {metrics['range_high']} "
+        f"({metrics['range_width_pct']:.2f}% width)"
+    )
     print(f"    Regime → {regime}")
 
     return regime, metrics

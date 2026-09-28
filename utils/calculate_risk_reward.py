@@ -1,6 +1,7 @@
 # /utils/calculate_risk_reward.py
 # Calculate Risk/Reward
 
+
 def calculate_risk_reward(entry_price, sl_price, tp_price):
     """
     Calculate the risk/reward ratio for a trade.
@@ -17,6 +18,7 @@ def calculate_risk_reward(entry_price, sl_price, tp_price):
     reward_pips = abs(entry_price - tp_price)
     return reward_pips / risk_pips if risk_pips > 0 else 0
 
+
 def get_rr_ratio(entry_price, sl_price, tp_price):
     """
     Get the risk/reward ratio for a trade.
@@ -31,6 +33,7 @@ def get_rr_ratio(entry_price, sl_price, tp_price):
     """
     return calculate_risk_reward(entry_price, sl_price, tp_price)
 
+
 def is_trade_acceptable(entry_price, sl_price, tp_price, min_rr_ratio=0.0):
     """
     Check if trade meets minimum risk/reward ratio.
@@ -41,6 +44,7 @@ def is_trade_acceptable(entry_price, sl_price, tp_price, min_rr_ratio=0.0):
     if not ok:
         print(f"⏭️ R/R {rr_ratio:.2f} < {min_rr_ratio:.2f} — skip")
     return ok
+
 
 def is_trade_acceptable_with_min_rr(entry_price, sl_price, tp_price, min_rr_ratio=0.0):
     """
@@ -59,16 +63,23 @@ def is_trade_acceptable_with_min_rr(entry_price, sl_price, tp_price, min_rr_rati
     print(f"⏭️ R/R {rr_ratio:.2f} < {min_rr_ratio:.2f} — skip")
     return rr_ratio >= min_rr_ratio
 
+
 if __name__ == "__main__":
     from config import MIN_REWARD_RISK, PRESET
+
     # Example usage
     entry_price = 212.431
     sl_price = 212.676
     tp_price = 212.157
 
     rr_ratio = get_rr_ratio(entry_price, sl_price, tp_price)
-    is_acceptable = is_trade_acceptable(entry_price, sl_price, tp_price, MIN_REWARD_RISK)
-    print(f"Risk/Reward Ratio: {rr_ratio:.2f}", f"Minimum R/R: {MIN_REWARD_RISK}, Preset: {PRESET}")
+    is_acceptable = is_trade_acceptable(
+        entry_price, sl_price, tp_price, MIN_REWARD_RISK
+    )
+    print(
+        f"Risk/Reward Ratio: {rr_ratio:.2f}",
+        f"Minimum R/R: {MIN_REWARD_RISK}, Preset: {PRESET}",
+    )
     print(f"Is Trade Acceptable: {is_acceptable}")
 
 # # ONLY take trades with R/R ≥ MIN_REWARD_RISK (e.g. 1.2)

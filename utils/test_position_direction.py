@@ -38,12 +38,17 @@ from utils.position_direction import (
 
 def _position(long_units="0", short_units="0"):
     """Build a fake get_open_position() return value, matching OANDA's real shape."""
-    return {"instrument": "AUD_JPY", "long": {"units": long_units}, "short": {"units": short_units}}
+    return {
+        "instrument": "AUD_JPY",
+        "long": {"units": long_units},
+        "short": {"units": short_units},
+    }
 
 
 # ---------------------------------------------------------------------------
 # get_position_direction() — parsing the raw OANDA shape correctly
 # ---------------------------------------------------------------------------
+
 
 class TestGetPositionDirection(unittest.TestCase):
     @patch("utils.position_direction.get_open_position")
@@ -79,38 +84,58 @@ class TestGetPositionDirection(unittest.TestCase):
 # resolve_signal_vs_position() — pure decision logic (no I/O)
 # ---------------------------------------------------------------------------
 
+
 class TestResolveSignalVsPosition(unittest.TestCase):
     # --- Requirement 1: same direction -> no new entry ---
     def test_buy_signal_existing_buy_skips(self):
-        self.assertEqual(resolve_signal_vs_position("BUY", "BUY"), PositionDecision.SKIP_SAME_DIRECTION)
+        self.assertEqual(
+            resolve_signal_vs_position("BUY", "BUY"),
+            PositionDecision.SKIP_SAME_DIRECTION,
+        )
 
     def test_sell_signal_existing_sell_skips(self):
-        self.assertEqual(resolve_signal_vs_position("SELL", "SELL"), PositionDecision.SKIP_SAME_DIRECTION)
+        self.assertEqual(
+            resolve_signal_vs_position("SELL", "SELL"),
+            PositionDecision.SKIP_SAME_DIRECTION,
+        )
 
     # --- Requirement 2: opposite direction -> close then enter ---
     def test_buy_signal_existing_sell_closes_then_enters(self):
         # This is exactly the AUD/JPY screenshot scenario: SHORT open, BUY signal.
-        self.assertEqual(resolve_signal_vs_position("BUY", "SELL"), PositionDecision.CLOSE_THEN_ENTER)
+        self.assertEqual(
+            resolve_signal_vs_position("BUY", "SELL"), PositionDecision.CLOSE_THEN_ENTER
+        )
 
     def test_sell_signal_existing_buy_closes_then_enters(self):
-        self.assertEqual(resolve_signal_vs_position("SELL", "BUY"), PositionDecision.CLOSE_THEN_ENTER)
+        self.assertEqual(
+            resolve_signal_vs_position("SELL", "BUY"), PositionDecision.CLOSE_THEN_ENTER
+        )
 
     # --- Requirement 3: no existing position -> normal entry ---
     def test_buy_signal_no_position_enters(self):
-        self.assertEqual(resolve_signal_vs_position("BUY", None), PositionDecision.ENTER)
+        self.assertEqual(
+            resolve_signal_vs_position("BUY", None), PositionDecision.ENTER
+        )
 
     def test_sell_signal_no_position_enters(self):
-        self.assertEqual(resolve_signal_vs_position("SELL", None), PositionDecision.ENTER)
+        self.assertEqual(
+            resolve_signal_vs_position("SELL", None), PositionDecision.ENTER
+        )
 
     # --- Edge case surfaced during design: hedged (both sides open) ---
     def test_hedged_position_is_skipped_regardless_of_signal(self):
-        self.assertEqual(resolve_signal_vs_position("BUY", "HEDGED"), PositionDecision.SKIP_HEDGED)
-        self.assertEqual(resolve_signal_vs_position("SELL", "HEDGED"), PositionDecision.SKIP_HEDGED)
+        self.assertEqual(
+            resolve_signal_vs_position("BUY", "HEDGED"), PositionDecision.SKIP_HEDGED
+        )
+        self.assertEqual(
+            resolve_signal_vs_position("SELL", "HEDGED"), PositionDecision.SKIP_HEDGED
+        )
 
 
 # ---------------------------------------------------------------------------
 # resolve_and_prepare_entry() — full orchestration, including the actual close call
 # ---------------------------------------------------------------------------
+
 
 class TestResolveAndPrepareEntry(unittest.TestCase):
     @patch("utils.position_direction.close_position")
@@ -131,7 +156,9 @@ class TestResolveAndPrepareEntry(unittest.TestCase):
 
     @patch("utils.position_direction.close_position")
     @patch("utils.position_direction.get_open_position")
-    def test_opposite_direction_closes_then_returns_close_then_enter(self, mock_get, mock_close):
+    def test_opposite_direction_closes_then_returns_close_then_enter(
+        self, mock_get, mock_close
+    ):
         # Reproduces the screenshot exactly: SHORT AUD/JPY open, BUY signal arrives.
         mock_get.return_value = _position(long_units="0", short_units="-10000")
         mock_close.return_value = True
@@ -143,7 +170,9 @@ class TestResolveAndPrepareEntry(unittest.TestCase):
 
     @patch("utils.position_direction.close_position")
     @patch("utils.position_direction.get_open_position")
-    def test_close_failure_raises_and_entry_must_not_proceed(self, mock_get, mock_close):
+    def test_close_failure_raises_and_entry_must_not_proceed(
+        self, mock_get, mock_close
+    ):
         mock_get.return_value = _position(long_units="0", short_units="-10000")
         mock_close.return_value = False  # OANDA close call failed
 
@@ -165,7 +194,11 @@ class TestResolveAndPrepareEntry(unittest.TestCase):
     def test_eurjpy_same_scenario_class_as_audjpy(self, mock_get, mock_close):
         """Explicitly covers the 'same situation exists for other pairs such as
         EUR/JPY' note — proves the fix is instrument-agnostic, not AUD/JPY-specific."""
-        mock_get.return_value = {"instrument": "EUR_JPY", "long": {"units": "0"}, "short": {"units": "-10000"}}
+        mock_get.return_value = {
+            "instrument": "EUR_JPY",
+            "long": {"units": "0"},
+            "short": {"units": "-10000"},
+        }
         mock_close.return_value = True
         decision = resolve_and_prepare_entry("EUR_JPY", "BUY")
         self.assertEqual(decision, PositionDecision.CLOSE_THEN_ENTER)

@@ -1,0 +1,12 @@
+AST parse OK
+
+Running btp...
+Top 5 selected: ['GBPUSD=X', 'USDJPY=X', 'EURUSD=X', 'NZDUSD=X', 'GBPAUD=X']
+All ranked candidates (5):
+  GBPUSD=X      gap= 3.24  (USD vs GBP) <-- TOP-PICK
+  USDJPY=X      gap= 2.54  (USD vs JPY) <-- TOP-PICK
+  EURUSD=X      gap= 2.20  (USD vs EUR) <-- TOP-PICK
+  NZDUSD=X      gap= 1.94  (USD vs NZD) <-- TOP-PICK
+  GBPAUD=X      gap= 1.52  (AUD vs GBP) <-- TOP-PICK
+
+ALL ASSERTIONS PASS

@@ -104,6 +104,7 @@ def calculate_sl_zone(side: str, entry_price: float, h4_candles: list, pip_size:
 
     return sl_price, sl_pips, skip_trade
 
+
 def append_to_csv(filepath, row_dict):
     try:
         fn = list(row_dict.keys())
@@ -117,6 +118,7 @@ def append_to_csv(filepath, row_dict):
             csv.DictWriter(f, fieldnames=fn).writerow(row_dict)
     except Exception as e:
         logger.warning(f"⚠️ Append failed {filepath}: {e}")
+
 
 def calculate_ema(series, period):
     return series.ewm(span=period, adjust=False).mean()

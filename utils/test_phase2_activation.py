@@ -81,6 +81,7 @@ def _config_without_attr(attr_name: str):
     missing `attr_name` entirely (not set to False — ABSENT), reproducing
     the exact scenario of config.py never having received the addition."""
     import config as real_config
+
     fake = types.ModuleType("config")
     for attr in dir(real_config):
         if not attr.startswith("_") and attr != attr_name:
@@ -102,14 +103,21 @@ class TestFlagResolutionReproducesReportedBug(unittest.TestCase):
         with patch("builtins.print") as mock_print:
             ri = _fresh_risk_integration_module()
         self.assertFalse(ri.ENABLE_DYNAMIC_RISK_MANAGER)
-        warning_calls = [str(c) for c in mock_print.call_args_list if "RISK WARNING" in str(c)]
-        self.assertEqual(len(warning_calls), 1, "expected exactly one loud warning when the attribute is missing")
+        warning_calls = [
+            str(c) for c in mock_print.call_args_list if "RISK WARNING" in str(c)
+        ]
+        self.assertEqual(
+            len(warning_calls),
+            1,
+            "expected exactly one loud warning when the attribute is missing",
+        )
         self.assertIn("NOT DEFINED", warning_calls[0])
 
     def test_explicitly_false_does_not_warn(self):
         """Distinguishes 'intentionally disabled' from 'forgot to configure' —
         only the latter should warn."""
         import config as real_config
+
         fake = types.ModuleType("config")
         for attr in dir(real_config):
             if not attr.startswith("_"):
@@ -120,11 +128,18 @@ class TestFlagResolutionReproducesReportedBug(unittest.TestCase):
         with patch("builtins.print") as mock_print:
             ri = _fresh_risk_integration_module()
         self.assertFalse(ri.ENABLE_DYNAMIC_RISK_MANAGER)
-        warning_calls = [str(c) for c in mock_print.call_args_list if "RISK WARNING" in str(c)]
-        self.assertEqual(len(warning_calls), 0, "explicit False should NOT trigger the missing-attribute warning")
+        warning_calls = [
+            str(c) for c in mock_print.call_args_list if "RISK WARNING" in str(c)
+        ]
+        self.assertEqual(
+            len(warning_calls),
+            0,
+            "explicit False should NOT trigger the missing-attribute warning",
+        )
 
     def test_explicitly_true_activates_with_no_warning(self):
         import config as real_config
+
         fake = types.ModuleType("config")
         for attr in dir(real_config):
             if not attr.startswith("_"):
@@ -135,7 +150,9 @@ class TestFlagResolutionReproducesReportedBug(unittest.TestCase):
         with patch("builtins.print") as mock_print:
             ri = _fresh_risk_integration_module()
         self.assertTrue(ri.ENABLE_DYNAMIC_RISK_MANAGER)
-        warning_calls = [str(c) for c in mock_print.call_args_list if "RISK WARNING" in str(c)]
+        warning_calls = [
+            str(c) for c in mock_print.call_args_list if "RISK WARNING" in str(c)
+        ]
         self.assertEqual(len(warning_calls), 0)
 
 
@@ -150,7 +167,9 @@ class TestFlagOffMeansFullyInert(unittest.TestCase):
         _restore_original_modules(self._original_config)
 
     @patch("utils.risk_integration.oanda_client")
-    def test_list_managed_instruments_with_flag_off_still_reads_empty_store_but_never_calls_oanda(self, mock_client):
+    def test_list_managed_instruments_with_flag_off_still_reads_empty_store_but_never_calls_oanda(
+        self, mock_client
+    ):
         """Even list_managed_instruments() itself never touches OANDA (it only
         reads the local JSON store) — this test documents that Phase A's
         no-op-when-off behavior lives in the RUNNER's own guard
@@ -183,14 +202,19 @@ class TestEndToEndClusterPersistence(unittest.TestCase):
         _restore_original_modules(self._original_config)
 
     @patch("utils.risk_integration.get_atr_with_volatility_context")
-    def test_successful_fill_with_flag_on_actually_creates_state_file_on_disk(self, mock_atr):
+    def test_successful_fill_with_flag_on_actually_creates_state_file_on_disk(
+        self, mock_atr
+    ):
         import config as real_config
+
         fake = types.ModuleType("config")
         for attr in dir(real_config):
             if not attr.startswith("_"):
                 setattr(fake, attr, getattr(real_config, attr))
         fake.ENABLE_DYNAMIC_RISK_MANAGER = True
-        fake.CLUSTER_STATE_PATH = self.state_path  # isolated temp path, not the real repo's state/
+        fake.CLUSTER_STATE_PATH = (
+            self.state_path
+        )  # isolated temp path, not the real repo's state/
         sys.modules["config"] = fake
 
         # Precondition matching the bug report: directory doesn't exist yet at all.
@@ -201,20 +225,36 @@ class TestEndToEndClusterPersistence(unittest.TestCase):
 
         mock_atr.return_value = (0.30, 0.1)
         # Reproduces the reported AUD/JPY BUY fill exactly (112.360).
-        signal_data = {"pair": "AUD_JPY", "action": "BUY", "stop_loss": 111.500, "take_profit": 113.500}
-        fill = {"status": "SUCCESS", "filled_price": "112.360", "units": "10000", "trade_id": "T-AUDJPY-001"}
+        signal_data = {
+            "pair": "AUD_JPY",
+            "action": "BUY",
+            "stop_loss": 111.500,
+            "take_profit": 113.500,
+        }
+        fill = {
+            "status": "SUCCESS",
+            "filled_price": "112.360",
+            "units": "10000",
+            "trade_id": "T-AUDJPY-001",
+        }
 
         cluster = ri.new_cluster_from_fill(signal_data, fill)
         ri.save_cluster_data("AUD_JPY", cluster.to_dict())
 
         # The core assertion: the file must ACTUALLY exist on disk now.
-        self.assertTrue(os.path.exists(self.state_path), "state file was not created on disk")
+        self.assertTrue(
+            os.path.exists(self.state_path), "state file was not created on disk"
+        )
 
         with open(self.state_path) as f:
             on_disk = json.load(f)
         self.assertIn("AUD_JPY", on_disk["clusters"])
-        self.assertEqual(on_disk["clusters"]["AUD_JPY"]["risk_manager"]["entry_price_0"], 112.360)
-        self.assertEqual(on_disk["clusters"]["AUD_JPY"]["units"][0]["trade_id"], "T-AUDJPY-001")
+        self.assertEqual(
+            on_disk["clusters"]["AUD_JPY"]["risk_manager"]["entry_price_0"], 112.360
+        )
+        self.assertEqual(
+            on_disk["clusters"]["AUD_JPY"]["units"][0]["trade_id"], "T-AUDJPY-001"
+        )
 
         # And it must be re-loadable via the normal API, not just present as raw JSON.
         reloaded = ri.load_cluster_data("AUD_JPY")
@@ -240,6 +280,7 @@ class TestPreExistingPositionsAreKnowinglyNotAdopted(unittest.TestCase):
 
     def test_empty_store_manages_nothing_regardless_of_live_oanda_positions(self):
         from utils.cluster_state_store import ClusterStateStore
+
         store = ClusterStateStore(self.state_path)
         # No entries were ever registered for EUR_JPY/GBP_JPY/USD_JPY (they
         # predate this integration) — the store is empty regardless of what's

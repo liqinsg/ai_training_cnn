@@ -10,15 +10,16 @@ entry; cancel the other manually or it expires GTC.
 width_pct is a RATIO (not a percentage): 0.005 = 0.5% of price.
 On GBP/JPY ~215, that is ~107 pips — a tight but realistic consolidation box.
 """
+
 import importlib
 from oandapyV20 import API
-from config import OANDA_ACCOUNT_ID, OANDA_ENV, OANDA_API_TOKEN
+from config_oanda import OANDA_ACCOUNT_ID, OANDA_ENV, OANDA_API_TOKEN
 
 try:
-    orders            = importlib.import_module("oandapyV20.endpoints.orders")
+    orders = importlib.import_module("oandapyV20.endpoints.orders")
     instruments_module = importlib.import_module("oandapyV20.endpoints.instruments")
 except Exception:
-    orders             = None
+    orders = None
     instruments_module = None
 
 oanda_client = API(access_token=OANDA_API_TOKEN, environment=OANDA_ENV)
@@ -31,7 +32,11 @@ def format_price_for_instrument(price, instrument: str) -> str:
         numeric_price = float(price)
     except (TypeError, ValueError):
         return str(price)
-    return f"{numeric_price:.3f}" if instrument.endswith("_JPY") else f"{numeric_price:.5f}"
+    return (
+        f"{numeric_price:.3f}"
+        if instrument.endswith("_JPY")
+        else f"{numeric_price:.5f}"
+    )
 
 
 def get_open_units(instrument: str) -> tuple[float, float]:
@@ -43,7 +48,7 @@ def get_open_units(instrument: str) -> tuple[float, float]:
         for pos in req.response.get("positions", []):
             if pos.get("instrument") == instrument:
                 return (
-                    float(pos.get("long",  {}).get("units", 0)),
+                    float(pos.get("long", {}).get("units", 0)),
                     float(pos.get("short", {}).get("units", 0)),
                 )
     except Exception as e:
@@ -53,9 +58,9 @@ def get_open_units(instrument: str) -> tuple[float, float]:
 
 def detect_protracted_range(
     instrument: str,
-    granularity: str  = "H1",
+    granularity: str = "H1",
     duration_hours: int = 72,
-    width_pct: float    = 0.005,   # ratio, not percent: 0.005 = 0.5%
+    width_pct: float = 0.005,  # ratio, not percent: 0.005 = 0.5%
 ) -> dict | None:
     """
     Returns range metrics if the pair has been consolidating tightly,
@@ -69,27 +74,31 @@ def detect_protracted_range(
         return None
 
     try:
-        params  = {"count": duration_hours + 2, "granularity": granularity}
-        request = instruments_module.InstrumentsCandles(instrument=instrument, params=params)
+        params = {"count": duration_hours + 2, "granularity": granularity}
+        request = instruments_module.InstrumentsCandles(
+            instrument=instrument, params=params
+        )
         oanda_client.request(request)
         candles = [c for c in request.response.get("candles", []) if c.get("complete")]
         if len(candles) < duration_hours:
             return None
 
-        highs  = [float(c["mid"]["h"]) for c in candles]
-        lows   = [float(c["mid"]["l"]) for c in candles]
+        highs = [float(c["mid"]["h"]) for c in candles]
+        lows = [float(c["mid"]["l"]) for c in candles]
         closes = [float(c["mid"]["c"]) for c in candles]
 
-        range_high  = max(highs)
-        range_low   = min(lows)
+        range_high = max(highs)
+        range_low = min(lows)
         range_width = range_high - range_low
-        mean_price  = sum(closes) / len(closes)
+        mean_price = sum(closes) / len(closes)
 
         # ATR over the same period for SL/TP sizing
         trs = [
-            max(highs[i] - lows[i],
-                abs(highs[i] - closes[i-1]),
-                abs(lows[i]  - closes[i-1]))
+            max(
+                highs[i] - lows[i],
+                abs(highs[i] - closes[i - 1]),
+                abs(lows[i] - closes[i - 1]),
+            )
             for i in range(1, len(candles))
         ]
         atr = sum(trs[-14:]) / min(14, len(trs)) if trs else range_width
@@ -97,12 +106,12 @@ def detect_protracted_range(
         is_ranged = (range_width / mean_price) <= width_pct
 
         return {
-            "is_ranged":   is_ranged,
-            "range_high":  range_high,
-            "range_low":   range_low,
+            "is_ranged": is_ranged,
+            "range_high": range_high,
+            "range_low": range_low,
             "range_width": range_width,
-            "mean_price":  mean_price,
-            "atr":         atr,
+            "mean_price": mean_price,
+            "atr": atr,
         }
     except Exception as e:
         print(f"[BREAKENTRY] Range detection failed for {instrument}: {e}")
@@ -113,7 +122,7 @@ def place_breakout_stop_orders(
     instrument: str,
     units: int,
     duration_hours: int = 72,
-    width_pct: float    = 0.005,
+    width_pct: float = 0.005,
 ) -> list[str]:
     """
     Places BUY STOP above range high and SELL STOP below range low
@@ -132,14 +141,14 @@ def place_breakout_stop_orders(
     # Guard: skip if already holding this instrument
     long_u, short_u = get_open_units(instrument)
     if long_u != 0 or short_u != 0:
-        print(f"[BREAKENTRY] Open position exists for {instrument} "
-              f"(long={long_u}, short={short_u}). Skipping stop orders.")
+        print(
+            f"[BREAKENTRY] Open position exists for {instrument} "
+            f"(long={long_u}, short={short_u}). Skipping stop orders."
+        )
         return []
 
     info = detect_protracted_range(
-        instrument, "H1",
-        duration_hours=duration_hours,
-        width_pct=width_pct
+        instrument, "H1", duration_hours=duration_hours, width_pct=width_pct
     )
 
     if not info:
@@ -148,47 +157,51 @@ def place_breakout_stop_orders(
 
     if not info["is_ranged"]:
         rw_pct = info["range_width"] / info["mean_price"] * 100
-        print(f"[BREAKENTRY] {instrument} not in protracted range "
-              f"({rw_pct:.2f}% width > {width_pct*100:.2f}% threshold). Skipping.")
+        print(
+            f"[BREAKENTRY] {instrument} not in protracted range "
+            f"({rw_pct:.2f}% width > {width_pct*100:.2f}% threshold). Skipping."
+        )
         return []
 
-    top     = info["range_high"]
-    bottom  = info["range_low"]
-    atr     = info["atr"]
-    rw      = info["range_width"]
-    dp      = 3 if instrument.endswith("_JPY") else 5
+    top = info["range_high"]
+    bottom = info["range_low"]
+    atr = info["atr"]
+    rw = info["range_width"]
+    dp = 3 if instrument.endswith("_JPY") else 5
 
     # Entry: just outside range boundaries
-    buy_entry  = round(top    + atr * 0.1, dp)
+    buy_entry = round(top + atr * 0.1, dp)
     sell_entry = round(bottom - atr * 0.1, dp)
 
     # SL: beyond the opposite side of the range
-    buy_sl  = round(bottom - atr * 0.5, dp)
-    sell_sl = round(top    + atr * 0.5, dp)
+    buy_sl = round(bottom - atr * 0.5, dp)
+    sell_sl = round(top + atr * 0.5, dp)
 
     # TP: 2× range width projection from entry
-    buy_tp  = round(buy_entry  + rw * 2, dp)
+    buy_tp = round(buy_entry + rw * 2, dp)
     sell_tp = round(sell_entry - rw * 2, dp)
 
-    print(f"[BREAKENTRY] {instrument} | {duration_hours}h range "
-          f"{bottom:.5f}–{top:.5f} ({rw/info['mean_price']*100:.3f}% width)")
+    print(
+        f"[BREAKENTRY] {instrument} | {duration_hours}h range "
+        f"{bottom:.5f}–{top:.5f} ({rw/info['mean_price']*100:.3f}% width)"
+    )
     print(f"  BUY  STOP: entry={buy_entry}  SL={buy_sl}  TP={buy_tp}")
     print(f"  SELL STOP: entry={sell_entry} SL={sell_sl} TP={sell_tp}")
 
     account_id = OANDA_ACCOUNT_ID
-    order_ids  = []
+    order_ids = []
 
     for direction, entry, sl, tp, order_units in [
-        ("BUY",  buy_entry,  buy_sl,  buy_tp,   units),
-        ("SELL", sell_entry, sell_sl, sell_tp,  -units),
+        ("BUY", buy_entry, buy_sl, buy_tp, units),
+        ("SELL", sell_entry, sell_sl, sell_tp, -units),
     ]:
         payload = {
             "order": {
-                "instrument":   instrument,
-                "units":        str(order_units),
-                "price":        format_price_for_instrument(entry, instrument),
-                "type":         "STOP",
-                "timeInForce":  "GTC",
+                "instrument": instrument,
+                "units": str(order_units),
+                "price": format_price_for_instrument(entry, instrument),
+                "type": "STOP",
+                "timeInForce": "GTC",
                 "positionFill": "DEFAULT",
                 "stopLossOnFill": {
                     "price": format_price_for_instrument(sl, instrument)
@@ -198,8 +211,8 @@ def place_breakout_stop_orders(
                 },
                 "clientExtensions": {
                     "comment": f"S4 breakout {direction} @ {entry}"[:128],
-                    "tag":     "breaking-entry"
-                }
+                    "tag": "breaking-entry",
+                },
             }
         }
         try:
