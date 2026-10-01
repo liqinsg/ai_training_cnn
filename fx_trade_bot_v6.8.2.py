@@ -132,8 +132,8 @@ DEFAULT_LOT_SIZE = cfg_bot("DEFAULT_LOT_SIZE", 10000)
 # ✅ Master pair universe
 ALL_PAIRS = cfg_bot("ALL_PAIRS", [
     "EURUSD=X", "GBPUSD=X", "EURJPY=X", "GBPJPY=X",
-    "AUDUSD=X", "USDJPY=X", "GBPAUD=X", "USDCHF=X",
-    "AUDJPY=X", "EURGBP=X", "NZDUSD=X", "CADJPY=X",
+    "AUDUSD=X", "USDJPY=X", "USDCHF=X",
+    "AUDJPY=X"
 ])
 
 # ─── ✅ OANDA MAPPING ───
@@ -141,9 +141,8 @@ _YAHOO_TO_OANDA_DEFAULT = {
     "EURUSD=X": "EUR_USD", "GBPUSD=X": "GBP_USD",
     "EURJPY=X": "EUR_JPY", "GBPJPY=X": "GBP_JPY",
     "AUDUSD=X": "AUD_USD", "USDJPY=X": "USD_JPY",
-    "GBPAUD=X": "GBP_AUD", "USDCHF=X": "USD_CHF",
-    "AUDJPY=X": "AUD_JPY", "EURGBP=X": "EUR_GBP",
-    "NZDUSD=X": "NZD_USD", "CADJPY=X": "CAD_JPY",
+    "USDCHF=X": "USD_CHF",
+    "AUDJPY=X": "AUD_JPY"
 }
 YAHOO_TO_OANDA = cfg_bot("YAHOO_TO_OANDA", _YAHOO_TO_OANDA_DEFAULT.copy())
 for _sym, _oanda in _YAHOO_TO_OANDA_DEFAULT.items():

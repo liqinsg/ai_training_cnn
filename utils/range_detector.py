@@ -86,7 +86,7 @@ def is_sideways(
 
 def main():
     """Quick test runner — run directly to check all JPY pairs"""
-    test_pairs = ["USD_JPY", "EUR_JPY", "GBP_JPY", "AUD_JPY", "CAD_JPY", "NZD_JPY"]
+    test_pairs = ["USD_JPY", "EUR_JPY", "GBP_JPY", "AUD_JPY", "NZD_JPY"]
     print("=== RANGE DETECTOR TEST ===\n")
 
     for pair in test_pairs:

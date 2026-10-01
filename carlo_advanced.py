@@ -44,7 +44,6 @@ def run_monte_carlo(pair: str, period: str = "60d", sims: int = 5000):
         "GBPJPY=X": "GBP_JPY",
         "AUDUSD=X": "AUD_USD",
         "USDJPY=X": "USD_JPY",
-        "GBPAUD=X": "GBP_AUD",
         "USDCHF=X": "USD_CHF"
     }
     # Convert to OANDA format

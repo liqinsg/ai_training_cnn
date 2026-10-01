@@ -32,7 +32,7 @@ def cfg(name, default):
 
 PAIRS = cfg("DEFAULT_PAIRS", [
     "EURUSD=X", "GBPUSD=X", "EURJPY=X", "GBPJPY=X",
-    "AUDUSD=X", "USDJPY=X", "GBPAUD=X", "USDCHF=X"
+    "AUDUSD=X", "USDJPY=X", "USDCHF=X"
 ])
 LOOKBACK_H4 = cfg("H4_LOOKBACK", 90)
 FORECAST_H4 = cfg("H4_FORECAST", 8)

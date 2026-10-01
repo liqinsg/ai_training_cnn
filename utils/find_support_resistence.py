@@ -17,12 +17,12 @@ MIN_MARKET_STRENGTH = 0.05
 FRONT_RUN_PIPS = 15  # Outward buffer to secure fills before the exact level
 
 STRENGTH_PAIRS = [
-    "EUR_USD", "GBP_USD", "AUD_USD", "NZD_USD",
+    "EUR_USD", "GBP_USD", "AUD_USD",
     "USD_CAD", "USD_CHF", "USD_JPY",
-    "EUR_GBP", "EUR_JPY", "EUR_AUD", "EUR_CAD", "EUR_CHF",
-    "GBP_JPY", "GBP_AUD", "GBP_CAD",
+    "EUR_JPY", "EUR_AUD", "EUR_CAD", "EUR_CHF",
+    "GBP_JPY", "GBP_CAD",
     "AUD_JPY", "AUD_CAD", "AUD_CHF",
-    "NZD_JPY", "CAD_JPY", "CHF_JPY",
+    "NZD_JPY", "CHF_JPY",
 ]
 
 CURRENCIES = ["USD", "EUR", "GBP", "AUD", "NZD", "CAD", "CHF", "JPY"]

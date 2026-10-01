@@ -5,13 +5,13 @@ from typing import Literal
 class TradeSignal(BaseModel):
     pair_to_trade: Literal[
         # JPY crosses
-        "USD_JPY", "EUR_JPY", "GBP_JPY", "AUD_JPY", "NZD_JPY", "CAD_JPY", "CHF_JPY",
+        "USD_JPY", "EUR_JPY", "GBP_JPY", "AUD_JPY", "NZD_JPY", "CHF_JPY",
         # EUR crosses
-        "EUR_USD", "EUR_GBP", "EUR_AUD", "EUR_CAD", "EUR_CHF",
+        "EUR_USD", "EUR_AUD", "EUR_CAD", "EUR_CHF",
         # GBP crosses
-        "GBP_USD", "GBP_AUD", "GBP_CAD", "GBP_CHF",
+        "GBP_USD", "GBP_CAD", "GBP_CHF",
         # Commodity/others
-        "AUD_USD", "NZD_USD", "USD_CAD", "USD_CHF",
+        "AUD_USD", "USD_CAD", "USD_CHF",
         "AUD_CAD", "AUD_CHF", "AUD_NZD",
         "NZD_CAD", "NZD_CHF",
         "CAD_CHF",

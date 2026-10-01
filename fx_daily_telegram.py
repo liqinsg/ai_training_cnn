@@ -27,7 +27,7 @@ def cfg(name, default):
 
 DEFAULT_PAIRS = cfg("DEFAULT_PAIRS", [
     "EURUSD=X", "GBPUSD=X", "EURJPY=X", "GBPJPY=X",
-    "AUDUSD=X", "USDJPY=X", "GBPAUD=X", "USDCHF=X"
+    "AUDUSD=X", "USDJPY=X", "USDCHF=X"
 ])
 RESULTS_DIR = Path(__file__).parent / "daily_results"
 RESULTS_DIR.mkdir(exist_ok=True)

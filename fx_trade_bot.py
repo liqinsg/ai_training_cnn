@@ -72,7 +72,6 @@ DEFAULT_PAIRS = cfg(
         "GBPJPY=X",
         "AUDUSD=X",
         "USDJPY=X",
-        "GBPAUD=X",
         "USDCHF=X",
     ],
 )
@@ -85,7 +84,6 @@ YAHOO_TO_OANDA = cfg(
         "GBPJPY=X": "GBP_JPY",
         "AUDUSD=X": "AUD_USD",
         "USDJPY=X": "USD_JPY",
-        "GBPAUD=X": "GBP_AUD",
         "USDCHF=X": "USD_CHF",
     },
 )

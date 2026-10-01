@@ -172,7 +172,7 @@ def build_telegram_report(results: list) -> str:
 # ==========================================
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("pairs", nargs="*", default=["EURUSD=X", "GBPUSD=X", "EURJPY=X", "GBPJPY=X", "AUDUSD=X", "USDJPY=X", "GBPAUD=X", "USDCHF=X"])
+    parser.add_argument("pairs", nargs="*", default=["EURUSD=X", "GBPUSD=X", "EURJPY=X", "GBPJPY=X", "AUDUSD=X", "USDJPY=X", "USDCHF=X"])
     parser.add_argument("--json-out", action="store_true")
     args = parser.parse_args()
 

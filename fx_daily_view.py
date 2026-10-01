@@ -28,7 +28,7 @@ args = parser.parse_args()
 YAHOO_TO_OANDA = {
     "EURUSD=X": "EUR_USD", "GBPUSD=X": "GBP_USD", "EURJPY=X": "EUR_JPY",
     "GBPJPY=X": "GBP_JPY", "AUDUSD=X": "AUD_USD", "USDJPY=X": "USD_JPY",
-    "GBPAUD=X": "GBP_AUD", "USDCHF=X": "USD_CHF"
+    "USDCHF=X": "USD_CHF"
 }
 oanda_sym = YAHOO_TO_OANDA.get(args.pair, args.pair.replace("=X", ""))
 

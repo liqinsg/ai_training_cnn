@@ -41,7 +41,7 @@ def cfg(name, default):
 
 PAIRS = cfg("DEFAULT_PAIRS", [
     "EURUSD=X", "GBPUSD=X", "EURJPY=X", "GBPJPY=X",
-    "AUDUSD=X", "USDJPY=X", "GBPAUD=X", "USDCHF=X"
+    "AUDUSD=X", "USDJPY=X", "USDCHF=X"
 ])
 SIMULATIONS = cfg("MC_SIMULATIONS", 5000)
 CONFIDENCE = cfg("MC_CONFIDENCE", 0.90)

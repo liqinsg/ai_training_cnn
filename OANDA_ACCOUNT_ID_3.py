@@ -132,11 +132,9 @@ STRENGTH_PAIRS = [
     "GBP_USD",
     "AUD_USD",
     "USD_JPY",
-    "EUR_GBP",
     "EUR_JPY",
     "EUR_AUD",
     "GBP_JPY",
-    "GBP_AUD",
     "AUD_JPY"
 ]
 
@@ -255,11 +253,11 @@ MIN_PROB = 0.50  # 0.52
 TREND_THRESHOLD = 20  # 25
 DEFAULT_PAIRS = [
     "EURUSD=X", "GBPUSD=X", "EURJPY=X", "GBPJPY=X",
-    "AUDUSD=X", "USDJPY=X", "GBPAUD=X", "USDCHF=X"]
+    "AUDUSD=X", "USDJPY=X", "USDCHF=X"]
 YAHOO_TO_OANDA = {
     "EURUSD=X": "EUR_USD", "GBPUSD=X": "GBP_USD", "EURJPY=X": "EUR_JPY",
     "GBPJPY=X": "GBP_JPY", "AUDUSD=X": "AUD_USD", "USDJPY=X": "USD_JPY",
-    "GBPAUD=X": "GBP_AUD", "USDCHF=X": "USD_CHF"
+    "USDCHF=X": "USD_CHF"
 }
 
 # ==========================================

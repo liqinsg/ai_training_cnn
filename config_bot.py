@@ -66,12 +66,8 @@ DEFAULT_PAIRS = [
     "GBPJPY=X",
     "AUDUSD=X",
     "USDJPY=X",
-    "GBPAUD=X",
     "USDCHF=X",
     "AUDJPY=X",
-    "EURGBP=X",
-    "CADJPY=X",
-    "NZDUSD=X",
 ]
 YAHOO_TO_OANDA = {
     "EURUSD=X": "EUR_USD",
@@ -80,12 +76,8 @@ YAHOO_TO_OANDA = {
     "GBPJPY=X": "GBP_JPY",
     "AUDUSD=X": "AUD_USD",
     "USDJPY=X": "USD_JPY",
-    "GBPAUD=X": "GBP_AUD",
     "USDCHF=X": "USD_CHF",
-    "NZDUSD=X": "NZD_USD",
     "AUDJPY=X": "AUD_JPY",
-    "EURGBP=X": "EUR_GBP",
-    "CADJPY=X": "CAD_JPY",
 }
 
 

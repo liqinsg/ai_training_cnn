@@ -12,39 +12,80 @@ from google.genai import types
 
 import config as _config
 from config import (
-    SIGNAL_TIMEFRAMES, SL_BUFFER_PIPS, SPREAD_PIPS,
-    CURRENCIES, STRENGTH_PAIRS, STRENGTH_TIMEFRAMES,
-    STRENGTH_FAST_LOOKBACK, STRENGTH_SLOW_LOOKBACK,
-    STRENGTH_FAST_WEIGHT, STRENGTH_SLOW_WEIGHT,
-    ENABLE_STRENGTH_ACCELERATION, STRENGTH_ACCELERATION_WEIGHT, STRENGTH_ATR_PERIOD,
-    ENABLE_EMA_TREND, ENABLE_ATR_NORMALIZED_STRENGTH,
-    ENABLE_BREAKOUT_CONFIRMATION, BREAKOUT_CONFIRMATION_CLOSES,
+    SIGNAL_TIMEFRAMES,
+    SL_BUFFER_PIPS,
+    SPREAD_PIPS,
+    CURRENCIES,
+    STRENGTH_PAIRS,
+    STRENGTH_TIMEFRAMES,
+    STRENGTH_FAST_LOOKBACK,
+    STRENGTH_SLOW_LOOKBACK,
+    STRENGTH_FAST_WEIGHT,
+    STRENGTH_SLOW_WEIGHT,
+    ENABLE_STRENGTH_ACCELERATION,
+    STRENGTH_ACCELERATION_WEIGHT,
+    STRENGTH_ATR_PERIOD,
+    ENABLE_EMA_TREND,
+    ENABLE_ATR_NORMALIZED_STRENGTH,
+    ENABLE_BREAKOUT_CONFIRMATION,
+    BREAKOUT_CONFIRMATION_CLOSES,
     ENABLE_ATR_SLTP,
-    ENABLE_NEWS_FILTER, NEWS_LOG_PATH, NEWS_CURRENCIES,
-    GEMINI_NEWS_MODEL, GEMINI_NEWS_FALLBACK_MODEL,
-    DOMINANCE_ATR_PERIOD, SIGNAL_TIMEFRAMES 
+    ENABLE_NEWS_FILTER,
+    NEWS_LOG_PATH,
+    NEWS_CURRENCIES,
+    GEMINI_NEWS_MODEL,
+    GEMINI_NEWS_FALLBACK_MODEL,
+    DOMINANCE_ATR_PERIOD,
+    SIGNAL_TIMEFRAMES,
 )
 
 # --- Account ID safe lookup ---
-OANDA_ACCOUNT_ID = getattr(_config, "OANDA_ACCOUNT_ID", None) or os.getenv("OANDA_ACCOUNT_ID")
-assert OANDA_ACCOUNT_ID, "[HELPERS] FATAL: OANDA_ACCOUNT_ID not found in config.py or environment."
+OANDA_ACCOUNT_ID = getattr(_config, "OANDA_ACCOUNT_ID", None) or os.getenv(
+    "OANDA_ACCOUNT_ID"
+)
+assert (
+    OANDA_ACCOUNT_ID
+), "[HELPERS] FATAL: OANDA_ACCOUNT_ID not found in config.py or environment."
 # if not OANDA_ACCOUNT_ID:
 #     print("[HELPERS] WARNING: OANDA_ACCOUNT_ID not found in config.py or environment.")
 
+# =====================================================================
+# Global MACD per-timeframe parameter override.
+# ---------------------------------------------------------------------
+# Usage: a config loader (e.g. scheduled_runner_v3.py) calls
+#   set_macd_tf_params(MY_TF_PARAMS)
+# BEFORE invoking the strategy pipeline. Once set, every call to
+# `check_macd_histogram` without an explicit `tf_params=` argument will
+# pick up these settings automatically (so custom_strategy_v3.py and
+# other downstream callers don't need to be re-wired to pass params).
+# =====================================================================
+_MACD_TF_PARAMS_GLOBAL: Dict[str, Dict[str, int]] | None = None
+
+
+def set_macd_tf_params(tf_params: Dict[str, Dict[str, int]] | None) -> None:
+    """Set global MACD per-TF params, or None → use helper-internal fallback (12/26/9)."""
+    global _MACD_TF_PARAMS_GLOBAL
+    if tf_params is None:
+        _MACD_TF_PARAMS_GLOBAL = None
+        return
+    # Defensive deep-ish clone so callers can't mutate our copy later
+    _MACD_TF_PARAMS_GLOBAL = {
+        str(tf_key): {
+            k: int(v) for k, v in per_tf.items() if k in ("fast", "slow", "signal")
+        }
+        for tf_key, per_tf in tf_params.items()
+    }
+
+
+def get_macd_tf_params() -> Dict[str, Dict[str, int]] | None:
+    return _MACD_TF_PARAMS_GLOBAL
+
 
 # ==========================================
-# MARKET DATA HELPERS
+# MARKET DATA HELPERS (centralized)
 # ==========================================
-def get_candles(instrument: str, granularity: str, count: int) -> list:
-    from utils import oanda_client
-    params = {"count": count, "granularity": granularity}
-    try:
-        req = instruments.InstrumentsCandles(instrument=instrument, params=params)
-        oanda_client.request(req)
-        return [c for c in req.response.get("candles", []) if c["complete"]]
-    except Exception as e:
-        print(f"  [HELPERS] Candle fetch failed {instrument} {granularity}: {e}")
-        return []
+# Use the centralized, robust OANDA fetcher from utils.trading_core
+from utils.trading_core import get_candles
 
 
 def _atr_from_candles(candles: List[dict], period: int) -> Optional[float]:
@@ -79,14 +120,16 @@ def get_atr_with_volatility_context(
         high = float(c["mid"]["h"])
         low = float(c["mid"]["l"])
         close = float(c["mid"]["c"])
-        true_ranges.append(max(high - low, abs(high - prev_close), abs(low - prev_close)))
+        true_ranges.append(
+            max(high - low, abs(high - prev_close), abs(low - prev_close))
+        )
         prev_close = close
 
     if len(true_ranges) < period:
         return None, None
 
     atr_series = [
-        sum(true_ranges[i - period:i]) / period
+        sum(true_ranges[i - period : i]) / period
         for i in range(period, len(true_ranges) + 1)
     ]
     current_atr = atr_series[-1]
@@ -97,7 +140,7 @@ def get_atr_with_volatility_context(
 
     mean = sum(history) / len(history)
     variance = sum((x - mean) ** 2 for x in history) / len(history)
-    std = variance ** 0.5
+    std = variance**0.5
     z_score = (current_atr - mean) / std if std > 0 else 0.0
     return current_atr, z_score
 
@@ -134,7 +177,9 @@ def get_pair_momentum(instrument: str, granularity: str) -> Optional[float]:
         fast_component = fast_move / fast_close * 100
         slow_component = slow_move / slow_close * 100
 
-    blended = fast_component * STRENGTH_FAST_WEIGHT + slow_component * STRENGTH_SLOW_WEIGHT
+    blended = (
+        fast_component * STRENGTH_FAST_WEIGHT + slow_component * STRENGTH_SLOW_WEIGHT
+    )
 
     if ENABLE_STRENGTH_ACCELERATION:
         acceleration = fast_component - slow_component
@@ -179,8 +224,11 @@ def format_strength_ranking(scores: Dict[str, float]) -> str:
         direction = "▲" if score > 0 else "▼"
         lines.append(f"  {i}. {currency}: {score:+.4f} {direction} {bar}")
     gap = ranked[0][1] - ranked[-1][1]
-    lines.append(f"\n  Score gap: {gap:.3f} "
-                 f"({'STRONG' if gap > 1.5 else 'MODERATE' if gap > 0.5 else 'COILING'})")
+    lines.append(
+        f"\n  GLOBAL_MAX_GAP: {gap:.3f} "
+        f"({'STRONG' if gap > 1.5 else 'MODERATE' if gap > 0.5 else 'COILING'}) "
+        f"(max={ranked[0][0]:s} {ranked[0][1]:+.3f} minus min={ranked[-1][0]:s} {ranked[-1][1]:+.3f})"
+    )
     return "\n".join(lines)
 
 
@@ -215,6 +263,7 @@ def _ema(values: List[float], period: int) -> Optional[float]:
 # `custom_strategy_v1.py` can compute a slope CLASSIFICATION for logging,
 # strictly AFTER the existing alignment vote has already decided
 # `direction` — see the call site there for the exact ordering guarantee.
+
 
 def _ema_series(values: List[float], period: int) -> List[float]:
     """
@@ -279,6 +328,7 @@ def get_slope_diagnostics(
         }
     """
     from utils.signal_instrumentation import classify_slope  # local import —
+
     # keeps this file's only NEW external dependency scoped to this one
     # diagnostic function; nothing about the pre-existing module-load-time
     # import graph changes.
@@ -293,8 +343,11 @@ def get_slope_diagnostics(
             series = _ema_series(closes, ema_period)
             if len(series) < k + 1:
                 per_timeframe[tf] = {
-                    "label": "UNKNOWN", "raw_delta": None, "raw_delta_frac": None,
-                    "ema_now": None, "ema_past": None,
+                    "label": "UNKNOWN",
+                    "raw_delta": None,
+                    "raw_delta_frac": None,
+                    "ema_now": None,
+                    "ema_past": None,
                 }
                 labels.append("UNKNOWN")
                 continue
@@ -307,14 +360,20 @@ def get_slope_diagnostics(
             labels.append(result["label"])
         except Exception as e:
             per_timeframe[tf] = {
-                "label": "UNKNOWN", "raw_delta": None, "raw_delta_frac": None,
-                "ema_now": None, "ema_past": None, "error": str(e),
+                "label": "UNKNOWN",
+                "raw_delta": None,
+                "raw_delta_frac": None,
+                "ema_now": None,
+                "ema_past": None,
+                "error": str(e),
             }
             labels.append("UNKNOWN")
 
     against_count = labels.count("AGAINST")
     non_unknown = [l for l in labels if l != "UNKNOWN"]
-    combined_label = max(set(non_unknown), key=non_unknown.count) if non_unknown else "UNKNOWN"
+    combined_label = (
+        max(set(non_unknown), key=non_unknown.count) if non_unknown else "UNKNOWN"
+    )
 
     return {
         "k": k,
@@ -330,7 +389,9 @@ def get_slope_diagnostics(
 # ==========================================
 
 
-def get_ema_trend_position(instrument: str, granularity: str, fast: int = 10, slow: int = 20) -> Optional[str]:
+def get_ema_trend_position(
+    instrument: str, granularity: str, fast: int = 10, slow: int = 20
+) -> Optional[str]:
     candles = get_candles(instrument, granularity, count=slow + 10)
     if len(candles) < slow + 1:
         return None
@@ -347,25 +408,34 @@ def get_trend_position(instrument: str, granularity: str) -> Optional[str]:
         return get_ema_trend_position(instrument, granularity)
     return get_ma5_position(instrument, granularity)
 
-def check_ma5_alignment(instrument: str, require_aligned: int = 4) -> Optional[str]:
+
+def check_ma5_alignment(
+    instrument: str,
+    require_aligned: int = 4,
+    verbose: bool = True,
+    timeframes: list[str] | None = None,
+) -> Optional[str]:
     """
-    Check MA5 alignment across H4, H1, M30, M15 timeframes.
+    Check MA5 alignment across specified timeframes (default: SIGNAL_TIMEFRAMES).
     Returns "BUY" if price above MA5 on enough timeframes,
     Returns "SELL" if price below MA5 on enough timeframes,
     Returns None if mixed.
-    
+
     Args:
         instrument: Currency pair to check
-        require_aligned: Minimum number of timeframes that must agree (3 or 4)
+        require_aligned: Minimum number of timeframes that must agree
+        verbose: If True, print per-timeframe status lines
+        timeframes: Optional custom list of timeframes, defaults to SIGNAL_TIMEFRAMES
     """
-    timeframes = SIGNAL_TIMEFRAMES  
+    timeframes = timeframes if timeframes is not None else SIGNAL_TIMEFRAMES
     directions = []
 
     for tf in timeframes:
         try:
             candles = get_candles(instrument, tf, count=10)
             if len(candles) < 6:
-                print(f"    {tf}: Not enough data → skip")
+                if verbose:
+                    print(f"    {tf}: Not enough data → skip")
                 return None
 
             ma5 = _ema([float(c["mid"]["c"]) for c in candles], period=5)
@@ -373,12 +443,15 @@ def check_ma5_alignment(instrument: str, require_aligned: int = 4) -> Optional[s
 
             if current_price > ma5:
                 directions.append("BUY")
-                print(f"    {tf}: ABOVE MA5")
+                if verbose:
+                    print(f"    {tf}: ABOVE MA5")
             else:
                 directions.append("SELL")
-                print(f"    {tf}: BELOW MA5")
+                if verbose:
+                    print(f"    {tf}: BELOW MA5")
         except Exception as e:
-            print(f"    {tf}: Check failed: {e} → skip")
+            if verbose:
+                print(f"    {tf}: Check failed: {e} → skip")
             return None
 
     buy_count = directions.count("BUY")
@@ -389,8 +462,292 @@ def check_ma5_alignment(instrument: str, require_aligned: int = 4) -> Optional[s
     elif sell_count >= require_aligned:
         return "SELL"
     else:
-        print(f"    → Mixed alignment: {buy_count}x BUY, {sell_count}x SELL (need ≥{require_aligned} same)")
+        if verbose:
+            print(
+                f"    → Mixed alignment: {buy_count}x BUY, {sell_count}x SELL (need ≥{require_aligned} same)"
+            )
         return None
+
+
+def check_ma5_cross(
+    instrument: str,
+    require_aligned: float = 2.0,
+    verbose: bool = True,
+    timeframes: list[str] | None = None,
+    cross_lookback: int = 3,
+    cross_weight: float = 1.0,
+    slope_weight: float = 0.5,
+    tf_cross_weights: dict | None = None,
+) -> Optional[str]:
+    """
+    MA Cross alignment — detect price crossing MA5 (strong signal)
+    and MA5 slope direction (weak confirmation) across timeframes.
+
+    Per timeframe:
+      • Cross up (prev close below prev MA5 → curr close above curr MA5)
+        within last cross_lookback bars → BUY (tf-specific or default cross_weight vote)
+      • Cross down → SELL (same)
+      • No recent cross but MA5 slope > 0 → BUY (slope_weight vote)
+      • No recent cross but MA5 slope < 0 → SELL (slope_weight vote)
+      • Slope flat → abstain (0 votes)
+
+    tf_cross_weights: optional dict e.g. {"H4": 1.5, "H1": 0.7, "M30": 1.0}
+      Per-TF cross vote weight. Falls back to cross_weight for any TF not in dict.
+
+    Returns "BUY" if weighted buy votes ≥ require_aligned,
+           "SELL" if weighted sell votes ≥ require_aligned,
+           None otherwise.
+    """
+    timeframes = timeframes if timeframes is not None else SIGNAL_TIMEFRAMES
+    weighted_buy = 0.0
+    weighted_sell = 0.0
+
+    for tf in timeframes:
+        try:
+            candles = get_candles(instrument, tf, count=12)
+            if len(candles) < 8:
+                if verbose:
+                    print(f"    {tf}: Not enough data → skip")
+                continue
+
+            closes = [float(c["mid"]["c"]) for c in candles]
+
+            cross_signal: Optional[str] = None
+            cross_age: Optional[int] = None
+            for i in range(
+                len(closes) - 1, max(len(closes) - 1 - cross_lookback, 4), -1
+            ):
+                ma_now = _ema(closes[: i + 1], period=5)
+                ma_prev = _ema(closes[:i], period=5)
+                if ma_now is None or ma_prev is None:
+                    continue
+                price_now = closes[i]
+                price_prev = closes[i - 1]
+                if price_prev < ma_prev and price_now > ma_now:
+                    cross_signal = "BUY"
+                    cross_age = len(closes) - 1 - i
+                    break
+                elif price_prev > ma_prev and price_now < ma_now:
+                    cross_signal = "SELL"
+                    cross_age = len(closes) - 1 - i
+                    break
+
+            ma_full = [float(c["mid"]["c"]) for c in candles[-8:]]
+            ema_now = _ema(ma_full, period=5)
+            ema_past = _ema(ma_full[:-2] if len(ma_full) > 6 else ma_full, period=5)
+            if ema_now is not None and ema_past is not None:
+                slope = ema_now - ema_past
+            else:
+                slope = 0.0
+
+            if cross_signal is not None:
+                vote = (
+                    tf_cross_weights.get(tf, cross_weight)
+                    if tf_cross_weights
+                    else cross_weight
+                )
+                if cross_signal == "BUY":
+                    weighted_buy += vote
+                else:
+                    weighted_sell += vote
+                if verbose:
+                    print(
+                        f"    {tf}: CROSS_{cross_signal} (age={cross_age}) → +{vote:.1f} vote"
+                    )
+            elif slope > 0:
+                vote = slope_weight
+                weighted_buy += vote
+                if verbose:
+                    print(f"    {tf}: SLOPE_UP (+{slope:.6f}) → +{vote:.1f} vote")
+            elif slope < 0:
+                vote = slope_weight
+                weighted_sell += vote
+                if verbose:
+                    print(f"    {tf}: SLOPE_DOWN ({slope:.6f}) → +{vote:.1f} vote")
+            else:
+                if verbose:
+                    print(f"    {tf}: NEUTRAL (no cross, slope≈0) → abstain")
+
+        except Exception as e:
+            if verbose:
+                print(f"    {tf}: Check failed: {e} → skip")
+            continue
+
+    if weighted_buy >= require_aligned and weighted_buy >= weighted_sell:
+        if verbose:
+            print(
+                f"    → BUY consensus: {weighted_buy:.1f} ≥ {require_aligned:.1f}"
+                f"  (sell={weighted_sell:.1f})"
+            )
+        return "BUY"
+    elif weighted_sell >= require_aligned and weighted_sell >= weighted_buy:
+        if verbose:
+            print(
+                f"    → SELL consensus: {weighted_sell:.1f} ≥ {require_aligned:.1f}"
+                f"  (buy={weighted_buy:.1f})"
+            )
+        return "SELL"
+    else:
+        if verbose:
+            print(
+                f"    → No consensus: buy={weighted_buy:.1f}, sell={weighted_sell:.1f}"
+                f"  (need ≥{require_aligned:.1f})"
+            )
+        return None
+
+
+def check_macd_histogram(
+    instrument: str,
+    timeframes: list[str] | None = None,
+    verbose: bool = True,
+    *,
+    tf_params: dict[str, dict[str, int]] | None = None,
+    _default_fallback: dict[str, int] | None = None,
+) -> Optional[Dict[str, Any]]:
+    """
+    MACD histogram expansion check — SUPPORTS PER-TIMEFRAME PARAMETER OVERRIDES.
+
+    Priority chain (highest → lowest):
+      1. tf_params passed at call-site
+      2. _MACD_TF_PARAMS_GLOBAL set via set_macd_tf_params() from runner boot
+      3. default fallback  = (12, 26, 9)  — Gerald Appel's original daily setting
+
+    Arguments:
+      tf_params:  Optional {TF_NAME: {"fast":int,"slow":int,"signal":int}, ...}
+                  Any timeframe NOT in this dict falls back to global or 12/26/9
+                  so old callers are 100% compatible.
+      _default_fallback:  Internal — override for testing only (default 12/26/9).
+
+    Per timeframe:
+      • MACD line (DIF)   = EMA(fast) − EMA(slow) of closes
+      • Signal line (DEA) = EMA(DIF, signal)
+      • Histogram bar     = DIF − DEA
+      • hist_delta = hist(curr) − hist(prev)
+      • hist_delta > 0 → EXPAND_UP   → +1.0 buy vote
+      • hist_delta < 0 → EXPAND_DOWN → +1.0 sell vote
+      • |hist_delta| < 1e-8 → FLAT   → no vote
+
+    Returns a dict with buy_score / sell_score / direction / per_tf, or None
+    when no timeframe produced usable data.
+    """
+    DEFAULT_FALLBACK = _default_fallback or {"fast": 12, "slow": 26, "signal": 9}
+    # Merge resolution: call-site → global → DEFAULT (per-TF granular)
+    global_params = get_macd_tf_params() or {}
+    call_params = tf_params or {}
+
+    def _get_params_for_tf(tf_name: str) -> dict[str, int]:
+        result = dict(DEFAULT_FALLBACK)
+        if isinstance(global_params, dict) and isinstance(
+            global_params.get(tf_name), dict
+        ):
+            for k in ("fast", "slow", "signal"):
+                if k in global_params[tf_name]:
+                    try:
+                        v = int(global_params[tf_name][k])
+                        if v > 0:
+                            result[k] = v
+                    except (TypeError, ValueError):
+                        pass
+        if isinstance(call_params, dict) and isinstance(call_params.get(tf_name), dict):
+            for k in ("fast", "slow", "signal"):
+                if k in call_params[tf_name]:
+                    try:
+                        v = int(call_params[tf_name][k])
+                        if v > 0:
+                            result[k] = v
+                    except (TypeError, ValueError):
+                        pass
+        return result
+
+    timeframes = timeframes if timeframes is not None else SIGNAL_TIMEFRAMES
+    buy_score = 0.0
+    sell_score = 0.0
+    per_tf: list[Dict[str, Any]] = []
+
+    def _macd_hist(src: List[float], params: dict[str, int]) -> Optional[float]:
+        """DIF − DEA for the final bar of `src`, using caller-supplied params."""
+        fast_p = int(params.get("fast", DEFAULT_FALLBACK["fast"]))
+        slow_p = int(params.get("slow", DEFAULT_FALLBACK["slow"]))
+        sig_p = int(params.get("signal", DEFAULT_FALLBACK["signal"]))
+
+        fast = _ema_series(src, fast_p)
+        slow = _ema_series(src, slow_p)
+        if not fast or not slow:
+            return None
+
+        n = min(len(fast), len(slow))
+        dif = [fast[-n + i] - slow[-n + i] for i in range(n)]
+
+        dea = _ema_series(dif, sig_p)
+        if not dea:
+            return None
+        return dif[-1] - dea[-1]
+
+    for tf in timeframes:
+        try:
+            candles = get_candles(instrument, tf, count=40)
+            if len(candles) < 35:
+                if verbose:
+                    print(f"    {tf}: MACD not enough data → skip")
+                continue
+
+            closes = [float(c["mid"]["c"]) for c in candles]
+            params = _get_params_for_tf(tf)
+
+            hist_curr = _macd_hist(closes, params)
+            hist_prev = _macd_hist(closes[:-1], params)
+            if hist_curr is None or hist_prev is None:
+                continue
+
+            hist_delta = hist_curr - hist_prev
+
+            if abs(hist_delta) < 1e-8:
+                label = "FLAT"
+            elif hist_delta > 0:
+                label = "EXPAND_UP"
+                buy_score += 1.0
+            else:
+                label = "EXPAND_DOWN"
+                sell_score += 1.0
+
+            per_tf.append(
+                {
+                    "tf": tf,
+                    "label": label,
+                    "delta": hist_delta,
+                    "params": params,
+                }
+            )
+            if verbose:
+                sign = "+" if hist_delta > 0 else ""
+                f_ = int(params["fast"])
+                s_ = int(params["slow"])
+                g_ = int(params["signal"])
+                print(
+                    f"    {tf}: MACD_HIST({f_},{s_},{g_}) {label} "
+                    f"(curr={hist_curr:.5f}, prev={hist_prev:.5f}, Δ={sign}{hist_delta:.5f})"
+                )
+
+        except Exception as e:
+            if verbose:
+                print(f"    {tf}: MACD failed: {e} → skip")
+            continue
+
+    if not per_tf:
+        return None
+
+    direction: Optional[str] = None
+    if buy_score > sell_score and buy_score >= 1.0:
+        direction = "BUY"
+    elif sell_score > buy_score and sell_score >= 1.0:
+        direction = "SELL"
+
+    return {
+        "buy_score": buy_score,
+        "sell_score": sell_score,
+        "direction": direction,
+        "per_tf": per_tf,
+    }
 
 
 def get_previous_day_low(instrument: str) -> Optional[float]:
@@ -407,7 +764,12 @@ def get_previous_day_high(instrument: str) -> Optional[float]:
     return float(candles[-1]["mid"]["h"])
 
 
-def confirmed_breakout(instrument: str, level: float, direction: str, closes_required: int = BREAKOUT_CONFIRMATION_CLOSES) -> bool:
+def confirmed_breakout(
+    instrument: str,
+    level: float,
+    direction: str,
+    closes_required: int = BREAKOUT_CONFIRMATION_CLOSES,
+) -> bool:
     candles = get_candles(instrument, "D", count=closes_required + 2)
     if len(candles) < closes_required:
         return False
@@ -419,23 +781,24 @@ def confirmed_breakout(instrument: str, level: float, direction: str, closes_req
 
 def get_live_prices(instrument: str) -> Optional[Dict[str, float]]:
     from utils import oanda_client
+
     try:
         pricing_module = __import__(
             "oandapyV20.endpoints.pricing", fromlist=["PricingInfo"]
         )
         req = pricing_module.PricingInfo(
-            accountID=OANDA_ACCOUNT_ID,
-            params={"instruments": instrument}
+            accountID=OANDA_ACCOUNT_ID, params={"instruments": instrument}
         )
         oanda_client.request(req)
         prices = req.response["prices"][0]
         return {
             "ask": float(prices["asks"][0]["price"]),
-            "bid": float(prices["bids"][0]["price"])
+            "bid": float(prices["bids"][0]["price"]),
         }
     except Exception as e:
         print(f"    Price fetch failed for {instrument}: {e}")
         return None
+
 
 # ==========================================
 # NEWS FILTER CLASS
@@ -464,8 +827,10 @@ class NewsFilter:
         return self._failed
 
     def _in_quota_backoff(self) -> bool:
-        return (self._quota_backoff_until is not None
-                and time.time() < self._quota_backoff_until)
+        return (
+            self._quota_backoff_until is not None
+            and time.time() < self._quota_backoff_until
+        )
 
     def _get_client(self):
         if self._client is None:
@@ -512,7 +877,9 @@ class NewsFilter:
             return
 
         now = time.time()
-        print(f"  [NEWS] Gemini: {len(relevant)} high-impact event(s) in next {self.LOOKAHEAD_HOURS}h")
+        print(
+            f"  [NEWS] Gemini: {len(relevant)} high-impact event(s) in next {self.LOOKAHEAD_HOURS}h"
+        )
 
         log_lines = []
         for event in relevant:
@@ -522,18 +889,25 @@ class NewsFilter:
                 with contextlib.suppress(Exception):
                     event_dt = datetime.fromisoformat(time_str.replace("Z", "+00:00"))
                     minutes_until = (event_dt.timestamp() - now) / 60.0
-                    timing = (f"in {minutes_until:.0f} min" if minutes_until >= 0
-                              else f"{abs(minutes_until):.0f} min ago")
+                    timing = (
+                        f"in {minutes_until:.0f} min"
+                        if minutes_until >= 0
+                        else f"{abs(minutes_until):.0f} min ago"
+                    )
 
-            line = (f"    {event.get('currency', '?')} | impact={event.get('impact')} | "
-                    f"{event.get('event', 'event')} | {time_str or 'unknown time'} | {timing}")
+            line = (
+                f"    {event.get('currency', '?')} | impact={event.get('impact')} | "
+                f"{event.get('event', 'event')} | {time_str or 'unknown time'} | {timing}"
+            )
             print(line)
             log_lines.append(line)
 
         try:
             with open(NEWS_LOG_PATH, "a") as f:
-                f.write(f"--- Checked at {datetime.now(timezone.utc).isoformat()} "
-                        f"(source: Gemini grounding) ---\n")
+                f.write(
+                    f"--- Checked at {datetime.now(timezone.utc).isoformat()} "
+                    f"(source: Gemini grounding) ---\n"
+                )
                 for line in log_lines:
                     f.write(line + "\n")
         except Exception as e:
@@ -541,13 +915,18 @@ class NewsFilter:
 
     def _fetch_events(self) -> List[dict]:
         now = time.time()
-        if (self._cache is not None and self._cache_time is not None and
-                (now - self._cache_time) < self.CACHE_TTL_SECONDS):
+        if (
+            self._cache is not None
+            and self._cache_time is not None
+            and (now - self._cache_time) < self.CACHE_TTL_SECONDS
+        ):
             return self._cache
 
         if self._in_quota_backoff():
             remaining_min = (self._quota_backoff_until - now) / 60.0
-            print(f"  [NEWS] Skipping Gemini call -- in quota backoff for {remaining_min:.0f} more min.")
+            print(
+                f"  [NEWS] Skipping Gemini call -- in quota backoff for {remaining_min:.0f} more min."
+            )
             self._failed = True
             return self._cache or []
 
@@ -581,16 +960,22 @@ class NewsFilter:
 
             if primary_quota_error:
                 try:
-                    print(f"  [NEWS] Quota error on primary model -- trying fallback {GEMINI_NEWS_FALLBACK_MODEL}...")
+                    print(
+                        f"  [NEWS] Quota error on primary model -- trying fallback {GEMINI_NEWS_FALLBACK_MODEL}..."
+                    )
                     response = self._call_gemini(GEMINI_NEWS_FALLBACK_MODEL, prompt)
                     events = self._parse_response(response.text)
                     self._failed = False
                 except Exception as e2:
                     fallback_quota_error = self._is_quota_error(e2)
-                    print(f"  [NEWS] Fallback ({GEMINI_NEWS_FALLBACK_MODEL}) also failed: {str(e2)[:150]}")
+                    print(
+                        f"  [NEWS] Fallback ({GEMINI_NEWS_FALLBACK_MODEL}) also failed: {str(e2)[:150]}"
+                    )
                     if primary_quota_error and fallback_quota_error:
                         self._quota_backoff_until = now + self.QUOTA_BACKOFF_SECONDS
-                        print(f"  [NEWS] Both models quota-exhausted -- backing off for {self.QUOTA_BACKOFF_SECONDS / 3600:.1f}h.")
+                        print(
+                            f"  [NEWS] Both models quota-exhausted -- backing off for {self.QUOTA_BACKOFF_SECONDS / 3600:.1f}h."
+                        )
 
         self._cache = events
         self._cache_time = now
@@ -632,11 +1017,15 @@ class NewsFilter:
             minutes_until = (event_ts - now) / 60.0
 
             if 0 <= minutes_until <= self.MINUTES_BEFORE:
-                return True, (f"{currency} '{event.get('event', 'event')}' "
-                              f"(impact {impact}) in {int(minutes_until)} min [Gemini]")
+                return True, (
+                    f"{currency} '{event.get('event', 'event')}' "
+                    f"(impact {impact}) in {int(minutes_until)} min [Gemini]"
+                )
             if -self.MINUTES_AFTER <= minutes_until < 0:
-                return True, (f"{currency} '{event.get('event', 'event')}' "
-                              f"(impact {impact}) {int(abs(minutes_until))} min ago [Gemini]")
+                return True, (
+                    f"{currency} '{event.get('event', 'event')}' "
+                    f"(impact {impact}) {int(abs(minutes_until))} min ago [Gemini]"
+                )
 
         return False, ""
 
@@ -648,7 +1037,9 @@ def get_dynamic_sl_tp(pair: str, entry: float, atr: float, sentiment: str) -> di
     Return JSON: {{"sl": 145.20, "tp": 147.50, "rr": 2.2}}
     """
     try:
-        res = gemini_client.models.generate_content(model="gemini-2.5-flash", contents=prompt)
+        res = gemini_client.models.generate_content(
+            model="gemini-2.5-flash", contents=prompt
+        )
         return json.loads(res.text.strip("`json \n"))
     except:
         return {"sl": entry - 2 * atr, "tp": entry + 4 * atr, "rr": 2.0}
