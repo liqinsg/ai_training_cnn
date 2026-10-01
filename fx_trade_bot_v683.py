@@ -28,6 +28,7 @@ from utils.strategy_helpers import (
     get_live_prices,
 )
 from utils.strategy_config import (
+    CURRENCIES,
     USE_TOP_PAIRS_ONLY,
     TOP_N_CURRENCIES,
     TOP_PAIRS_MIN_GAP,
@@ -292,10 +293,20 @@ logger.info(
     f"⚖️  {PROFILE_LABEL} WEIGHTS: S={W_S:.2f} R={W_R:.2f} A={W_A:.2f} X={W_X:.2f} M={W_M:.2f}"
 )
 
-MIN_STRENGTH_GAP = cfg_bot("MIN_SCORE_GAP", MIN_STRENGTH_GAP)
-USE_TOP_PAIRS_ONLY = cfg_bot("USE_TOP_PAIRS_ONLY", USE_TOP_PAIRS_ONLY)
-TOP_PAIRS_COUNT = cfg_bot("TOP_PAIRS_COUNT", TOP_N_CURRENCIES)
-TOP_PAIRS_MIN_GAP = cfg_bot("TOP_PAIRS_MIN_GAP", TOP_PAIRS_MIN_GAP)
+# ===== TOP-N STRENGTH — FORCE ENABLE (highest priority) =====
+# Deliberately NOT routed through cfg_bot(): cfg_bot() resolves
+# profile_cfg → config_bot → config → default, and BOTH profiles still carry
+# the legacy auto-ranking values
+#   config_bot_profile2.py: USE_TOP_PAIRS_ONLY = False, TOP_PAIRS_COUNT = 4
+#   config_bot_profile3.py: USE_TOP_PAIRS_ONLY = False, TOP_PAIRS_COUNT = 4
+# which silently forced every run into "📋 MODE: Full scan — 8 pairs".
+# Authoritative values live in utils/strategy_config.py (imported at the top).
+USE_TOP_PAIRS_ONLY = True
+TOP_N_CURRENCIES = 3
+TOP_PAIRS_COUNT = TOP_N_CURRENCIES
+TOP_PAIRS_MIN_GAP = 0.25
+MIN_STRENGTH_GAP = 0.25
+# ===========================================================
 DEBUG_MODE = cfg_bot("DEBUG_MODE", False)
 if not DEBUG_MODE:
     logging.getLogger("oandapyV20").setLevel(logging.WARNING)
@@ -552,6 +563,13 @@ def main():
         f"\n🤖 RUN v6.8.3.3 {PROFILE_LABEL} — {ACCOUNT_NAME} | TREND+TP+TOP-N | "
         f"{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')} | "
         f"MAX_OPEN={MAX_OPEN} | MIN_GAP={MIN_STRENGTH_GAP} | TOP_N={TOP_PAIRS_COUNT}"
+    )
+    logger.info(
+        f"🧭 STRENGTH POOL: {len(CURRENCIES)} currencies "
+        f"[{' '.join(CURRENCIES)}] | "
+        f"TOP_N={TOP_N_CURRENCIES} (strongest × weakest) | "
+        f"USE_TOP_PAIRS_ONLY={USE_TOP_PAIRS_ONLY} | "
+        f"TOP_PAIRS_MIN_GAP={TOP_PAIRS_MIN_GAP}"
     )
     logger.info(f"🔑 OANDA Account ID: {OANDA_ACCOUNT_ID}")
 

@@ -15,6 +15,24 @@ from config import (
     SIGNAL_TIMEFRAMES,
     SL_BUFFER_PIPS,
     SPREAD_PIPS,
+    ENABLE_EMA_TREND,
+    ENABLE_BREAKOUT_CONFIRMATION,
+    BREAKOUT_CONFIRMATION_CLOSES,
+    ENABLE_ATR_SLTP,
+    ENABLE_NEWS_FILTER,
+    NEWS_LOG_PATH,
+    NEWS_CURRENCIES,
+    GEMINI_NEWS_MODEL,
+    GEMINI_NEWS_FALLBACK_MODEL,
+    DOMINANCE_ATR_PERIOD,
+)
+
+# ─── Currency-strength config ────────────────────────────────────────────────
+# Single source of truth = utils/strategy_config.py → 6-currency pool
+# (EUR/USD/GBP/JPY/AUD/CHF, deliberately NO NZD).
+# These used to come from `config`, whose CURRENCIES still lists 7 currencies
+# including NZD, which is why NZD kept appearing in the Strength Ranking.
+from utils.strategy_config import (
     CURRENCIES,
     STRENGTH_PAIRS,
     STRENGTH_TIMEFRAMES,
@@ -25,18 +43,7 @@ from config import (
     ENABLE_STRENGTH_ACCELERATION,
     STRENGTH_ACCELERATION_WEIGHT,
     STRENGTH_ATR_PERIOD,
-    ENABLE_EMA_TREND,
     ENABLE_ATR_NORMALIZED_STRENGTH,
-    ENABLE_BREAKOUT_CONFIRMATION,
-    BREAKOUT_CONFIRMATION_CLOSES,
-    ENABLE_ATR_SLTP,
-    ENABLE_NEWS_FILTER,
-    NEWS_LOG_PATH,
-    NEWS_CURRENCIES,
-    GEMINI_NEWS_MODEL,
-    GEMINI_NEWS_FALLBACK_MODEL,
-    DOMINANCE_ATR_PERIOD,
-    SIGNAL_TIMEFRAMES,
 )
 
 # --- Account ID safe lookup ---
