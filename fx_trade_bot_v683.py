@@ -81,9 +81,14 @@ _TREND_TP_CONFIG = {
         "tp_mult": 1.2,
         "ema_period": 10,
         "slope_lookback": 5,
-        "min_slope": 0.001,
+        "min_slope": 0.0003,
     },
 }
+
+# profile3 的 min_slope 相对放宽前的比例（0.0003 / 0.001）。
+# 仅用于 SLOPE_DIAG 诊断敏感带的上界推导；改 min_slope 时必须同步这个常量，
+# 否则敏感带会静默失真。
+RELAXED_SLOPE_FRACTION = 0.3
 
 
 # ─── TREND HELPERS ──────────────────────────────────────────────────────────
@@ -149,17 +154,29 @@ def evaluate_trend_and_tp(
     min_slope = cfg["min_slope"]
     current_price = entry_price
 
+    if SLOPE_DIAG:
+        slope_abs = abs(slope)
+        # Band = profile's live threshold up to the stricter pre-relaxation value;
+        # any |slope| in here is a decision the old threshold would have blocked.
+        band_hi = min_slope / RELAXED_SLOPE_FRACTION
+        in_sensitive_zone = min_slope < slope_abs <= band_hi
+        logger.info(
+            f"📊 SLOPE DIAG: profile={profile_name} dir={direction} tf={timeframe} "
+            f"slope={slope:.6f} min_slope={min_slope:.6f} band=[{min_slope:.6f},{band_hi:.6f}] "
+            f"|slope|={slope_abs:.6f} sensitive={in_sensitive_zone}"
+        )
+
     if ema_cross_filter:
         if direction == "BUY":
             filter_slope = slope >= min_slope
             if not (current_price > ema_level and filter_slope):
-                reason = f"{timeframe} TREND MISALIGNED — Price below EMA10 or slope={slope:.4f} < {min_slope}"
+                reason = f"{timeframe} TREND MISALIGNED — Price below EMA10 or slope={slope:.6f} < {min_slope}"
                 logger.info(f"⏭️ SKIP BUY: {reason}")
                 return False, 0.0, reason
         else:
             filter_slope = slope <= -min_slope
             if not (current_price < ema_level and filter_slope):
-                reason = f"{timeframe} TREND MISALIGNED — Price above EMA10 or slope={slope:.4f} > {-min_slope}"
+                reason = f"{timeframe} TREND MISALIGNED — Price above EMA10 or slope={slope:.6f} > {-min_slope}"
                 logger.info(f"⏭️ SKIP SELL: {reason}")
                 return False, 0.0, reason
 
@@ -308,6 +325,9 @@ TOP_PAIRS_MIN_GAP = 0.25
 MIN_STRENGTH_GAP = 0.25
 # ===========================================================
 DEBUG_MODE = cfg_bot("DEBUG_MODE", False)
+# 独立的斜率诊断开关：不挂在 DEBUG_MODE 上，避免为了拿 slope 分布
+# 而连带把 oandapyV20 的 HTTP 日志放出来污染日志文件。
+SLOPE_DIAG = cfg_bot("SLOPE_DIAG", False)
 if not DEBUG_MODE:
     logging.getLogger("oandapyV20").setLevel(logging.WARNING)
 
@@ -502,8 +522,11 @@ def calc_weighted_score(
     )
     xgb_dir = "BUY" if (xgb_prob or 0.0) >= XGB_BULLISH_THRESHOLD else "SELL"
     mc_dir = "BUY" if (mc_pct_up or 50.0) >= MC_BULLISH_THRESHOLD else "SELL"
-    buy_votes = sum(1 for d in (strength_dir, xgb_dir, mc_dir) if d == "BUY")
-    sell_votes = sum(1 for d in (strength_dir, xgb_dir, mc_dir) if d == "SELL")
+    # buy_votes = sum(1 for d in (strength_dir, xgb_dir, mc_dir) if d == "BUY")
+    buy_votes = sum(bool(d == "BUY") for d in (strength_dir, xgb_dir, mc_dir))
+    # sell_votes = sum(1 for d in (strength_dir, xgb_dir, mc_dir) if d == "SELL")
+    sell_votes = sum(bool(d == "SELL") for d in (strength_dir, xgb_dir, mc_dir))
+
     logger.info(
         f"🤝 {pair}: Strength={strength_dir} | XGB={xgb_dir} | MC={mc_dir} | BUY={buy_votes}/3"
     )
