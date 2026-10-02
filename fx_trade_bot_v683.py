@@ -1129,18 +1129,49 @@ def main():
                 sl_price,
                 tp_price,
             )
-            tid = resp.get("orderFillTransaction", {}).get("id", "?")
-            logger.info(
-                f"✅ EXECUTED {pair} {direction} | SL={sl_price} | TP={tp_price} | TradeID={tid}"
-            )
-            trade_lines[pair] = (
-                f"✅ {pair} {direction} Score={FINAL:.1f} | SL={sl_price} TP={tp_price}"
-            )
-            entries_this_run += 1
-            open_pos_count += 1
-            executed_in_this_run.add(oanda)
+            status = resp.get("status", "UNKNOWN")
+            tid = resp.get("trade_id", "") or "?"
+
+            if status == "OK":
+                logger.info(
+                    f"✅ EXECUTED {pair} {direction} | SL={sl_price} | TP={tp_price} | TradeID={tid}"
+                )
+                trade_lines[pair] = (
+                    f"✅ {pair} {direction} Score={FINAL:.1f} | SL={sl_price} TP={tp_price}"
+                )
+                entries_this_run += 1
+                open_pos_count += 1
+                executed_in_this_run.add(oanda)
+            elif status == "DRY_RUN":
+                logger.info(
+                    f"🧪 DRY_RUN {pair} {direction} | SL={sl_price} | TP={tp_price} — validated, no API call"
+                )
+                trade_lines[pair] = (
+                    f"🧪 [DRY_RUN] {pair} {direction} Score={FINAL:.1f} | SL={sl_price} TP={tp_price}"
+                )
+                entries_this_run += 1
+                open_pos_count += 1
+                executed_in_this_run.add(oanda)
+            elif status == "REDUCED":
+                logger.warning(
+                    f"⚠️ {pair} {direction} — fill REDUCED existing pos, no new trade opened"
+                )
+                trade_lines[pair] = (
+                    f"⚠️ [REDUCED] {pair} {direction} Score={FINAL:.1f} — reduced existing pos"
+                )
+            else:
+                reason = resp.get("message") or resp.get("reason") or status
+                logger.error(
+                    f"❌ ORDER FAILED {pair} {direction} — status={status} | {reason}"
+                )
+                trade_lines[pair] = (
+                    f"❌ [FAILED {status}] {pair} {direction} Score={FINAL:.1f} — {reason}"
+                )
         except Exception as e:
-            logger.error(f"❌ ORDER FAILED {pair}: {e}")
+            logger.error(f"❌ ORDER FAILED {pair}: {type(e).__name__}: {e}")
+            trade_lines[pair] = (
+                f"❌ [EXCEPTION] {pair} {direction} Score={FINAL:.1f} — {type(e).__name__}: {e}"
+            )
 
     if trade_lines:
         summary = (

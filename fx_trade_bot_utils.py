@@ -295,23 +295,32 @@ def open_oanda_order_simple(
     # ── Submit ──
     try:
         resp = api.request(OrderCreate(accountID=oanda_account_id, data=order_payload))
-        logger.info(f"✅ OANDA accepted order for {instrument}")
 
-        # ── Check for rejection/cancellation ──
+        # ── Check for rejection/cancellation FIRST (before any success log) ──
         if "orderRejectTransaction" in resp:
+            rej = resp["orderRejectTransaction"]
+            reason = rej.get("rejectReason", rej.get("reason", "UNKNOWN"))
+            logger.error(f"❌ Order REJECTED {instrument}: {reason}")
             return {
                 "status": "REJECTED",
                 "trade_id": "",
-                "message": "Order rejected",
+                "message": f"Order rejected: {reason}",
+                "reason": reason,
                 "response": resp
             }
         if "orderCancelTransaction" in resp:
+            can = resp["orderCancelTransaction"]
+            reason = can.get("reason", "UNKNOWN")
+            logger.error(f"❌ Order CANCELLED {instrument}: {reason}")
             return {
                 "status": "CANCELLED",
                 "trade_id": "",
-                "message": "Order cancelled",
+                "message": f"Order cancelled: {reason}",
+                "reason": reason,
                 "response": resp
             }
+
+        logger.info(f"✅ OANDA order request submitted for {instrument}")
 
         # ── Resolve TradeID ──
         trade_id = ""
