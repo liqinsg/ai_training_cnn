@@ -112,6 +112,18 @@ def fetch_weekly_ema100(oanda_instrument, api):
         logger.warning(f"⚠️ Cannot fetch Weekly EMA100 for {oanda_instrument}: {e}")
         return None
 
+def resolve_weekly_ema100(cached_ema, filter_enabled):
+    """Return the Weekly EMA100 level to filter on, or None to skip that filter.
+
+    Replaces a short-circuit `cached_ema and filter_enabled` gate, which
+    returned the *boolean* `filter_enabled` instead of the cached level
+    whenever the cache was populated — so the filter silently compared
+    prices against `True` (== 1.0) rather than the real EMA100 level.
+    """
+    if not filter_enabled:
+        return None
+    return cached_ema
+
 def evaluate_trend_and_tp(profile_name, direction, mc_pct_up,
                            entry_price, pip_value, df_h1, weekly_ema100,
                            timeframe="H1"):
@@ -677,7 +689,10 @@ def main():
         )
 
         # ─── ✅ TREND FILTER + SMART TP CALCULATION ───────────────────────
-        weekly_ema100 = weekly_ema_cache.get(oanda) and cfg_bot("WEEK_EMA100_FILTER_ENABLED", False)
+        weekly_ema100 = resolve_weekly_ema100(
+            weekly_ema_cache.get(oanda),
+            cfg_bot("WEEK_EMA100_FILTER_ENABLED", False)
+        )
         allow_entry, smart_tp_pips, tp_info = evaluate_trend_and_tp(
             PROFILE_NAME, direction, mc_pct_up,
             current, pip_cache[pair],

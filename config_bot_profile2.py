@@ -63,7 +63,10 @@ MC_SIGNIFICANT_PCT = 60
 MC_MOMENTUM_BAND = 0.001
 
 TREND_FILTER_ENABLED = False   # Set False → skip EMA10 slope + EMA100 checks entirely
-WEEK_EMA100_FILTER_ENABLED = True
+# NOTE: with TREND_FILTER_ENABLED=False above, evaluate_trend_and_tp() skips both
+# trend blocks, so the Weekly EMA100 check is already unreachable here. Set
+# explicitly to False so re-enabling the EMA10 filter cannot silently revive it.
+WEEK_EMA100_FILTER_ENABLED = False   # Set False → skip Weekly EMA100 counter-trend check
 
 if __name__ == "__main__":
     from utils.oanda_execution import check_oanda_account

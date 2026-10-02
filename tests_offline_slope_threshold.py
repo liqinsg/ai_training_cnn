@@ -1,9 +1,10 @@
 """
-Offline proof for: relax profile3 EMA-slope threshold 0.001 -> 0.0003.
+Offline proof for the profile3 EMA-slope relax + the Weekly EMA100 gate bug.
 
-No network, no OANDA calls, no orders. The real `evaluate_trend_and_tp`
-implementation is extracted from fx_trade_bot_v683.py via AST and executed with
-stubbed module-level dependencies, so this tests the SHIPPED source text.
+No network, no OANDA calls, no orders. The real `evaluate_trend_and_tp` and
+`resolve_weekly_ema100` implementations are extracted from the bot source via
+AST and executed with stubbed module-level dependencies, so this tests the
+SHIPPED source text of both fx_trade_bot_v683.py and fx_trade_bot_v6.8.3.py.
 
 Run:  python tests_offline_slope_threshold.py
 """
@@ -23,6 +24,7 @@ WANTED = {
     "calculate_ema_slope",
     "_pips_to_price",
     "_price_to_pips",
+    "resolve_weekly_ema100",
     "evaluate_trend_and_tp",
 }
 
@@ -128,6 +130,54 @@ def run(profile, direction, min_slope, price_side_ok=True):
     return passed, slope, ema_level, entry, reason, tp
 
 
+def verify_resolve_helper(bot_path, label):
+    """Extract resolve_weekly_ema100 from `bot_path` and check its four cases.
+
+    Generic on purpose: the same gate bug shipped in more than one bot file, so
+    each fix must be proven against that file's own source text rather than
+    assumed identical.
+    """
+    tree = ast.parse(bot_path.read_text(encoding="utf-8"))
+    node = next(
+        (
+            n
+            for n in tree.body
+            if isinstance(n, ast.FunctionDef) and n.name == "resolve_weekly_ema100"
+        ),
+        None,
+    )
+    if node is None:
+        return [f"{label}: resolve_weekly_ema100 not found in {bot_path.name}"]
+
+    ns = {}
+    exec(compile(ast.Module(body=[node], type_ignores=[]), str(bot_path), "exec"), ns)
+    resolve = ns["resolve_weekly_ema100"]
+
+    cached = 145.83
+    problems = []
+    cases = [
+        ("enabled + cached", cached, True, cached),
+        ("enabled + cache miss", None, True, None),
+        ("disabled + cached", cached, False, None),
+        ("disabled + cache miss", None, False, None),
+    ]
+    print(f"\n{label} ({bot_path.name}):")
+    for case_label, c, enabled, expect in cases:
+        got = resolve(c, enabled)
+        ok = got == expect and type(got) is type(expect)
+        print(
+            f"   {case_label:22} -> {str(got):>7}  {'ok' if ok else 'FAIL'}"
+        )
+        if not ok:
+            problems.append(
+                f"{label}: resolve_weekly_ema100({c}, {enabled}) = {got!r}, "
+                f"expected {expect!r}"
+            )
+    if resolve(cached, True) is True:
+        problems.append(f"{label}: gate still collapses the cached level into a boolean")
+    return problems
+
+
 def main():
     logging.basicConfig(level=logging.WARNING, format="      log| %(message)s")
     failures = []
@@ -202,13 +252,66 @@ def main():
     if NS.get("SLOPE_DIAG") is not False:
         failures.append("SLOPE_DIAG was left enabled after the diagnostic run")
 
+    print("\nWeekly EMA100 gate (the `a and b` short-circuit bug):")
+    resolve = NS["resolve_weekly_ema100"]
+    cached = 145.83
+
+    # Reproduce the shipped bug: `cached and True` evaluates to the *boolean*,
+    # so the filter compared prices against True (== 1.0) instead of 145.83.
+    old_gate = cached and True
+    print(f"   old `cached and True`      -> {old_gate!r} (type {type(old_gate).__name__})")
+    print(f"   old SELL compare 157.21>   -> {157.21 > old_gate}  (blocks a valid SELL)")
+
+    cases = [
+        # (label, cached, enabled, expect)
+        ("enabled + cached", cached, True, cached),
+        ("enabled + cache miss", None, True, None),
+        ("disabled + cached", cached, False, None),
+        ("disabled + cache miss", None, False, None),
+    ]
+    for label, c, enabled, expect in cases:
+        got = resolve(c, enabled)
+        ok = got == expect and type(got) is type(expect)
+        print(
+            f"   {label:22} cached={str(c):>7} enabled={str(enabled):>5}"
+            f" -> {str(got):>7}  {'ok' if ok else 'FAIL'}"
+        )
+        if not ok:
+            failures.append(
+                f"resolve_weekly_ema100({c}, {enabled}) = {got!r}, expected {expect!r}"
+            )
+    if resolve(cached, True) is True:
+        failures.append("gate still collapses the cached level into a boolean")
+    if not (157.21 > (cached and True)):
+        failures.append("could not reproduce the original short-circuit symptom")
+
+    # Both shipped profile switches must actually be off.
+    for profile_cfg in ("config_bot_profile2.py", "config_bot_profile3.py"):
+        cfg_path = BASE_DIR / profile_cfg
+        flag = next(
+            (
+                line.split("#")[0].strip()
+                for line in cfg_path.read_text(encoding="utf-8").splitlines()
+                if line.startswith("WEEK_EMA100_FILTER_ENABLED")
+            ),
+            None,
+        )
+        print(f"   {profile_cfg}: {flag}")
+        if flag != "WEEK_EMA100_FILTER_ENABLED = False":
+            failures.append(f"{profile_cfg} WEEK flag not disabled: {flag!r}")
+
+    # Same gate bug shipped in the sibling bot; prove that fix against its source.
+    failures.extend(
+        verify_resolve_helper(BASE_DIR / "fx_trade_bot_v6.8.3.py", "v6.8.3 sibling")
+    )
+
     print()
     if failures:
         print("❌ FAILURES:")
         for f in failures:
             print(f"   - {f}")
         return 1
-    print("✅ ALL CHECKS PASSED — profile3 relaxed, profile2 untouched")
+    print("✅ ALL CHECKS PASSED — slope band correct, Weekly EMA100 gate fixed + off")
     return 0
 
 

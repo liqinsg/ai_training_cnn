@@ -63,7 +63,7 @@ MC_SIGNIFICANT_PCT = 60
 MC_MOMENTUM_BAND = 0.001
 
 # TREND_FILTER_ENABLED = True   # Set False → skip EMA10 slope + EMA100 checks entirely
-WEEK_EMA100_FILTER_ENABLED = True
+WEEK_EMA100_FILTER_ENABLED = False   # Set False → skip Weekly EMA100 counter-trend check
 if __name__ == "__main__":
     from config_oanda import OANDA_ACCOUNT_ID_4 as OANDA_ACCOUNT_ID
     print(OANDA_ACCOUNT_ID)
