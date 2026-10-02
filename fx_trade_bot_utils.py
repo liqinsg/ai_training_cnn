@@ -364,48 +364,42 @@ def open_oanda_order_simple(
             "positionFill": "DEFAULT",
         }
     }
+    if sl_price:
+        order_payload["order"]["stopLossOnFill"] = {
+            "price": str(round(float(sl_price), dec)),
+            "timeInForce": "GTC",
+        }
+    if tp_price:
+        order_payload["order"]["takeProfitOnFill"] = {
+            "price": str(round(float(tp_price), dec)),
+            "timeInForce": "GTC",
+        }
     try:
         resp = api.request(OrderCreate(accountID=oanda_account_id, data=order_payload))
         logger.info(f"✅ OANDA accepted order for {instrument}")
         trade_id = ""
         if "orderFillTransaction" in resp:
             trade_id = str(resp["orderFillTransaction"].get("id", ""))
-            logger.info(f"📦 Trade opened: TradeID={trade_id}")
+            logger.info(f"📦 Trade opened: TradeID={trade_id} @ {resp['orderFillTransaction'].get('price','?')}")
         elif "orderCreateTransaction" in resp:
-            trade_id = str(resp["orderCreateTransaction"].get("id", ""))
-            logger.info(f"📦 Order created: OrderID={trade_id}")
-        if not trade_id:
-            return {"status": "ERROR", "message": "TradeID missing"}
-        if sl_price:
-            api.request(
-                OrderCreate(
-                    accountID=oanda_account_id,
-                    data={
-                        "order": {
-                            "type": "STOP_LOSS",
-                            "tradeID": trade_id,
-                            "price": str(round(float(sl_price), dec)),
-                            "timeInForce": "GTC",
-                        }
-                    },
-                )
-            )
-            logger.info(f"   ✅ SL: {sl_price}")
-        if tp_price:
-            api.request(
-                OrderCreate(
-                    accountID=oanda_account_id,
-                    data={
-                        "order": {
-                            "type": "TAKE_PROFIT",
-                            "tradeID": trade_id,
-                            "price": str(round(float(tp_price), dec)),
-                            "timeInForce": "GTC",
-                        }
-                    },
-                )
-            )
-            logger.info(f"   ✅ TP: {tp_price}")
+            order_id = str(resp["orderCreateTransaction"].get("id", ""))
+            logger.info(f"⏳ Order {order_id} created but not yet filled — poll for trade...")
+            from oandapyV20.endpoints.trades import TradeList
+            import time
+            for _ in range(10):
+                time.sleep(0.5)
+                tl = api.request(TradeList(accountID=oanda_account_id, params={"instrument": instrument}))
+                trades = tl.get("trades", [])
+                if trades:
+                    trade_id = trades[0]["id"]
+                    logger.info(f"📦 Trade opened (polled): TradeID={trade_id}")
+                    break
+            if not trade_id:
+                logger.warning(f"⚠️ TradeID unknown after polling {instrument} — SL/TP may be missing!")
+        if sl_price and trade_id:
+            logger.info(f"   ✅ SL attached @ {sl_price}")
+        if tp_price and trade_id:
+            logger.info(f"   ✅ TP attached @ {tp_price}")
         return {"status": "OK", "trade_id": trade_id, "response": resp}
     except Exception as e:
         logger.error(f"❌ FAILED {instrument}: {type(e).__name__}: {e}")
