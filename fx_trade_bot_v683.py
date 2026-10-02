@@ -15,10 +15,55 @@ import argparse
 import importlib
 from pathlib import Path
 from datetime import datetime, timezone
+
+# ─── BASE SETUP ──────────────────────────────────────────────────────────────
+BASE_DIR = Path(__file__).resolve().parent
+sys.path.extend([str(BASE_DIR), str(BASE_DIR / "utils")])
+
+# ─── FULL ARGPARSE FIRST (so --help exits before any config import) ──────────
+parser = argparse.ArgumentParser(
+    description="FX Trading Bot v6.8.3.3 | TREND+TP+TOP-N"
+)
+parser.add_argument("-a", "--account", "--profile", type=str, default=None,
+                    help="Account/profile: '2'/'profile2' or '3'/'profile3' (default: profile2)")
+parser.add_argument("--profile2", action="store_true",
+                    help="Force Profile2 / Account 002 (shorthand for -a 2)")
+parser.add_argument("--profile3", action="store_true",
+                    help="Force Profile3 / Account 003 (shorthand for -a 3)")
+parser.add_argument("--timeframe", type=str, default="15m", choices=["15m", "1H", "H4"])
+parser.add_argument("--confluence", action="store_true", default=None)
+parser.add_argument("--no-confluence", action="store_false", dest="confluence")
+parser.add_argument("--skip-mc", action="store_true")
+parser.add_argument("--mc-only", action="store_true")
+parser.add_argument("--live", action="store_true",
+                    help="Actually execute trades. Default is DRY-RUN (signals logged, no orders sent).")
+parser.add_argument("--dry-run", action="store_true",
+                    help="Explicit dry-run — no orders sent to OANDA (this is the default).")
+parser.add_argument("-p", "--max-entries", type=int, default=None,
+                    help="Max signals to enter per cycle; 1=top only, 2+=basket (overrides MAX_OPEN_POSITIONS)")
+parser.add_argument("--lots", type=int, default=None,
+                    help="Override lot size / units per trade (overrides DEFAULT_LOT_SIZE from config)")
+args = parser.parse_args()
+
+# ─── PROFILE SELECTION ────────────────────────────────────────────────────────
+if args.profile3 or (args.account and args.account.lower() in ("3", "profile3", "account003", "003")):
+    PROFILE_MODULE = "config_bot_profile3"
+    PROFILE_LABEL = "PROFILE3"
+    ACCOUNT_NAME = "Account 003"
+    PROFILE_NAME = "profile3"
+    COOLDOWN_FILE = BASE_DIR / "cooldown_profile3.json"
+    RESULTS_DIR = BASE_DIR / "daily_results_profile3"
+else:
+    PROFILE_MODULE = "config_bot_profile2"
+    PROFILE_LABEL = "PROFILE2"
+    ACCOUNT_NAME = "Account 002"
+    PROFILE_NAME = "profile2"
+    COOLDOWN_FILE = BASE_DIR / "cooldown_profile2.json"
+    RESULTS_DIR = BASE_DIR / "daily_results_profile2"
+
+# ─── NOW import config (delayed so --help works first) ───────────────────────
 import numpy as np
 import pandas as pd
-
-# ─── PRIMARY IMPORT: config_bot FIRST ───
 import config_bot
 import config
 from utils.trading_core import forex_market_closed
@@ -58,11 +103,7 @@ from fx_trade_bot_mc import MCGenerator, MCConfig
 from fx_trade_bot_ml import ensure_model
 from portfolio_balance import balance_from_config
 from sl_zone_hierarchy import compute_sl_zone
-from config_oanda import api
-
-# ─── BASE SETUP ──────────────────────────────────────────────────────────────
-BASE_DIR = Path(__file__).resolve().parent
-sys.path.extend([str(BASE_DIR), str(BASE_DIR / "utils")])
+from config_oanda import api, get_oanda_profile, OANDA_ACCOUNT_ID_2_LIVE, OANDA_ACCOUNT_ID_3_LIVE
 
 # ─── TREND FILTER + SMART TP CONFIGURATION ──────────────────────────────────
 _TREND_TP_CONFIG = {
@@ -294,44 +335,7 @@ def evaluate_trend_and_tp(
     return True, round(tp_pips, 1), tp_mode
 
 
-# ─── PROFILE SELECTION ───────────────────────────────────────────────────────
-parser = argparse.ArgumentParser(add_help=False)
-parser.add_argument("--profile2", action="store_true")
-parser.add_argument("--profile3", action="store_true")
-parser.add_argument("--timeframe", type=str, default="15m", choices=["15m", "1H", "H4"])
-parser.add_argument("--confluence", action="store_true", default=None)
-parser.add_argument("--no-confluence", action="store_false", dest="confluence")
-parser.add_argument("--skip-mc", action="store_true")
-parser.add_argument("--mc-only", action="store_true")
-args_known, _ = parser.parse_known_args()
-
-if args_known.profile3:
-    PROFILE_MODULE = "config_bot_profile3"
-    PROFILE_LABEL = "PROFILE3"
-    ACCOUNT_NAME = "Account 003"
-    PROFILE_NAME = "profile3"
-    COOLDOWN_FILE = BASE_DIR / "cooldown_profile3.json"
-    RESULTS_DIR = BASE_DIR / "daily_results_profile3"
-else:
-    PROFILE_MODULE = "config_bot_profile2"
-    PROFILE_LABEL = "PROFILE2"
-    ACCOUNT_NAME = "Account 002"
-    PROFILE_NAME = "profile2"
-    COOLDOWN_FILE = BASE_DIR / "cooldown_profile2.json"
-    RESULTS_DIR = BASE_DIR / "daily_results_profile2"
-
-parser = argparse.ArgumentParser(
-    description=f"FX Trading Bot v6.8.3.3 {PROFILE_LABEL} | {ACCOUNT_NAME} | TREND+TP+TOP-N"
-)
-parser.add_argument("--profile2", action="store_true")
-parser.add_argument("--profile3", action="store_true")
-parser.add_argument("--timeframe", type=str, default="15m", choices=["15m", "1H", "H4"])
-parser.add_argument("--confluence", action="store_true", default=None)
-parser.add_argument("--no-confluence", action="store_false", dest="confluence")
-parser.add_argument("--skip-mc", action="store_true")
-parser.add_argument("--mc-only", action="store_true")
-args = parser.parse_args()
-
+# ─── PROFILE MODULE LOAD ─────────────────────────────────────────────────────
 profile_cfg = importlib.import_module(PROFILE_MODULE)
 OANDA_ACCOUNT_ID = getattr(profile_cfg, "OANDA_ACCOUNT_ID", None)
 if not OANDA_ACCOUNT_ID:
@@ -432,9 +436,27 @@ TP_RAISE_THRESHOLD_PIPS = cfg_bot("TP_RAISE_THRESHOLD_PIPS", 15)
 # ─── CLI MODE OVERRIDES ──────────────────────────────────────────────────────
 MODE = cfg_bot("MODE", "LEVEL10")
 TIMEFRAME = args.timeframe
+if args.live and args.dry_run:
+    logger.warning("⚠️  Both --live and --dry-run given — --live wins, running LIVE")
+LIVE_MODE = args.live
+if args.live:
+    _live = get_oanda_profile("live")
+    api = _live["api"]
+    OANDA_ACCOUNT_ID = OANDA_ACCOUNT_ID_3_LIVE if PROFILE_NAME == "profile3" else OANDA_ACCOUNT_ID_2_LIVE
+    logger.info(f"🔴 LIVE ENVIRONMENT | Account: {OANDA_ACCOUNT_ID}")
+MAX_ENTRIES = args.max_entries
 OANDA_GRANULARITY_MAP = {"15m": "M15", "1H": "H1", "H4": "H4", "D": "D"}
 OANDA_GRANULARITY = OANDA_GRANULARITY_MAP.get(TIMEFRAME, "H4")
 DEFAULT_LOT_SIZE = cfg_bot("DEFAULT_LOT_SIZE", 10000)
+if args.lots is not None:
+    DEFAULT_LOT_SIZE = args.lots
+
+_run_mode_label = "LIVE (real orders)" if LIVE_MODE else "DRY-RUN (no orders sent)"
+_max_entries_label = f"{MAX_ENTRIES}" if MAX_ENTRIES else "unlimited (within MAX_OPEN)"
+logger.info(
+    f"🖥️  RUN MODE: {_run_mode_label} | MAX_OPEN={MAX_OPEN} | "
+    f"MAX_ENTRIES_THIS_RUN={_max_entries_label}"
+)
 
 ALL_PAIRS = cfg_bot(
     "ALL_PAIRS",
@@ -1041,8 +1063,12 @@ def main():
         )
 
     # Execute Top Candidates
+    _cap = MAX_ENTRIES or MAX_OPEN
+    _rank_limit = min(MAX_OPEN - open_pos_count, _cap, len(all_candidates))
     logger.info(
-        f"🏆 RANKED: {len(all_candidates)} passed → opening top {min(MAX_OPEN, len(all_candidates))}"
+        f"🏆 RANKED: {len(all_candidates)} passed → opening top "
+        f"{max(0, _rank_limit)} (MAX_OPEN={MAX_OPEN}, existing={open_pos_count}, "
+        f"MAX_ENTRIES={MAX_ENTRIES or 'unlimited'})"
     )
     for i, (_, score, pair, _, dir, _, _, _, _, tp_pips) in enumerate(
         all_candidates, 1
@@ -1050,6 +1076,7 @@ def main():
         logger.info(f"   #{i} — {pair} {dir} SCORE={score:.1f} SMART-TP={tp_pips:.1f}p")
 
     executed_in_this_run = set()
+    entries_this_run = 0
     for (
         _,
         FINAL,
@@ -1069,7 +1096,25 @@ def main():
             logger.info(f"⏭️ {pair} ({oanda}): selected in this run — SKIP DUPLICATE")
             continue
         if open_pos_count >= MAX_OPEN:
-            logger.info(f"⏭️ {pair}: MAX_OPEN reached — SKIP")
+            logger.info(f"⏭️ {pair}: MAX_OPEN={MAX_OPEN} reached — SKIP")
+            continue
+        if MAX_ENTRIES and entries_this_run >= MAX_ENTRIES:
+            logger.info(
+                f"⏭️ {pair}: MAX_ENTRIES this run = {MAX_ENTRIES} reached — SKIP"
+            )
+            continue
+
+        if not LIVE_MODE:
+            logger.info(
+                f"🧪 [DRY-RUN] SIGNAL {pair} {direction} | "
+                f"SL={sl_price} | TP={tp_price} | Score={FINAL:.1f} — NO ORDER SENT"
+            )
+            trade_lines[pair] = (
+                f"🧪 [DRY-RUN] {pair} {direction} Score={FINAL:.1f} | SL={sl_price} TP={tp_price}"
+            )
+            entries_this_run += 1
+            open_pos_count += 1
+            executed_in_this_run.add(oanda)
             continue
 
         try:
@@ -1089,6 +1134,7 @@ def main():
             trade_lines[pair] = (
                 f"✅ {pair} {direction} Score={FINAL:.1f} | SL={sl_price} TP={tp_price}"
             )
+            entries_this_run += 1
             open_pos_count += 1
             executed_in_this_run.add(oanda)
         except Exception as e:

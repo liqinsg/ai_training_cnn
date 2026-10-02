@@ -1,153 +1,400 @@
-# config_oanda.py — v6.8.4 | Multi-Account Config + Self-Validation (CLI)
+# config_oanda.py — v7.1.1 | Multi-Account Config + Dynamic Profile System
 # ────────────────────────────────────────────────────────────────
 """
 Central configuration — edit this file to control all strategy behaviour.
 Do not hardcode these values elsewhere in the codebase.
+    Build the runtime OANDA connection profile.
+
+    Responsibility:
+        - Select Demo/Practice or Live environment.
+        - Select the corresponding API token.
+        - Discover and return account IDs for the selected environment.
+        - Create the OANDA API client for the selected environment.
+
+    Important:
+        This function is ONLY responsible for OANDA connection/environment
+        configuration. It does NOT select strategy parameters or trading
+        profiles.
+
+        Strategy/profile configuration is handled separately by
+        config_bot.load_profile("profile1" / "profile2" / ...).
+
+    Relationship:
+        OANDA_ENV       -> selects Demo/Live OANDA environment
+        --profile 2     -> selects strategy profile2 / Account 002
+        get_oanda_profile()
+                        -> provides the OANDA connection context
+        load_profile()
+                        -> provides strategy parameters
+
+    Example:
+        get_oanda_profile()
+            -> Demo/Practice API + Demo account IDs
+
+        load_profile("profile2")
+            -> Profile 2 strategy parameters + Account 002
+
+    Do NOT create another OANDA context/profile function unless the
+    architecture is intentionally redesigned.
+    Example usage:
+        profile = get_oanda_profile()
+        print(profile["env"], profile["token"], profile["account_ids"])
+        python config_oanda.py --env demo --summary
+        python config_oanda.py --env live --summary
 """
 import os
+import re
 import sys
 from dotenv import load_dotenv
+from pathlib import Path
 import oandapyV20
-# from oandapyV20.endpoints.accounts import AccountSummary
-# from oandapyV20.endpoints.instruments import InstrumentsCandles
-import oandapyV20.endpoints as oanda_endpoint
+import oandapyV20.endpoints.accounts as oanda_accounts
+import oandapyV20.endpoints.pricing as oanda_pricing
 
+PROJECT_ROOT = Path(__file__).resolve().parent
+load_dotenv(PROJECT_ROOT / ".env", override=False)
+load_dotenv(PROJECT_ROOT / "run.env", override=False)
 
-OANDA_ENV = "practice"
+# 常量定义
+OANDA_ENV_DEMO = "practice"
+OANDA_ENV_LIVE = "live"
 
-load_dotenv()
-OANDA_API_TOKEN = os.getenv("OANDA_API_TOKEN", "")
+# 1. 基础 Token 导入
+OANDA_API_TOKEN_DEMO = os.getenv(
+    "OANDA_API_TOKEN_DEMO", os.getenv("OANDA_API_TOKEN", "")
+)
+OANDA_API_TOKEN_LIVE = os.getenv("OANDA_API_TOKEN_LIVE", "")
 
-# ────────────────────────────────────────────────────────────────
-# Account IDs (from .env)
-# ────────────────────────────────────────────────────────────────
-# Optional alias (your #1 request)
+# 2. 账号 ID 基础变量映射 (Demo 与 Live)
 OANDA_ACCOUNT_ID = os.getenv("OANDA_ACCOUNT_ID", "")
+OANDA_ACCOUNT_ID_DEMO_1 = os.getenv("OANDA_ACCOUNT_ID_DEMO_1", "101-003-39389016-001")
+OANDA_ACCOUNT_ID_DEMO_2 = os.getenv("OANDA_ACCOUNT_ID_DEMO_2", "101-003-39389016-002")
+OANDA_ACCOUNT_ID_DEMO_3 = os.getenv("OANDA_ACCOUNT_ID_DEMO_3", "101-003-39389016-003")
+OANDA_ACCOUNT_ID_DEMO_4 = os.getenv("OANDA_ACCOUNT_ID_DEMO_4", "101-003-39389016-004")
 
-# Main 3 accounts we validate by default when no args are passed
-OANDA_ACCOUNT_ID_1 = os.getenv("OANDA_ACCOUNT_ID_1", "001-003-21515688-001")
-OANDA_ACCOUNT_ID_2 = os.getenv("OANDA_ACCOUNT_ID_2", "001-003-21515688-002")
-OANDA_ACCOUNT_ID_3 = os.getenv("OANDA_ACCOUNT_ID_3", "001-003-21515688-003")
-OANDA_ACCOUNT_ID_4 = os.getenv("OANDA_ACCOUNT_ID_4", "001-003-21515688-004")
+OANDA_ACCOUNT_ID_1_LIVE = os.getenv("OANDA_ACCOUNT_ID_1_LIVE", "001-003-21515688-001")
+OANDA_ACCOUNT_ID_2_LIVE = os.getenv("OANDA_ACCOUNT_ID_2_LIVE", "001-003-21515688-002")
+OANDA_ACCOUNT_ID_3_LIVE = os.getenv("OANDA_ACCOUNT_ID_3_LIVE", "001-003-21515688-003")
+OANDA_ACCOUNT_ID_4_LIVE = os.getenv("OANDA_ACCOUNT_ID_4_LIVE", "001-003-21515688-004")
+
+_is_live_environment = os.getenv("OANDA_ENV", "practice").strip().lower() in {
+    "live",
+    "real",
+}
+if _is_live_environment:
+    OANDA_ENV = OANDA_ENV_LIVE
+    OANDA_API_TOKEN = OANDA_API_TOKEN_LIVE
+    OANDA_ACCOUNT_ID_1 = OANDA_ACCOUNT_ID_1_LIVE
+    OANDA_ACCOUNT_ID_2 = OANDA_ACCOUNT_ID_2_LIVE
+    OANDA_ACCOUNT_ID_3 = OANDA_ACCOUNT_ID_3_LIVE
+    OANDA_ACCOUNT_ID_4 = OANDA_ACCOUNT_ID_4_LIVE
+else:
+    OANDA_ENV = OANDA_ENV_DEMO
+    OANDA_API_TOKEN = OANDA_API_TOKEN_DEMO
+    OANDA_ACCOUNT_ID_1 = OANDA_ACCOUNT_ID_DEMO_1
+    OANDA_ACCOUNT_ID_2 = OANDA_ACCOUNT_ID_DEMO_2
+    OANDA_ACCOUNT_ID_3 = OANDA_ACCOUNT_ID_DEMO_3
+    OANDA_ACCOUNT_ID_4 = OANDA_ACCOUNT_ID_DEMO_4
+
+OANDA_ACCOUNT_ID = OANDA_ACCOUNT_ID_1
+
+
+def get_oanda_profile(env_override: str = None) -> dict:
+    """
+    根据运行环境动态返回对应配置 Profile。
+    :param env_override: "practice" | "demo" | "live" (若为 None 则强制读取 run.env 中的 OANDA_ENV)
+    :return: 包含 env, token, api, account_ids 的字典
+    """
+    # 核心修改 2：实时获取由 run.env 加载的最新 OANDA_ENV，不使用静态缓存
+    current_run_env = os.getenv("OANDA_ENV", "practice")
+    raw_env = (env_override or current_run_env).strip().lower()
+    is_live = raw_env in ["live", "real"]
+
+    selected_env = OANDA_ENV_LIVE if is_live else OANDA_ENV_DEMO
+    selected_token = OANDA_API_TOKEN_LIVE if is_live else OANDA_API_TOKEN_DEMO
+
+    # 匹配对应环境下的 Account ID 变量
+    var_regex = (
+        r"^OANDA_ACCOUNT_ID_\d+_LIVE$" if is_live else r"^OANDA_ACCOUNT_ID_(DEMO_)?\d+$"
+    )
+
+    account_ids = []
+    for name, value in vars(sys.modules[__name__]).items():
+        if isinstance(name, str) and re.fullmatch(var_regex, name):
+            if value:
+                account_ids.append((name, value))
+
+    account_ids.sort(key=lambda x: x[0])
+    account_list = [acc_id for _, acc_id in account_ids]
+
+    # 初始化对应环境的 API Client
+    oanda_client = None
+    if selected_token:
+        oanda_client = oandapyV20.API(
+            access_token=selected_token, environment=selected_env
+        )
+
+    return {
+        "env": selected_env,
+        "token": selected_token,
+        "oanda_client": oanda_client,
+        "api": oanda_client,
+        "account_ids": account_list,
+        "raw_config": account_ids,
+    }
+
+
+# 顶层全局对象：保证向后兼容 (直接 import api 时自动使用 run.env 中设置的环境)
+default_profile = get_oanda_profile()
+api = default_profile["api"]
 
 
 # ────────────────────────────────────────────────────────────────
-# 🔍 SELF-VALIDATION — Run: python config_oanda.py [ac1 ac2 ...]
-#   Examples:
-#     python config_oanda.py
-#     python config_oanda.py 003-12345-001 003-12345-002
-#     python config_oanda.py "003-12345-001,003-12345-002"
-#     python config_oanda.py --include-default 003-12345-009
+# 市场状态检查 (Market Status Check)
 # ────────────────────────────────────────────────────────────────
-def validate_account(account_id, label="Account"):
-    """Validate an OANDA account ID and return True/False."""
-    if not account_id:
-        print(f"❌ {label}: NOT SET")
+
+
+def is_market_open(instrument: str = "EUR_USD", env_override: str = None) -> bool:
+    """
+    Check whether `instrument` is currently tradeable on OANDA.
+
+    Replaces day-of-week / hardcoded trading-hours logic with a live
+    query to the pricing endpoint. The 'tradeable' field reflects
+    real-time market state — false when the market is closed
+    (weekend, holiday) or halted — even if local clock logic thinks
+    it should be open.
+
+    Uses the same profile/client as the rest of this module, so it
+    automatically respects OANDA_ENV (demo vs live).
+    """
+    profile = get_oanda_profile(env_override)
+    client = profile["api"]
+    account_id = (
+        profile["account_ids"][0] if profile["account_ids"] else OANDA_ACCOUNT_ID
+    )
+
+    if not client or not account_id:
+        print("[MARKET CHECK] ❌ No API client / account available (token not set)")
         return False
-
-    api = oandapyV20.API(access_token=OANDA_API_TOKEN, environment=OANDA_ENV)
 
     try:
-        r = oanda_endpoint.AccountSummary(account_id)
-        resp = api.request(r)
-        acc = resp["account"]
-        print(
-            f"✅ {label} OK: {acc['id']} — {acc['currency']} "
-            f"| Balance: {acc.get('balance', 'N/A')}"
+        params = {"instruments": instrument}
+        resp = client.request(
+            oanda_pricing.PricingInfo(accountID=account_id, params=params)
         )
-        return True
-    except Exception as e:
-        print(f"❌ {label} FAILED: {account_id}")
-        print(f"   ⚠️  Error: {str(e)[:140]}")
+        prices = resp.get("prices", [])
+        if not prices:
+            print(f"[MARKET CHECK] ❌ {instrument}: no pricing data returned")
+            return False
+        tradeable = bool(prices[0].get("tradeable", False))
+        print(f"[MARKET CHECK] {instrument}: {'OPEN' if tradeable else 'CLOSED'}")
+        return tradeable
+    except Exception as exc:
+        print(f"[MARKET CHECK] ❌ {instrument}: request failed — {str(exc)[:150]}")
         return False
 
 
-def parse_cli_accounts(argv):
-    """
-    Accepts:
-      - python config_oanda.py ac1 ac2
-      - python config_oanda.py "ac1,ac2"
-    Returns list[str].
-    """
-    accounts = []
-    for arg in argv:
-        arg = arg.strip()
-        if not arg:
-            continue
-        parts = [x.strip() for x in arg.split(",") if x.strip()]
-        accounts.extend(parts)
-    return accounts
+# ────────────────────────────────────────────────────────────────
+# 辅助函数 (用于 CLI 自检与账号发现)
+# ────────────────────────────────────────────────────────────────
 
-api = oandapyV20.API(access_token=OANDA_API_TOKEN, environment=OANDA_ENV)
 
-def oanda_tick(instrument):
-    return api.request(oanda_endpoint.InstrumentsCandles(instrument=instrument,
-    params={"count":1, "granularity":"M1", "price":"BA"}))["candles"][0]
+def _discover_accounts(token: str, env_name: str, label: str):
+    if not token:
+        print(f"❌ {label}: TOKEN NOT SET")
+        return []
+
+    try:
+        client = oandapyV20.API(access_token=token, environment=env_name)
+        resp = client.request(oanda_accounts.AccountList())
+        accounts = resp.get("accounts", [])
+        print(f"✅ {label}: TOKEN VALID → {len(accounts)} account(s) visible")
+        for acc in accounts:
+            aid = acc.get("id", "?")
+            tags = acc.get("tags", [])
+            print(f"   └─ {aid}{f' | tags: {tags}' if tags else ''}")
+        return accounts
+    except Exception as e:
+        print(f"❌ {label}: TOKEN/API FAILED")
+        print(f"    ⚠️ Error: {str(e)[:220]}")
+        return []
+
+
+def _compare_accounts(config_ids, discovered_accounts, label: str):
+    config_set = set(config_ids)
+    discovered_set = {acc.get("id") for acc in discovered_accounts if acc.get("id")}
+    matched = config_set & discovered_set
+    missing = config_set - discovered_set
+    extra = discovered_set - config_set
+
+    print(f"\n═══ {label} ACCOUNT COMPARISON ═══")
+    print(f"Configured : {len(config_set)}")
+    print(f"OANDA sees : {len(discovered_set)}")
+    print(f"✅ Matched : {len(matched)}")
+    print(f"❌ Missing : {len(missing)}")
+    print(f"⚠️ Extra    : {len(extra)}")
+
+    if matched:
+        print("\n✅ Matched accounts:")
+        for aid in sorted(matched):
+            print(f"   {aid}")
+    if missing:
+        print("\n❌ Configured but NOT visible:")
+        for aid in sorted(missing):
+            print(f"   {aid}")
+    if extra:
+        print("\n⚠️ Visible but NOT in config:")
+        for aid in sorted(extra):
+            print(f"   {aid}")
+
+    exact = config_set == discovered_set
+    print(
+        f"\n{'✅' if exact else '❌'} {label}: {'EXACT MATCH' if exact else 'MISMATCH'}"
+    )
+    return exact
+
+
+def _fetch_summary(account_id, token, env_name):
+    try:
+        client = oandapyV20.API(access_token=token, environment=env_name)
+        resp = client.request(oanda_accounts.AccountSummary(account_id))["account"]
+        print(f"\n   📊 {account_id}")
+        print(f"      Currency    : {resp.get('currency', '?')}")
+        print(f"      Balance     : {resp.get('balance', '?')}")
+        print(f"      NAV         : {resp.get('nav', '?')}")
+        print(f"      UnrealizedPL: {resp.get('unrealizedPL', '?')}")
+        print(f"      MarginUsed  : {resp.get('marginUsed', '?')}")
+        print(f"      MarginAvail : {resp.get('marginAvailable', '?')}")
+        print(f"      OpenTrades  : {resp.get('openTradeCount', '?')}")
+        return True
+    except Exception as e:
+        print(f"\n   ❌ {account_id} — Summary failed: {str(e)[:120]}")
+        return False
+
+
+def validate_oanda_setup(env_override: str = None, quiet: bool = False) -> dict:
+    """Runtime validation: token + env + account_ids all match OANDA's view.
+
+    Returns dict:
+        ok           (bool)   True = all configured IDs are visible with this token+env
+        env          (str)   resolved environment ("practice" / "live")
+        token_ok     (bool)  True = token is set and API call succeeded
+        token_len    (int)
+        configured   (list)   configured account IDs
+        visible      (list)   account IDs returned by OANDA AccountList
+        matched      (list)   intersection
+        missing      (list)   configured but not visible → likely wrong token/env
+        extra        (list)   visible but not configured → harmless but noisy
+        error        (str|None)
+    """
+    profile = get_oanda_profile(env_override)
+    result = {
+        "ok": False,
+        "env": profile["env"],
+        "token_ok": bool(profile["token"]),
+        "token_len": len(profile["token"]) if profile["token"] else 0,
+        "configured": list(profile["account_ids"]),
+        "visible": [],
+        "matched": [],
+        "missing": [],
+        "extra": [],
+        "error": None,
+    }
+
+    if not profile["token"]:
+        result["error"] = "API token not set"
+        if not quiet:
+            print(f"[OANDA VALIDATE] ❌ {profile['env'].upper()}: {result['error']}")
+        return result
+
+    try:
+        client = oandapyV20.API(
+            access_token=profile["token"], environment=profile["env"]
+        )
+        resp = client.request(oanda_accounts.AccountList())
+        visible_ids = [
+            acc.get("id", "") for acc in resp.get("accounts", []) if acc.get("id")
+        ]
+        result["visible"] = visible_ids
+    except Exception as exc:
+        result["token_ok"] = False
+        result["error"] = f"AccountList failed: {exc}"
+        if not quiet:
+            print(f"[OANDA VALIDATE] ❌ {profile['env'].upper()}: {result['error']}")
+        return result
+
+    cfg_set = set(result["configured"])
+    vis_set = set(result["visible"])
+    result["matched"] = sorted(cfg_set & vis_set)
+    result["missing"] = sorted(cfg_set - vis_set)
+    result["extra"] = sorted(vis_set - cfg_set)
+    result["ok"] = len(result["configured"]) > 0 and len(result["missing"]) == 0
+
+    if not quiet:
+        tag = "✅" if result["ok"] else "❌"
+        print(
+            f"[OANDA VALIDATE] {tag} {profile['env'].upper()} | token={result['token_len']}ch | "
+            f"configured={len(result['configured'])} visible={len(result['visible'])} "
+            f"matched={len(result['matched'])} missing={len(result['missing'])} extra={len(result['extra'])}"
+        )
+        if result["missing"]:
+            print(f"  ❌ MISSING (token/env mismatch?): {result['missing']}")
+        if result["extra"]:
+            print(f"  ⚠️  EXTRA (visible but not configured): {result['extra']}")
+
+    return result
+
+
+def main(show_summary=False, env_override=None):
+    profile = get_oanda_profile(env_override)
+
+    print("=" * 65)
+    print(f"🔍 OANDA VALIDATION | Env: {profile['env'].upper()}")
+    print("=" * 65)
+    print(f"Token Status : {'✅ SET' if profile['token'] else '❌ MISSING'}")
+    print(f"Target Accounts Count: {len(profile['account_ids'])}")
+    print("─" * 65)
+
+    if not profile["token"]:
+        print("❌ API Token 未配置，退出校验")
+        return 1
+
+    visible = _discover_accounts(
+        profile["token"], profile["env"], f"{profile['env'].upper()} Token"
+    )
+    matched_ok = bool(visible) and _compare_accounts(
+        profile["account_ids"], visible, profile["env"].upper()
+    )
+
+    if show_summary and visible:
+        print(f"\n📋 {profile['env'].upper()} ACCOUNT SUMMARIES")
+        for acc in visible:
+            _fetch_summary(acc.get("id"), profile["token"], profile["env"])
+
+    # ── Market status test (EUR/USD) ──────────────────────────
+    print("\n" + "─" * 65)
+    print("🕒 MARKET STATUS TEST")
+    print("─" * 65)
+    is_market_open("EUR_USD", env_override=env_override)
+
+    print("\n" + "=" * 65)
+    print(
+        f"FINAL RESULT → {profile['env'].upper()}: {'✅ PASS' if matched_ok else '❌ FAIL'}"
+    )
+    return 0 if matched_ok else 1
+
 
 if __name__ == "__main__":
-    print("=" * 60)
-    print("🔍 OANDA ACCOUNT VALIDATION — v6.8.4")
-    print("=" * 60)
-    print(f"API Token:   {'✅ SET' if OANDA_API_TOKEN else '❌ MISSING'}")
-    print(f"Environment: {OANDA_ENV}")
-    print("-" * 60)
+    show_summary_flag = "--summary" in sys.argv
+    if show_summary_flag:
+        sys.argv.remove("--summary")
 
-    # (1) Print requested variables
-    print(f"OANDA_ACCOUNT_ID   : {OANDA_ACCOUNT_ID or 'NOT SET'}")
-    print(f"OANDA_ACCOUNT_ID_1 : {OANDA_ACCOUNT_ID_1 or 'NOT SET'}")
-    print(f"OANDA_ACCOUNT_ID_2 : {OANDA_ACCOUNT_ID_2 or 'NOT SET'}")
-    print(f"OANDA_ACCOUNT_ID_3 : {OANDA_ACCOUNT_ID_3 or 'NOT SET'}")
+    env_arg = None
+    if "--env" in sys.argv:
+        idx = sys.argv.index("--env")
+        if idx + 1 < len(sys.argv):
+            env_arg = sys.argv[idx + 1]
+            sys.argv.pop(idx + 1)
+            sys.argv.pop(idx)
 
-    print("-" * 60)
-
-    argv = sys.argv[1:]
-
-    # Optional flag: if args are provided, also validate defaults
-    include_default = False
-    if "--include-default" in argv:
-        include_default = True
-        argv = [a for a in argv if a != "--include-default"]
-
-    cli_accounts = parse_cli_accounts(argv)
-
-    defaults = [
-        ("🔵 ACCOUNT 1 (Default)", OANDA_ACCOUNT_ID_1),
-        ("⚪ ACCOUNT 2 (Default)", OANDA_ACCOUNT_ID_2),
-        ("🟣 ACCOUNT 3 (Default)", OANDA_ACCOUNT_ID_3),
-    ]
-
-    ok_any = False
-
-    if not cli_accounts:
-        # (2) If no args -> validate ac1, ac2, ac3
-        print()
-        print("MODE: default — validating ACCOUNT 1/2/3 from .env")
-        print()
-
-        for label, acc_id in defaults:
-            ok_any = validate_account(acc_id, label) or ok_any
-
-    else:
-        # (3) If args are provided -> validate manually fed accounts
-        print()
-        print("MODE: CLI — validating provided manual account ids")
-        if include_default:
-            print("INFO : --include-default enabled; also validating default ACCOUNT 1/2/3")
-        print()
-
-        # Optionally include defaults first
-        if include_default:
-            for label, acc_id in defaults:
-                ok_any = validate_account(acc_id, label + " +default") or ok_any
-
-        # Validate CLI accounts
-        for i, acc_id in enumerate(cli_accounts, start=1):
-            ok_any = validate_account(acc_id, f"🧪 CLI ACCOUNT {i}") or ok_any
-
-    print()
-    print("=" * 60)
-    if ok_any:
-        print("✅ At least one account OK.")
-    else:
-        print("❌ No accounts OK — check API token / account ids / permissions.")
-    print("=" * 60)
+    raise SystemExit(main(show_summary=show_summary_flag, env_override=env_arg))
