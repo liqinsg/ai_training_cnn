@@ -98,6 +98,7 @@ from fx_trade_bot_utils import (
     open_oanda_order_simple as open_oanda_order,
     DynamicPositionManager,
     load_mc_legacy,
+    PositionStatus,
 )
 from fx_trade_bot_mc import MCGenerator, MCConfig
 from fx_trade_bot_ml import ensure_model
@@ -894,8 +895,9 @@ def main():
         oanda_inst = YAHOO_TO_OANDA.get(pair)
         if not oanda_inst:
             continue
-        pos = get_open_position(api, OANDA_ACCOUNT_ID, oanda_inst)
-        is_open = pos is not None
+        status, pos = get_open_position(api, OANDA_ACCOUNT_ID, oanda_inst)
+
+        is_open = status == PositionStatus.OPEN
         open_pos_by_oanda[oanda_inst] = is_open
         if is_open:
             open_pos_count += 1

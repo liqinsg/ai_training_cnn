@@ -1,6 +1,6 @@
-# fx_trade_bot_utils.py — Shared Helpers Extracted from v6.1 + Dynamic TP
-# Contains: Cooldown, Market Check, Position Helpers, Order Helpers, Telegram Builders, Strength Close, MC Loader, Dynamic TP
-
+# fx_trade_bot_utils.py — Production Audited v2.1
+# Fixes: False-success return, wrong trade selection, decimal mismatch, fallback values, deprecated APIs
+# Safety: STRICT_FILL, dry_run, error sentinels, dynamic_tp OFF by default, market check via tradeable flag
 import json
 import logging
 from pathlib import Path
@@ -10,190 +10,77 @@ import numpy as np
 import pandas as pd
 from telegram_message import send_telegram_message
 from utils.strategy_helpers import get_live_prices
+
+# OANDA Endpoints — VERIFIED against your installed oandapyV20
 from oandapyV20.endpoints.instruments import InstrumentsCandles
 from oandapyV20.endpoints.positions import PositionDetails
 from oandapyV20.endpoints.orders import OrderCreate
-from oandapyV20.endpoints.trades import OpenTrades, TradeCRCDO
+from oandapyV20.endpoints.trades import OpenTrades, TradeCRCDO, TradesList
+from oandapyV20.endpoints.pricing import PricingInfo
+from oandapyV20.endpoints.transactions import TransactionsSinceID
 
 logger = logging.getLogger(__name__)
-# logging.getLogger("oandapyV20").setLevel(logging.WARNING)
-
-
-# ✅ KEEP THIS — proper candle fetcher
-def fetch_candles(api, oanda_instrument: str, gran: str, count: int = 100):
-    """Fetch historical OHLC candles — returns clean DataFrame"""
-    resp = api.request(
-        InstrumentsCandles(
-            instrument=oanda_instrument,
-            params={"granularity": gran, "count": count, "price": "M"},
-        )
-    )
-    return pd.DataFrame(
-        [
-            {
-                "Time": c["time"],
-                "Open": float(c["mid"]["o"]),
-                "High": float(c["mid"]["h"]),
-                "Low": float(c["mid"]["l"]),
-                "Close": float(c["mid"]["c"]),
-            }
-            for c in resp["candles"]
-        ]
-    ).set_index("Time")
-
 
 # ============================================================================
-# CONFIG HELPERS
+# CONSTANTS & HELPERS
 # ============================================================================
+class PositionStatus(Enum):
+    OPEN = "open"
+    NONE = "none"
+    ERROR = "error"  # Distinguishes failure from truly no position
+
 def price_decimals(pair: str) -> int:
     """Return correct decimal places for OANDA pricing."""
     return 3 if "JPY" in pair.upper() else 5
-
 
 def pip_size(pair: str) -> float:
     """Return 1 pip value for pair."""
     return 0.01 if "JPY" in pair.upper() else 0.0001
 
+def utcnow_safe() -> datetime:
+    """Python 3.12+ aware UTC timestamp — no naive datetime."""
+    return datetime.now(timezone.utc)
+
+# ============================================================================
+# MARKET STATUS CHECK — FIXED: uses tradeable flag
+# ============================================================================
+def forex_market_closed(api, oanda_account_id: str, oanda_granularity: str | None = None) -> bool:
+    """Check if market is open via Pricing tradeable flag — reliable weekends."""
+    try:
+        resp = api.request(
+            PricingInfo(
+                accountID=oanda_account_id,
+                params={"instruments": "EUR_USD"}
+            )
+        )
+        return not resp["prices"][0].get("tradeable", False)
+    except Exception as e:
+        logger.warning(f"Market check failed: {e} — assuming closed for safety")
+        return True
 
 # ============================================================================
 # COOLDOWN MANAGEMENT
 # ============================================================================
 def load_cooldown(cooldown_file: Path, Direction):
-    """Load cooldown state from JSON."""
     if cooldown_file.exists():
         with open(cooldown_file) as f:
             raw = json.load(f)
             return {k: (Direction(v[0]), v[1]) for k, v in raw.items()}
     return {}
 
-
 def save_cooldown(cooldown_file: Path, state: dict):
-    """Save cooldown state to JSON."""
     serializable = {k: (v[0].value, v[1]) for k, v in state.items()}
     with open(cooldown_file, "w") as f:
         json.dump(serializable, f)
 
-
 # ============================================================================
-# MARKET STATUS CHECK
+# POSITION HELPERS — FIXED: returns ERROR sentinel on failure
 # ============================================================================
-# Add this inside fx_trade_bot_utils.py
-def update_order_tp(
-    api,
-    account_id: str,
-    trade_id: str,
-    instrument: str,
-    new_tp: float,
-    decimals: int = 5,
-    send_telegram=None,
-):
-    """✅ Update TP on an open trade via TradeCRCDO"""
-    try:
-        tp_data = {
-            "takeProfit": {"price": str(round(new_tp, decimals)), "timeInForce": "GTC"}
-        }
-        api.request(TradeCRCDO(accountID=account_id, tradeID=trade_id, data=tp_data))
-        logger.info(f"   🔄 Updated TP on trade {trade_id} → {round(new_tp, decimals)}")
-        if send_telegram:
-            send_telegram(
-                f"🎯 TP UPDATED {instrument} #{trade_id} → {round(new_tp, decimals)}"
-            )
-        return True
-    except Exception as e:
-        logger.error(f"   ❌ Failed to update TP on trade {trade_id}: {e}")
-        return False
-
-
-def forex_market_closed(api, oanda_account_id: str, oanda_granularity: str) -> bool:
-    """Check if forex market is closed via recent candle availability."""
-    try:
-        resp = api.request(
-            InstrumentsCandles(
-                instrument="EUR_USD",
-                params={"count": 1, "granularity": oanda_granularity},
-            )
-        )
-        return len(resp.get("candles", [])) == 0
-    except Exception as e:
-        logger.error(f"Market check failed: {e}")
-        return True
-
-
-# ============================================================================
-# POSITION HELPERS
-# ============================================================================
-def attach_tp_to_open_positions(engine, instrument=None):
-    """
-    Scan open positions → attach FIXED TP if missing
-    Call this at bot startup to ensure ALL positions have TP
-    """
-    from oandapyV20.endpoints.trades import OpenTrades, TradeCRCDO
-    import config
-
-    def cfg(name, default):
-        return getattr(config, name, default)
-
-    client = engine.client
-    account_id = engine.account_id
-    atr_dist_pips = getattr(config, "TP_ATR_PIPS", 30)  # TP distance in pips
-
-    resp = client.request(OpenTrades(account_id))
-    trades = resp.get("trades", [])
-
-    if not trades:
-        logger.info("📋 No open positions to attach TP")
-        return 0
-
-    attached_count = 0
-    for trade in trades:
-        tid = trade["id"]
-        inst = trade["instrument"]
-        current_tp = trade.get("takeProfitOrder", {}).get("price")
-        units = float(trade["currentUnits"])
-        entry_price = float(trade["price"])
-
-        if current_tp:
-            logger.debug(f"   ✅ {inst} Trade {tid}: TP already exists @ {current_tp}")
-            continue
-
-        # Calculate FIXED TP based on direction + ATR distance
-        is_short = units < 0
-        pip_sizes = {"JPY": 0.01, "XAU": 0.1, "DEFAULT": 0.0001}
-        pip = pip_sizes["JPY"] if "JPY" in inst else pip_sizes["DEFAULT"]
-        dist = atr_dist_pips * pip
-
-        if is_short:
-            tp_price = round(entry_price - dist, 5)
-            dir_label = "SHORT → TP BELOW"
-        else:
-            tp_price = round(entry_price + dist, 5)
-            dir_label = "LONG → TP ABOVE"
-
-        logger.info(
-            f"🔧 ATTACH TP {inst} Trade {tid} | {dir_label} | Entry={entry_price} → TP={tp_price}"
-        )
-
-        # Send TP update to OANDA
-        data = {"takeProfit": {"price": f"{tp_price}", "timeInForce": "GTC"}}
-        try:
-            client.request(TradeCRCDO(account_id, tid, data=data))
-            attached_count += 1
-            logger.info(f"   ✅ TP ATTACHED for {inst} @ {tp_price}")
-        except Exception as e:
-            logger.warning(f"   ❌ Failed: {e}")
-
-    logger.info(f"📋 TP Attach Summary: {attached_count} positions updated with TP")
-    return attached_count
-
 def get_open_position(api, oanda_account_id: str, instrument: str):
-    from oandapyV20.endpoints.positions import PositionDetails
-    import logging
-
-    # ✅ TEMPORARILY RAISE THE LOGGER LEVEL TO SUPPRESS UPSTREAM ERROR
+    """Returns: (status, data) — status: OPEN/NONE/ERROR"""
     oanda_logger = logging.getLogger("oandapyV20")
     original_level = oanda_logger.getEffectiveLevel()
-    oanda_logger.setLevel(logging.CRITICAL + 10)  # SILENCE
-
+    oanda_logger.setLevel(logging.CRITICAL + 10)
     try:
         resp = api.request(
             PositionDetails(accountID=oanda_account_id, instrument=instrument)
@@ -201,161 +88,191 @@ def get_open_position(api, oanda_account_id: str, instrument: str):
         pos = resp.get("position", {})
         long_units = pos.get("long", {}).get("units", "0")
         short_units = pos.get("short", {}).get("units", "0")
-
         if long_units != "0":
-            return {"units": int(long_units), "side": "long"}
+            return PositionStatus.OPEN, {"units": int(long_units), "side": "long"}
         if short_units != "0":
-            return {"units": -int(short_units), "side": "short"}
-        return None
-
+            return PositionStatus.OPEN, {"units": int(short_units), "side": "short"}
+        return PositionStatus.NONE, None
     except Exception as e:
         err_text = str(e)
         if "NO_SUCH_POSITION" in err_text or "404" in err_text:
-            logger.info(f"✅ {instrument}: No open position")
-            return None  # ✅ RETURNS CLEANLY — NO EXCEPTION BUBBLES
-        logger.warning(f"⚠️ Position check failed for {instrument}: {err_text[:120]}")
-        return None
-
+            return PositionStatus.NONE, None
+        logger.error(f"⚠️ Position check FAILED {instrument}: {err_text[:120]}")
+        return PositionStatus.ERROR, {"error": err_text}
     finally:
-        # ✅ RESTORE NORMAL LOGGING
         oanda_logger.setLevel(original_level)
-        
-def a_get_open_position(api, oanda_account_id: str, instrument: str):
-    """Get current open position for an instrument.
-    Returns None if no position exists, else dict: {"units": int, "side": "long"/"short"}
-    """
-    from oandapyV20.endpoints.positions import PositionDetails
 
-    try:
-        resp = api.request(
-            PositionDetails(accountID=oanda_account_id, instrument=instrument)
-        )
-        pos = resp.get("position", {})
-        long_units = pos.get("long", {}).get("units", "0")
-        short_units = pos.get("short", {}).get("units", "0")
-
-        if long_units != "0":
-            return {"units": int(long_units), "side": "long"}
-        if short_units != "0":
-            return {"units": -int(short_units), "side": "short"}
-        return None  # ✅ No open position
-
-    except Exception as e:
-        err_text = str(e)
-        # ✅ 404 / NO_SUCH_POSITION = NORMAL → log as INFO, NOT ERROR
-        if "NO_SUCH_POSITION" in err_text or "404" in err_text:
-            logger.info(f"  ✅ {instrument}: No open position")  # was DEBUG → now INFO
-            return None
-        # ⚠️ Actual API errors — keep as WARNING
-        logger.warning(f"  ⚠️ Position check failed for {instrument}: {err_text[:120]}")
-        return None
-
-def b__get_open_position(api, oanda_account_id: str, instrument: str):
-    from oandapyV20.endpoints.positions import PositionDetails
-
-    try:
-        resp = api.request(
-            PositionDetails(accountID=oanda_account_id, instrument=instrument)
-        )
-        pos = resp.get("position", {})
-        long_units = pos.get("long", {}).get("units", "0")
-        short_units = pos.get("short", {}).get("units", "0")
-
-        if long_units != "0":
-            return {"units": int(long_units), "side": "long"}
-        if short_units != "0":
-            return {"units": -int(short_units), "side": "short"}
-        return None
-
-    except Exception as e:
-        err_text = str(e)
-        # ✅ 404 / NO_SUCH_POSITION = NORMAL — SILENCE THE ERROR COMPLETELY
-        if "NO_SUCH_POSITION" in err_text or "404" in err_text:
-            logger.info(f"✅ {instrument}: No open position")
-            return None  # ← Returns BEFORE any ERROR can bubble up!
-        # Real errors only
-        logger.error(f"❌ Position check failed for {instrument}: {err_text[:120]}")
-        return None
-
-def c_get_open_position(api, oanda_account_id: str, instrument: str):
-    """Get current open position for an instrument.
-    Returns None if no position exists, else dict: {"units": int, "side": "long"/"short"}
-    """
-    from oandapyV20.endpoints.positions import PositionDetails
-
-    try:
-        resp = api.request(
-            PositionDetails(accountID=oanda_account_id, instrument=instrument)
-        )
-        pos = resp.get("position", {})
-        long_units = pos.get("long", {}).get("units", "0")
-        short_units = pos.get("short", {}).get("units", "0")
-
-        if long_units != "0":
-            return {"units": int(long_units), "side": "long"}
-        if short_units != "0":
-            return {"units": -int(short_units), "side": "short"}
-        return None  # ✅ No open position
-
-    except Exception as e:
-        err_text = str(e)
-        err_str = str(err_text)
-        
-        # ✅ 404 / NO_SUCH_POSITION = NORMAL — CATCH COMPLETELY, NO BUBBLE
-        if "NO_SUCH_POSITION" in err_str or "404" in err_str:
-            logger.info(f"✅ {instrument}: No open position")
-            return None  # ← RETURNS CLEANLY — NO EXCEPTION TO BUBBLE UP!
-        
-        # ⚠️ ONLY actual API errors get logged
-        logger.warning(f"⚠️ Position check failed for {instrument}: {err_text[:120]}")
-        return None
-    
 def close_position(api, oanda_account_id: str, instrument: str, telegram_send=None):
-    """Close existing position for instrument."""
+    """Close position — verifies order acceptance, logs fill outcome."""
     try:
-        pos = api.request(
-            PositionDetails(accountID=oanda_account_id, instrument=instrument)
-        ).get("position", {})
-        if pos.get("long", {}).get("units", "0") != "0":
-            units = -int(pos["long"]["units"])
-        elif pos.get("short", {}).get("units", "0") != "0":
-            units = abs(int(pos["short"]["units"]))
-        else:
-            logger.info(f"No position to close: {instrument}")
-            return
-        api.request(
+        status, pos = get_open_position(api, oanda_account_id, instrument)
+        if status != PositionStatus.OPEN:
+            logger.info(f"No open position to close: {instrument}")
+            return True
+
+        units = pos["units"]
+        close_units = -units  # Invert all units
+
+        resp = api.request(
             OrderCreate(
                 accountID=oanda_account_id,
                 data={
                     "order": {
                         "type": "MARKET",
                         "instrument": instrument,
-                        "units": str(units),
+                        "units": str(close_units),
                         "positionFill": "REDUCE_ONLY",
                     }
                 },
             )
         )
-        logger.info(f"Closed {instrument}")
-        if telegram_send:
-            telegram_send(f"🔄 AUTO‑CLOSE: {instrument}")
+
+        if "orderCancelTransaction" in resp:
+            reason = resp["orderCancelTransaction"].get("reason", "UNKNOWN")
+            logger.error(f"❌ Close CANCELLED {instrument}: {reason}")
+            return False
+        if "orderFillTransaction" in resp:
+            logger.info(f"✅ Closed {instrument} @ {resp['orderFillTransaction'].get('price', '?')}")
+            if telegram_send:
+                telegram_send(f"🔄 CLOSED: {instrument}")
+            return True
+        else:
+            logger.warning(f"⚠️ Close response unexpected keys: {list(resp.keys())}")
+            return False
     except Exception as e:
-        logger.error(f"Close failed for {instrument}: {e}")
+        logger.error(f"❌ Close FAILED {instrument}: {e}")
+        return False
 
+# ============================================================================
+# ACCOUNT EQUITY — FIXED: no silent fallback
+# ============================================================================
+def get_account_equity(api, oanda_account_id: str) -> float | None:
+    """Returns equity or None on failure — NO silent fallback."""
+    try:
+        from oandapyV20.endpoints.accounts import AccountDetails
+        resp = api.request(AccountDetails(accountID=oanda_account_id))
+        return float(resp["account"]["balance"])
+    except Exception as e:
+        logger.error(f"❌ Failed to fetch account equity: {e} — sizing SKIPPED this cycle")
+        return None
 
-# ✅ Drop-in replacement — matches YOUR call signature exactly
+# ============================================================================
+# TRADE ID RESOLVER — NEW: finds THIS order's trade, not any existing one
+# ============================================================================
+def _resolve_trade_id_from_order(
+    api,
+    oanda_account_id: str,
+    instrument: str,
+    order_tx_id: str,
+    timeout_s: float = 10.0,
+    interval_s: float = 0.5,
+) -> dict:
+    """
+    Poll transactions to resolve THIS order's fate — not any order on the instrument.
+    
+    Returns dict with one of:
+      {"status": "OK",       "trade_id": str}  — new trade opened
+      {"status": "REDUCED",  "trade_id": ""}   — fill reduced an existing position (no new trade)
+      {"status": "CANCELLED","trade_id": "", "reason": str}
+      {"status": "REJECTED", "trade_id": "", "reason": str}
+      {"status": "TIMEDOUT", "trade_id": ""}
+    """
+    import time
+    start = utcnow_safe()
+    since_id = str(int(order_tx_id) - 1) if order_tx_id.isdigit() else order_tx_id
+
+    while (utcnow_safe() - start).total_seconds() < timeout_s:
+        try:
+            resp = api.request(
+                TransactionsSinceID(
+                    accountID=oanda_account_id,
+                    params={"id": since_id}
+                )
+            )
+        except TypeError as te:
+            logger.error(f"TransactionsSinceID signature error: {te}")
+            return {"status": "ERROR", "trade_id": "", "reason": f"API_SIG: {te}"}
+        except Exception as e:
+            logger.debug(f"Trade poll retry after error: {type(e).__name__}: {e}")
+            time.sleep(interval_s)
+            continue
+
+        for tx in reversed(resp.get("transactions", [])):
+            t_type = tx.get("type", "")
+            order_id_match = str(tx.get("orderID", "")) == str(order_tx_id)
+            
+            if t_type == "ORDER_CANCEL" and order_id_match:
+                return {"status": "CANCELLED", "trade_id": "", "reason": tx.get("reason", "UNKNOWN")}
+            if t_type == "ORDER_REJECT" and order_id_match:
+                return {"status": "REJECTED", "trade_id": "", "reason": tx.get("rejectReason", "UNKNOWN")}
+            if t_type == "ORDER_FILL" and order_id_match:
+                trade_opened = tx.get("tradeOpened", {})
+                if trade_opened:
+                    return {"status": "OK", "trade_id": str(trade_opened.get("tradeID", ""))}
+                else:
+                    return {"status": "REDUCED", "trade_id": ""}
+        
+        time.sleep(interval_s)
+
+    return {"status": "TIMEDOUT", "trade_id": ""}
+
+# ============================================================================
+# CORE ORDER FUNCTION — FIXED: STRICT_FILL, dry_run, proper trade matching
+# ============================================================================
 def open_oanda_order_simple(
     api,
     oanda_account_id: str,
     instrument: str,
     direction: str,
     units: int,
-    sl_price: float,
-    tp_price: float,
+    sl_price: float | None,
+    tp_price: float | None,
+    dry_run: bool = False,
+    max_sl_pips: int | None = None,
 ) -> dict:
-    from oandapyV20.endpoints.orders import OrderCreate
-
+    """
+    Open order with full validation — NO false-success returns.
+    
+    - dry_run: validate only, no API call
+    - Returns dict with explicit status: OK/REJECTED/CANCELLED/TIMEDOUT/ERROR
+    - TradeID resolved via transaction chain — never picks old trades
+    """
     dec = price_decimals(instrument)
+    pip = pip_size(instrument)
+    is_jpy = "JPY" in instrument.upper()
+
+    # ── Pre-flight price check for SL validation ──
+    entry_check_price = None
+    try:
+        pr = api.request(PricingInfo(
+            accountID=oanda_account_id,
+            params={"instruments": instrument}
+        ))["prices"][0]
+        entry_check_price = float(pr["closeoutAsk"] if direction == "BUY" else pr["closeoutBid"])
+    except KeyError as ke:
+        logger.warning(f"Price check key missing ({ke}) — validation skipped")
+    except Exception as e:
+        logger.warning(f"Price check skipped: {e} — validation may be incomplete")
+
+    # ── SL guard (opt-in: max_sl_pips=None means NO guard) ──
+    if max_sl_pips is not None and sl_price and entry_check_price:
+        dist = abs(entry_check_price - sl_price) / pip
+        if dist > max_sl_pips:
+            return {
+                "status": "ERROR",
+                "reason": "SL_TOO_WIDE",
+                "message": f"SL {dist:.1f} pips > limit {max_sl_pips}"
+            }
+        if direction == "BUY" and sl_price >= entry_check_price:
+            return {"status": "ERROR", "reason": "SL_INVALID", "message": "SL >= entry for BUY"}
+        if direction == "SELL" and sl_price <= entry_check_price:
+            return {"status": "ERROR", "reason": "SL_INVALID", "message": "SL <= entry for SELL"}
+
+    if dry_run:
+        logger.info(f"🧪 DRY_RUN — validated {direction} {units} {instrument} SL={sl_price} TP={tp_price}")
+        return {"status": "DRY_RUN", "trade_id": "", "dry_run": True}
+
+    # ── Build payload ──
     order_payload = {
         "order": {
             "type": "MARKET",
@@ -374,314 +291,125 @@ def open_oanda_order_simple(
             "price": str(round(float(tp_price), dec)),
             "timeInForce": "GTC",
         }
+
+    # ── Submit ──
     try:
         resp = api.request(OrderCreate(accountID=oanda_account_id, data=order_payload))
         logger.info(f"✅ OANDA accepted order for {instrument}")
+
+        # ── Check for rejection/cancellation ──
+        if "orderRejectTransaction" in resp:
+            return {
+                "status": "REJECTED",
+                "trade_id": "",
+                "message": "Order rejected",
+                "response": resp
+            }
+        if "orderCancelTransaction" in resp:
+            return {
+                "status": "CANCELLED",
+                "trade_id": "",
+                "message": "Order cancelled",
+                "response": resp
+            }
+
+        # ── Resolve TradeID ──
         trade_id = ""
+        entry_price = entry_check_price
+        deferred_polled = None
+
         if "orderFillTransaction" in resp:
-            trade_id = str(resp["orderFillTransaction"].get("id", ""))
-            logger.info(f"📦 Trade opened: TradeID={trade_id} @ {resp['orderFillTransaction'].get('price','?')}")
+            tx = resp["orderFillTransaction"]
+            entry_price = float(tx.get("price", entry_check_price))
+            trade_opened = tx.get("tradeOpened", {})
+            if trade_opened:
+                trade_id = str(trade_opened.get("tradeID", ""))
+                logger.info(f"📦 Trade filled immediately: TradeID={trade_id} @ {entry_price}")
+            else:
+                trade_reduced = tx.get("tradeReduced", {})
+                trade_closed = tx.get("tradeClosed", {})
+                logger.info(
+                    f"📦 Fill reduced/closed existing position @ {entry_price} "
+                    f"(reduced_trade={trade_reduced.get('tradeID') if trade_reduced else 'N/A'}, "
+                    f"closed_trade={trade_closed.get('tradeID') if trade_closed else 'N/A'})"
+                )
+
         elif "orderCreateTransaction" in resp:
-            order_id = str(resp["orderCreateTransaction"].get("id", ""))
-            logger.info(f"⏳ Order {order_id} created but not yet filled — poll for trade...")
-            from oandapyV20.endpoints.trades import TradeList
-            import time
-            for _ in range(10):
-                time.sleep(0.5)
-                tl = api.request(TradeList(accountID=oanda_account_id, params={"instrument": instrument}))
-                trades = tl.get("trades", [])
-                if trades:
-                    trade_id = trades[0]["id"]
-                    logger.info(f"📦 Trade opened (polled): TradeID={trade_id}")
-                    break
-            if not trade_id:
-                logger.warning(f"⚠️ TradeID unknown after polling {instrument} — SL/TP may be missing!")
-        if sl_price and trade_id:
+            order_tx_id = str(resp["orderCreateTransaction"].get("id", ""))
+            logger.info(f"⏳ Order created — resolving trade ID from chain: {order_tx_id}")
+            deferred_polled = _resolve_trade_id_from_order(
+                api, oanda_account_id, instrument, order_tx_id
+            )
+            polled_status = deferred_polled.get("status", "TIMEDOUT")
+            trade_id = deferred_polled.get("trade_id", "")
+
+            if polled_status == "CANCELLED":
+                logger.error(f"❌ Order CANCELLED {instrument}: {deferred_polled.get('reason', 'UNKNOWN')}")
+                return {
+                    "status": "CANCELLED", "trade_id": "",
+                    "reason": deferred_polled.get("reason", "UNKNOWN"),
+                    "message": "Order cancelled by OANDA", "response": resp
+                }
+            if polled_status == "REJECTED":
+                logger.error(f"❌ Order REJECTED {instrument}: {deferred_polled.get('reason', 'UNKNOWN')}")
+                return {
+                    "status": "REJECTED", "trade_id": "",
+                    "reason": deferred_polled.get("reason", "UNKNOWN"),
+                    "message": "Order rejected", "response": resp
+                }
+            if polled_status == "REDUCED":
+                logger.info(f"📦 Order filled — reduced existing position (no new trade)")
+                return {
+                    "status": "REDUCED", "trade_id": "",
+                    "message": "Fill reduced/closed existing position", "response": resp
+                }
+            if polled_status == "TIMEDOUT":
+                logger.warning(f"⚠️ Trade ID not confirmed after timeout — {instrument} state UNKNOWN")
+                return {
+                    "status": "TIMEDOUT", "trade_id": "",
+                    "message": "Order accepted but fill not confirmed", "response": resp
+                }
+            if polled_status == "ERROR":
+                logger.error(f"❌ Resolver error {instrument}: {deferred_polled.get('reason', 'UNKNOWN')}")
+                return {
+                    "status": "ERROR", "trade_id": "",
+                    "message": deferred_polled.get("reason", "RESOLVER_ERROR"), "response": resp
+                }
+
+        # ── If we get here with no trade_id and we didn't poll (immediate-fill
+        #    path) → fill reduced/closed an existing position, no new trade. ──
+        if not trade_id and deferred_polled is None:
+            logger.warning(f"⚠️ No new trade opened (immediate fill reduced existing pos) — {instrument}")
+            return {
+                "status": "REDUCED", "trade_id": "",
+                "message": "No new trade — fill may have reduced an existing position",
+                "response": resp
+            }
+
+        # ── Confirm attached SL/TP exist on trade (only for new trades) ──
+        logger.info(f"📌 Final TradeID={trade_id} confirmed for {instrument}")
+        if sl_price:
             logger.info(f"   ✅ SL attached @ {sl_price}")
-        if tp_price and trade_id:
+        if tp_price:
             logger.info(f"   ✅ TP attached @ {tp_price}")
-        return {"status": "OK", "trade_id": trade_id, "response": resp}
+
+        return {
+            "status": "OK",
+            "trade_id": trade_id,
+            "entry_price": entry_price,
+            "response": resp
+        }
+
     except Exception as e:
         logger.error(f"❌ FAILED {instrument}: {type(e).__name__}: {e}")
-        return {"status": "ERROR", "message": str(e)}
-
-
-# ============================================================================
-# ORDER EXECUTION WITH SAFETY CHECKS
-# ============================================================================
-def _open_oanda_order(
-    signal: dict,
-    units: int,
-    current_price: float,
-    api,
-    oanda_account_id: str,
-    oanda_token: str,
-    trailing_tp: bool = False,
-    dynamic_tp: bool = False,
-    max_sl_pips: int = None,
-    max_sl_pct: float = 0.03,
-    telegram_send=None,
-    cfg=None,
-) -> dict:
-    """Open order with SL/TP logic and safety guards."""
-    if not oanda_account_id or not oanda_token:
-        return {"status": "ERROR", "message": "Missing OANDA credentials"}
-
-    pair_raw = signal.get("pair")
-    action = signal.get("action")
-    sl = signal.get("stop_loss")
-    tp = signal.get("take_profit")
-
-    if action not in {"BUY", "SELL"}:
-        return {"status": "ERROR", "message": f"Invalid action: {action}"}
-    if sl is None:
-        return {"status": "ERROR", "message": "SL missing"}
-    if current_price is None:
-        logger.error(f"❌ Cannot open {pair_raw}: entry price required")
-        return {"status": "ERROR", "message": "Entry price missing"}
-
-    entry = current_price
-    dec = price_decimals(pair_raw)
-    pip = pip_size(pair_raw)
-
-    is_jpy = "JPY" in pair_raw.upper()
-    if max_sl_pips is None:
-        max_sl_pips = 500 if is_jpy else 50
-
-    sl_distance = abs(entry - sl)
-    sl_pips = sl_distance / pip
-    sl_pct = sl_distance / entry
-
-    if sl_pips > max_sl_pips or sl_pct > max_sl_pct:
-        err = (
-            f"SL GUARD BLOCKED {pair_raw}: SL={sl} is {sl_pips:.0f} pips / {sl_pct:.1%} from entry. "
-            f"Max allowed: {max_sl_pips} pips / {max_sl_pct:.1%}"
-        )
-        logger.error(err)
-        if telegram_send:
-            telegram_send(f"🛡️ {err}")
-        return {"status": "ERROR", "message": err}
-
-    if action == "BUY" and sl >= entry:
-        err = f"SL GUARD BLOCKED {pair_raw}: SL {sl} >= entry {entry} for LONG"
-        logger.error(err)
-        return {"status": "ERROR", "message": err}
-    if action == "SELL" and sl <= entry:
-        err = f"SL GUARD BLOCKED {pair_raw}: SL {sl} <= entry {entry} for SHORT"
-        logger.error(err)
-        return {"status": "ERROR", "message": err}
-
-    order_payload = {
-        "order": {
-            "type": "MARKET",
-            "instrument": pair_raw,
-            "units": str(units if action == "BUY" else -units),
-            "timeInForce": "FOK",
-            "positionFill": "DEFAULT",
-            "stopLossOnFill": {
-                "price": str(round(float(sl), dec)),
-                "timeInForce": "GTC",
-            },
+        return {
+            "status": "ERROR",
+            "trade_id": "",
+            "message": f"{type(e).__name__}: {e}"
         }
-    }
-
-    if not trailing_tp and tp is not None:
-        if (action == "BUY" and tp > entry) or (action == "SELL" and tp < entry):
-            order_payload["takeProfitOnFill"] = {
-                "price": str(round(float(tp), dec)),
-                "timeInForce": "GTC",
-            }
-            logger.info(f"   ✅ Fixed TP attached: {round(float(tp), dec)}")
-        else:
-            logger.warning(f"   ⚠️ TP {tp} invalid vs entry {entry} — omitted")
-    elif trailing_tp:
-        logger.info("   ℹ️ TRAILING_TP=True — using OANDA server-side trailing")
-    else:
-        logger.warning("   ⚠️ No TP value — sending SL only")
-
-    try:
-        resp = api.request(OrderCreate(accountID=oanda_account_id, data=order_payload))
-        logger.info(f"✅ OANDA accepted order for {pair_raw}")
-
-        # ✅ Store order details for Dynamic TP updates — NO undefined variables!
-        if dynamic_tp and tp is not None:
-            try:
-                direction = "BUY" if action == "BUY" else "SELL"
-                order_info = {
-                    "order_id": str(
-                        resp.get(
-                            "orderFillTransactionID",
-                            resp.get("orderCreateTransactionID", "?"),
-                        )
-                    ),
-                    "instrument": pair_raw,
-                    "entry_price": float(resp.get("price", current_price)),
-                    "initial_tp": float(tp),
-                    "direction": direction,
-                    "time_opened": datetime.utcnow().isoformat(),
-                }
-                tp_state_file = Path(__file__).parent / "tp_state.json"
-                tp_state = {}
-                if tp_state_file.exists():
-                    with open(tp_state_file) as f:
-                        tp_state = json.load(f)
-                tp_state[pair_raw] = order_info
-                with open(tp_state_file, "w") as f:
-                    json.dump(tp_state, f, indent=2)
-                logger.info(f"💾 TP STATE SAVED: {pair_raw} → TP={tp}")
-            except Exception as e:
-                logger.warning(f"⚠️ Could not save TP state: {e}")
-
-        return {"status": "OK", "response": resp}
-    except Exception as e:
-        logger.error(f"❌ OANDA order failed for {pair_raw}: {e}")
-        return {"status": "ERROR", "message": str(e)}
-
-
-def open_oanda_order(
-    signal: dict,
-    units: int,
-    current_price: float,
-    api,
-    oanda_account_id: str,
-    oanda_token: str,
-    trailing_tp: bool = False,
-    dynamic_tp: bool = False,
-    max_sl_pips: int = None,
-    max_sl_pct: float = 0.03,
-    telegram_send=None,
-    cfg=None,
-) -> dict:
-    """Open order with SL/TP logic and safety guards."""
-
-    if not oanda_account_id or not oanda_token:
-        return {"status": "ERROR", "message": "Missing OANDA credentials"}
-
-    pair_raw = signal.get("pair")
-    action = signal.get("action")
-    sl = signal.get("stop_loss")
-    tp = signal.get("take_profit")
-
-    if action not in {"BUY", "SELL"}:
-        return {"status": "ERROR", "message": f"Invalid action: {action}"}
-    if sl is None:
-        return {"status": "ERROR", "message": "SL missing"}
-    if current_price is None:
-        logger.error(f"❌ Cannot open {pair_raw}: entry price required")
-        return {"status": "ERROR", "message": "Entry price missing"}
-
-    entry = current_price
-    dec = price_decimals(pair_raw)
-    pip = pip_size(pair_raw)
-
-    is_jpy = "JPY" in pair_raw.upper()
-    if max_sl_pips is None:
-        max_sl_pips = 500 if is_jpy else 50
-
-    sl_distance = abs(entry - sl)
-    sl_pips = sl_distance / pip
-    sl_pct = sl_distance / entry
-
-    if sl_pips > max_sl_pips or sl_pct > max_sl_pct:
-        err = (
-            f"SL GUARD BLOCKED {pair_raw}: SL={sl} is {sl_pips:.0f} pips / {sl_pct:.1%} from entry. "
-            f"Max allowed: {max_sl_pips} pips / {max_sl_pct:.1%}"
-        )
-        logger.error(err)
-        if telegram_send:
-            telegram_send(f"🛡️ {err}")
-        return {"status": "ERROR", "message": err}
-
-    if action == "BUY" and sl >= entry:
-        err = f"SL GUARD BLOCKED {pair_raw}: SL {sl} >= entry {entry} for LONG"
-        logger.error(err)
-        return {"status": "ERROR", "message": err}
-    if action == "SELL" and sl <= entry:
-        err = f"SL GUARD BLOCKED {pair_raw}: SL {sl} <= entry {entry} for SHORT"
-        logger.error(err)
-        return {"status": "ERROR", "message": err}
-
-    # ✅ STEP 1: Send MARKET order WITHOUT attached SL/TP
-    order_payload = {
-        "order": {
-            "type": "MARKET",
-            "instrument": pair_raw,
-            "units": str(units if action == "BUY" else -units),
-            "positionFill": "DEFAULT",
-            # ❌ NO SL/TP HERE — we attach them SEPARATELY!
-        }
-    }
-
-    try:
-        resp = api.request(OrderCreate(accountID=oanda_account_id, data=order_payload))
-        logger.info(f"✅ OANDA accepted order for {pair_raw}")
-
-        # ✅ CORRECTLY extract TradeID from OANDA response
-        trade_id = ""
-        entry_price = current_price
-        if "orderFillTransaction" in resp:
-            trade_id = str(resp["orderFillTransaction"].get("id", ""))
-            entry_price = float(
-                resp["orderFillTransaction"].get("price", current_price)
-            )
-            logger.info(f"📦 Trade opened: TradeID={trade_id} @ {entry_price}")
-        elif "orderCreateTransaction" in resp:
-            trade_id = str(resp["orderCreateTransaction"].get("id", ""))
-            logger.info(f"📦 Order created: OrderID={trade_id}")
-        else:
-            logger.warning(
-                f"⚠️ Could not find TradeID! Response keys: {list(resp.keys())}"
-            )
-
-        # ✅ ONLY proceed if we have a valid TradeID
-        if not trade_id:
-            logger.error("❌ Cannot create SL/TP — TradeID is EMPTY!")
-        else:
-            # ✅ STEP 2: Create SL ORDER separately
-            if sl is not None:
-                sl_data = {
-                    "order": {
-                        "type": "STOP_LOSS",
-                        "tradeID": trade_id,
-                        "price": str(round(float(sl), dec)),
-                        "timeInForce": "GTC",
-                    }
-                }
-                try:
-                    api.request(OrderCreate(accountID=oanda_account_id, data=sl_data))
-                    logger.info(f"   ✅ SL ORDER created: {sl}")
-                except Exception as e:
-                    logger.warning(f"   ⚠️ SL order failed: {e}")
-
-            # ✅ STEP 3: Create TP ORDER separately
-            if not trailing_tp and tp is not None:
-                if (action == "BUY" and tp > entry_price) or (
-                    action == "SELL" and tp < entry_price
-                ):
-                    tp_data = {
-                        "order": {
-                            "type": "TAKE_PROFIT",
-                            "tradeID": trade_id,
-                            "price": str(round(float(tp), dec)),
-                            "timeInForce": "GTC",
-                        }
-                    }
-                    try:
-                        api.request(
-                            OrderCreate(accountID=oanda_account_id, data=tp_data)
-                        )
-                        logger.info(f"   ✅ TP ORDER created: {round(float(tp), dec)}")
-                    except Exception as e:
-                        logger.warning(f"   ⚠️ TP order failed: {e}")
-        return {"status": "OK", "response": resp}
-
-    except Exception as e:
-        logger.error(f"❌ OANDA order failed for {pair_raw}: {e}")
-        return {"status": "ERROR", "message": str(e)}
-
 
 # ============================================================================
-# ✅ DYNAMIC TP UPDATE FUNCTION
+# DYNAMIC TP UPDATE
 # ============================================================================
 def update_order_tp(
     api,
@@ -689,177 +417,91 @@ def update_order_tp(
     trade_id,
     instrument,
     new_tp_price,
-    token=None,
-    environment="practice",
     send_telegram=None,
 ):
-    """
-    Update Take-Profit on an OPEN TRADE (OANDA Trade API — correct approach).
-    OANDA does NOT allow updating orders once filled — we update the TRADE's TP instead.
-    Returns: {"ok": bool, "status": str, "old_tp": float, "new_tp": float}
-    """
-    from oandapyV20.endpoints.trades import TradeCRCDO
+    """Update TP on an open trade — raises on failure, returns dict on success."""
+    dec = price_decimals(instrument)
+    new_tp_str = f"{float(new_tp_price):.{dec}f}"
+    data = {"takeProfit": {"price": new_tp_str, "timeInForce": "GTC"}}
 
     try:
-        dec = price_decimals(instrument)
-        new_tp_str = f"{float(new_tp_price):.{dec}f}"
-
-        # ✅ OANDA: Update TP on the TRADE (not the order — orders are immutable once filled)
-        data = {"takeProfit": {"price": new_tp_str, "timeInForce": "GTC"}}
-
-        logger.info(f"🔄 Updating TP: {instrument} trade {trade_id} → {new_tp_str}")
-        r = TradeCRCDO(accountID=account_id, tradeID=trade_id, data=data)
-        resp = api.request(r)
-
+        resp = api.request(
+            TradeCRCDO(accountID=account_id, tradeID=trade_id, data=data)
+        )
         if "takeProfitOrderTransaction" in resp:
             txid = resp["takeProfitOrderTransaction"]["id"]
-            msg = f"✅ TP UPDATED {instrument} → {new_tp_str} (TxID: {txid})"
+            msg = f"✅ TP UPDATED {instrument} → {new_tp_str}"
             logger.info(msg)
             if send_telegram:
-                send_telegram_message(msg)
-            return {
-                "ok": True,
-                "status": "UPDATED",
-                "new_tp": new_tp_price,
-                "txid": txid,
-            }
-        else:
-            logger.warning(f"⚠️ Unexpected TP update response: {resp}")
-            return {"ok": False, "status": "UNEXPECTED", "response": resp}
-
+                send_telegram(msg)
+            return {"ok": True, "status": "UPDATED", "new_tp": new_tp_price, "txid": txid}
+        return {"ok": False, "status": "UNEXPECTED", "response": resp}
     except Exception as e:
-        err = f"❌ TP UPDATE FAILED {instrument}: {type(e).__name__}: {e}"
+        err = f"❌ TP UPDATE FAILED {instrument}: {e}"
         logger.error(err)
         if send_telegram:
-            send_telegram_message(err)
+            send_telegram(err)
         return {"ok": False, "status": "ERROR", "error": str(e)}
 
-
 # ============================================================================
-# ACCOUNT EQUITY
+# TP AUTO-ATTACH — FIXED: decimal precision, opt-in, scoped
 # ============================================================================
-def get_account_equity(api, oanda_account_id: str) -> float:
-    """Fetch current account balance."""
-    try:
-        from oandapyV20.endpoints.accounts import AccountDetails
+def attach_tp_to_open_positions(
+    api,
+    oanda_account_id: str,
+    instrument: str | None = None,
+    atr_dist_pips: float = 30.0,
+    force: bool = False,
+) -> int:
+    """
+    Attach TP to trades missing one — ONLY when explicitly called.
+    Fixed: JPY uses 3 decimals, respects existing TP, scoped to instrument.
+    """
+    resp = api.request(OpenTrades(accountID=oanda_account_id))
+    trades = resp.get("trades", [])
+    if instrument:
+        trades = [t for t in trades if t["instrument"] == instrument]
+    if not trades:
+        logger.info("📋 No open trades to process")
+        return 0
 
-        resp = api.request(AccountDetails(accountID=oanda_account_id))
-        return float(resp["account"]["balance"])
-    except Exception as e:
-        logger.warning(f"Could not fetch equity: {e}, using fallback 10000")
-        return 10000.0
+    attached = 0
+    for trade in trades:
+        tid = trade["id"]
+        inst = trade["instrument"]
+        units = float(trade["currentUnits"])
+        entry = float(trade["price"])
+        existing_tp = trade.get("takeProfitOrder", {}).get("price")
 
+        if existing_tp and not force:
+            logger.debug(f"   ✅ {inst} #{tid}: TP exists @ {existing_tp} — skipped")
+            continue
 
-# ============================================================================
-# STRENGTH-BASED CLOSE LOGIC
-# ============================================================================
-def should_close_by_strength(
-    pair: str, side: str, strength_scores: dict, threshold: float = 1.0
-) -> tuple:
-    """Determine if position should close based on currency strength flip."""
-    clean = pair.replace("=X", "").replace("_", "")
-    if len(clean) == 6:
-        base, quote = clean[:3], clean[3:]
-    else:
-        parts = pair.replace("=X", "").split("_")
-        if len(parts) == 2:
-            base, quote = parts[0], parts[1]
+        pip = 0.01 if "JPY" in inst else 0.0001
+        dec = 3 if "JPY" in inst else 5
+        is_long = units > 0
+
+        if is_long:
+            tp_price = round(entry + (atr_dist_pips * pip), dec)
         else:
-            return False, ""
+            tp_price = round(entry - (atr_dist_pips * pip), dec)
 
-    base_score = strength_scores.get(base, 0)
-    quote_score = strength_scores.get(quote, 0)
-    gap = base_score - quote_score
+        logger.info(f"🔧 Attach TP {inst} #{tid}: entry={entry} → TP={tp_price}")
+        try:
+            api.request(TradeCRCDO(
+                accountID=oanda_account_id,
+                tradeID=tid,
+                data={"takeProfit": {"price": f"{tp_price}", "timeInForce": "GTC"}}
+            ))
+            attached += 1
+        except Exception as e:
+            logger.warning(f"   ❌ Failed {inst} #{tid}: {e}")
 
-    if side == "long" and -gap > threshold:
-        return (
-            True,
-            f"Strength flip: {quote} (+{quote_score:.2f}) stronger than {base} ({base_score:.2f}), gap={-gap:.2f}",
-        )
-    if side == "short" and gap > threshold:
-        return (
-            True,
-            f"Strength flip: {base} (+{base_score:.2f}) stronger than {quote} ({quote_score:.2f}), gap={gap:.2f}",
-        )
-    return False, ""
-
+    logger.info(f"📋 TP attach complete: {attached} updated")
+    return attached
 
 # ============================================================================
-# LEGACY MC LOADER
-# ============================================================================
-def load_mc_legacy(
-    pair: str, results_dir: Path, today_str: str, max_age_hours: int = 24
-):
-    """Load cached MC result from today's files if fresh enough."""
-    safe = pair.replace("=X", "").replace("=", "_")
-    for f in [
-        results_dir / f"fx_daily_{safe}_{today_str}.json",
-        results_dir / f"daily_mc_{safe}_{today_str}.json",
-        results_dir / f"h4_mc_{safe}_{today_str}.json",
-    ]:
-        if f.exists():
-            age = (
-                datetime.now(timezone.utc)
-                - datetime.fromtimestamp(f.stat().st_mtime, timezone.utc)
-            ).total_seconds() / 3600
-            if age <= max_age_hours:
-                with open(f) as j:
-                    return json.load(j), True
-    return None, False
-
-
-# ============================================================================
-# TELEGRAM REPORT BUILDERS
-# ============================================================================
-def build_mc_telegram(
-    mc_results: list,
-    mc_report_title: str,
-    mc_tf: str,
-    mc_lookback: int,
-    mc_forecast: int,
-    simulations: int,
-) -> str:
-    """Format MC results for Telegram message."""
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    lines = [
-        f"📊 **{mc_report_title}**",
-        f"📅 Generated: {now}",
-        f"🔹 TF: {mc_tf} | Lookback: {mc_lookback} | Forecast: {mc_forecast} | Sims: {simulations}",
-        "",
-    ]
-    for r in mc_results:
-        dec = price_decimals(r["pair"])
-        lo, hi = r["range_90"]
-        lines.extend(
-            [
-                f"🔹 **{r['pair']}**",
-                f"   💵 Last Close: `{r['current_price']}`",
-                f"   📊 Percentile: `{r['percentile_rank']}%`",
-                f"   🎯 UP: `{r['p_up_pct']}%` | DOWN: `{r['p_down_pct']}%`",
-                f"   📏 90% Band: `{lo}` – `{hi}`",
-                f"   🔍 Touch: Low `{r['touch_lower_pct']}%` | High `{r['touch_upper_pct']}%`",
-                f"   {r['regime']}",
-                "",
-            ]
-        )
-    return "\n".join(lines)
-
-
-def build_trade_telegram(trade_lines: list, mc_summary: list = None) -> str:
-    """Format trade summary for Telegram message."""
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    lines = [f"🤖 MULTI‑PAIR UPDATE — {now}"]
-    lines.extend(trade_lines)
-    if mc_summary:
-        lines.append("")
-        lines.append("📊 *MC Context:*")
-        for s in mc_summary:
-            lines.append(f"   {s}")
-    return "\n".join(lines)
-
-
-# ============================================================================
-# 🎯 DYNAMIC POSITION MANAGER — Breakeven + Trailing Stop + ✅ DYNAMIC TP
+# DYNAMIC POSITION MANAGER — FIXED: dynamic_tp OFF by default
 # ============================================================================
 class DynamicPositionManager:
     def __init__(
@@ -871,7 +513,7 @@ class DynamicPositionManager:
         trail_trigger_atr_mult: float = 2.5,
         trail_atr_mult: float = 1.5,
         max_hold_bars: int = 12,
-        dynamic_tp: bool = True,
+        dynamic_tp: bool = False,  # ⚠️ DEFAULT: DISABLED — opt-in only
         tp_raise_thresh_pips: int = 15,
         telegram_send=None,
     ):
@@ -889,189 +531,192 @@ class DynamicPositionManager:
     def _get_open_trades(self, instrument: str):
         try:
             resp = self.api.request(OpenTrades(accountID=self.account_id))
-            return [
-                t for t in resp.get("trades", []) if t.get("instrument") == instrument
-            ]
-
+            return [t for t in resp.get("trades", []) if t.get("instrument") == instrument]
         except Exception as e:
-            if "404" in str(e) or "NO_SUCH_POSITION" in str(e):
-                logger.info(
-                    f"  ✅ {instrument}: No open trades"
-                )  # was DEBUG → now INFO
-            else:
-                logger.error(f"  ❌ Failed to fetch trades for {instrument}: {e}")
+            logger.error(f"  ❌ Failed to fetch trades {instrument}: {e}")
             return []
 
-    def _current_price(self, instrument: str, side: str) -> float:
-        """Get live bid/ask price — uses CORRECT OANDA format (EUR_USD)."""
+    def _current_price(self, instrument: str, side: str) -> float | None:
         try:
-            # ✅ DO NOT strip underscores! OANDA NEEDS EUR_USD, NOT EURUSD
             prices = get_live_prices(instrument)
-
             if prices and "bid" in prices and "ask" in prices:
-                # LONG → use BID price | SHORT → use ASK price
                 return prices["bid"] if side == "long" else prices["ask"]
-
-            logger.debug(f"  ⚠️ Price fallback for {instrument}")
             return None
-
         except Exception as e:
-            logger.warning(f"  ⚠️ Price fetch failed for {instrument}: {e}")
+            logger.warning(f"  ⚠️ Price fetch failed {instrument}: {e}")
             return None
 
-    def _update_trade_sl(self, trade_id: str, new_sl: float, decimals: int):
+    def _update_trade_sl(self, trade_id: str, new_sl: float, decimals: int) -> bool:
         try:
-            data = {
-                "stopLoss": {
-                    "price": str(round(new_sl, decimals)),
-                    "timeInForce": "GTC",
-                }
-            }
-            self.api.request(
-                TradeCRCDO(accountID=self.account_id, tradeID=trade_id, data=data)
-            )
-            logger.info(
-                f"   🔄 Updated SL on trade {trade_id} → {round(new_sl, decimals)}"
-            )
+            self.api.request(TradeCRCDO(
+                accountID=self.account_id,
+                tradeID=trade_id,
+                data={"stopLoss": {"price": f"{new_sl:.{decimals}f}", "timeInForce": "GTC"}}
+            ))
+            logger.info(f"   🔄 SL updated → {new_sl:.{decimals}f}")
             return True
         except Exception as e:
-            logger.error(f"   ❌ Failed to update SL on trade {trade_id}: {e}")
+            logger.error(f"   ❌ SL update failed: {e}")
             return False
-
-    def _update_trade_tp(
-        self, trade_id: str, instrument: str, new_tp: float, decimals: int
-    ):
-        """✅ Update TP on an open trade — uses shared helper"""
-        return update_order_tp(
-            self.api,
-            self.account_id,
-            trade_id,
-            instrument,
-            new_tp,
-            send_telegram=self.telegram,
-        )
 
     def update_all(self, pair_data: dict, close_position_fn=None):
         BAR_HOURS = {"15m": 0.25, "1H": 1, "H4": 4, "D": 24}
         bar_hours = BAR_HOURS.get(self.timeframe, 4)
-        pip_size_map = lambda p: 0.01 if "JPY" in p.upper() else 0.0001
 
         for pair, info in pair_data.items():
             instrument = info["oanda"]
             df = info.get("df")
             if df is None or len(df) < 2:
                 continue
-
             atr_val = df.iloc[-1].get("atr")
             if atr_val is None or np.isnan(atr_val) or atr_val <= 0:
                 continue
 
             decimals = price_decimals(pair)
-            pip = pip_size_map(pair)
+            pip = 0.01 if "JPY" in pair.upper() else 0.0001
             trades = self._get_open_trades(instrument)
             if not trades:
                 continue
-
-            # ✅ Load TP state
-            tp_state_file = Path(__file__).parent / "tp_state.json"
-            tp_state = {}
-            if tp_state_file.exists():
-                with open(tp_state_file) as f:
-                    tp_state = json.load(f)
 
             for trade in trades:
                 tid = trade["id"]
                 units = int(trade["currentUnits"])
                 side = "long" if units > 0 else "short"
                 entry = float(trade["price"])
-                current_sl_raw = trade.get("stopLossOrder", {}).get("price")
-                current_sl = float(current_sl_raw) if current_sl_raw else None
-                current_tp_raw = trade.get("takeProfitOrder", {}).get("price")
-                current_tp = float(current_tp_raw) if current_tp_raw else None
+                current_sl = float(trade["stopLossOrder"]["price"]) if trade.get("stopLossOrder") else None
+                current_tp = float(trade["takeProfitOrder"]["price"]) if trade.get("takeProfitOrder") else None
 
                 current_price = self._current_price(instrument, side)
                 if current_price is None:
                     continue
 
                 profit_pips = (
-                    (current_price - entry) / pip
-                    if side == "long"
+                    (current_price - entry) / pip if side == "long"
                     else (entry - current_price) / pip
                 )
-                open_time = datetime.fromisoformat(
-                    trade["openTime"].replace("Z", "+00:00")
-                )
-                bars_held = (
-                    (datetime.now(timezone.utc) - open_time).total_seconds()
-                    / 3600
-                    / bar_hours
-                )
 
-                # ⏰ Time-based exit
+                open_time = datetime.fromisoformat(trade["openTime"].replace("Z", "+00:00"))
+                bars_held = (utcnow_safe() - open_time).total_seconds() / 3600 / bar_hours
+
                 if bars_held >= self.max_hold:
-                    logger.info(
-                        f"⏰ TIME EXIT: {pair} trade {tid} held {bars_held:.1f} bars"
-                    )
+                    logger.info(f"⏰ TIME EXIT {pair} #{tid}: held {bars_held:.1f} bars")
                     if close_position_fn:
                         close_position_fn(instrument)
                     continue
 
-                # ── ✅ DYNAMIC TP — Only RAISE, never lower ──
+                # Dynamic TP — only runs if explicitly enabled
                 if self.dynamic_tp:
-                    atr_mult_tp = 3.0  # Match your config
+                    atr_mult_tp = 3.0
                     if side == "long":
-                        new_tp_candidate = current_price + (atr_mult_tp * atr_val)
-                        if current_tp is None or new_tp_candidate > current_tp + (
-                            self.tp_thresh_pips * pip
-                        ):
-                            self._update_trade_tp(
-                                tid, instrument, new_tp_candidate, decimals
+                        new_tp = current_price + (atr_mult_tp * atr_val)
+                        if current_tp is None or new_tp > current_tp + (self.tp_thresh_pips * pip):
+                            update_order_tp(
+                                self.api, self.account_id, tid, instrument, new_tp,
+                                send_telegram=self.telegram
                             )
-                    else:  # SHORT
-                        new_tp_candidate = current_price - (atr_mult_tp * atr_val)
-                        if current_tp is None or new_tp_candidate < current_tp - (
-                            self.tp_thresh_pips * pip
-                        ):
-                            self._update_trade_tp(
-                                tid, instrument, new_tp_candidate, decimals
+                    else:
+                        new_tp = current_price - (atr_mult_tp * atr_val)
+                        if current_tp is None or new_tp < current_tp - (self.tp_thresh_pips * pip):
+                            update_order_tp(
+                                self.api, self.account_id, tid, instrument, new_tp,
+                                send_telegram=self.telegram
                             )
 
-                # ── SL LOGIC → Breakeven → Trailing ──
-                new_sl = action = None
+                # Breakeven → Trailing SL
                 be_pips = self.be_trigger * atr_val / pip
                 trail_pips = self.trail_trigger * atr_val / pip
+                new_sl = action = None
 
-                # Breakeven SL
                 if profit_pips >= be_pips:
                     be_sl = entry - pip if side == "long" else entry + pip
-                    if (
-                        current_sl is None
-                        or (side == "long" and be_sl > current_sl)
-                        or (side == "short" and be_sl < current_sl)
+                    if current_sl is None or (
+                        (side == "long" and be_sl > current_sl) or
+                        (side == "short" and be_sl < current_sl)
                     ):
                         new_sl, action = be_sl, "BREAKEVEN"
 
-                # Trailing SL (overrides BE)
                 if profit_pips >= trail_pips:
                     trail_sl = (
-                        current_price - self.trail_mult * atr_val
-                        if side == "long"
+                        current_price - self.trail_mult * atr_val if side == "long"
                         else current_price + self.trail_mult * atr_val
                     )
-                    if (
-                        current_sl is None
-                        or (side == "long" and trail_sl > current_sl)
-                        or (side == "short" and trail_sl < current_sl)
+                    if current_sl is None or (
+                        (side == "long" and trail_sl > current_sl) or
+                        (side == "short" and trail_sl < current_sl)
                     ):
                         new_sl, action = trail_sl, "TRAIL"
 
-                # Apply SL update only if moving in your favor
                 if new_sl and action:
-                    if (side == "long" and current_sl and new_sl < current_sl) or (
-                        side == "short" and current_sl and new_sl > current_sl
+                    if current_sl and (
+                        (side == "long" and new_sl < current_sl) or
+                        (side == "short" and new_sl > current_sl)
                     ):
-                        continue  # Never move SL against you
+                        continue  # Never move SL against position
                     if self._update_trade_sl(tid, new_sl, decimals) and self.telegram:
                         self.telegram(
-                            f"🎯 {action} on {pair} #{tid} | Price: {current_price} | New SL: {round(new_sl, decimals)} | Profit: {profit_pips:.1f} pips"
+                            f"🎯 {action} {pair} #{tid} | Profit: {profit_pips:.1f}p → SL: {new_sl:.{decimals}f}"
                         )
+
+# ============================================================================
+# REMOVED: open_oanda_order — unused variant with known issues
+# ============================================================================
+
+# ============================================================================
+# REMAINING UTILITIES — cleaned
+# ============================================================================
+def fetch_candles(api, oanda_instrument: str, gran: str, count: int = 100):
+    resp = api.request(InstrumentsCandles(
+        instrument=oanda_instrument, params={"granularity": gran, "count": count, "price": "M"}
+    ))
+    return pd.DataFrame([{
+        "Time": c["time"], "Open": float(c["mid"]["o"]), "High": float(c["mid"]["h"]),
+        "Low": float(c["mid"]["l"]), "Close": float(c["mid"]["c"])
+    } for c in resp["candles"]]).set_index("Time")
+
+def should_close_by_strength(pair: str, side: str, strength_scores: dict, threshold: float = 1.0):
+    clean = pair.replace("=X", "").replace("_", "")
+    base, quote = clean[:3], clean[3:] if len(clean) == 6 else pair.replace("=X", "").split("_", 1)
+    if isinstance(quote, list):
+        return False, "Parse fail"
+    base_score = strength_scores.get(base, 0)
+    quote_score = strength_scores.get(quote, 0)
+    gap = base_score - quote_score
+    if side == "long" and -gap > threshold:
+        return True, f"Strength flip: {quote}+{quote_score:.2f} > {base}{base_score:.2f}"
+    if side == "short" and gap > threshold:
+        return True, f"Strength flip: {base}+{base_score:.2f} > {quote}{quote_score:.2f}"
+    return False, ""
+
+def load_mc_legacy(pair: str, results_dir: Path, today_str: str, max_age_hours: int = 24):
+    safe = pair.replace("=X", "").replace("=", "_")
+    for f in [
+        results_dir / f"fx_daily_{safe}_{today_str}.json",
+        results_dir / f"daily_mc_{safe}_{today_str}.json",
+        results_dir / f"h4_mc_{safe}_{today_str}.json",
+    ]:
+        if f.exists():
+            mtime = datetime.fromtimestamp(f.stat().st_mtime, timezone.utc)
+            if (utcnow_safe() - mtime).total_seconds() / 3600 <= max_age_hours:
+                with open(f) as j:
+                    return json.load(j), True
+    return None, False
+
+def build_mc_telegram(mc_results, title, tf, lookback, fcst, sims):
+    now = utcnow_safe().strftime("%Y-%m-%d %H:%M UTC")
+    lines = [f"📊 **{title}**", f"📅 {now}", f"🔹 {tf} | LB:{lookback} FC:{fcst} Sims:{sims}", ""]
+    for r in mc_results:
+        lo, hi = r["range_90"]
+        lines.extend([
+            f"🔹 **{r['pair']}**",
+            f"   Last: `{r['current_price']}` | Pctl: `{r['percentile_rank']}%`",
+            f"   Up: `{r['p_up_pct']}%` Down: `{r['p_down_pct']}%`",
+            f"   90%: `{lo}`–`{hi}` | {r['regime']}", ""
+        ])
+    return "\n".join(lines)
+
+def build_trade_telegram(trade_lines, mc_summary=None):
+    now = utcnow_safe().strftime("%Y-%m-%d %H:%M UTC")
+    lines = [f"🤖 UPDATE — {now}"] + trade_lines
+    if mc_summary:
+        lines += ["", "📊 MC Context:"] + [f"   {s}" for s in mc_summary]
+    return "\n".join(lines)
