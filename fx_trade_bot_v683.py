@@ -81,14 +81,54 @@ _TREND_TP_CONFIG = {
         "tp_mult": 1.2,
         "ema_period": 10,
         "slope_lookback": 5,
-        "min_slope": 0.0003,
+        # Widened from 0.001 to 0.0003. Three separate live runs showed this
+        # relaxation changed nothing (the blocked candidates failed the price
+        # leg, not the slope one), so it is currently unproven either way.
+        #
+        # Tightening ladder — widen first, tighten only on evidence. To advance
+        # a rung, edit ONLY `min_slope_rung` below (profile config also works);
+        # no code change is needed. Guardrails live in resolve_min_slope().
+        # Advance only when SLOPE_DIAG rows with would_flip=True have
+        # accumulated (target >= 20) AND those signals' outcomes are known.
+        # Never advance on elapsed time alone: with would_flip rows near zero
+        # there is no statistical basis for the change either way.
+        "min_slope_rung": 0.0003,
     },
 }
 
-# profile3 的 min_slope 相对放宽前的比例（0.0003 / 0.001）。
-# 仅用于 SLOPE_DIAG 诊断敏感带的上界推导；改 min_slope 时必须同步这个常量，
-# 否则敏感带会静默失真。
-RELAXED_SLOPE_FRACTION = 0.3
+# Tightening-ladder rungs, widest first. The last entry is the original,
+# strictest value, so completing the ladder is equivalent to reverting the
+# relaxation. Any value outside this list is refused by resolve_min_slope().
+MIN_SLOPE_LADDER = (0.0003, 0.0005, 0.0007, 0.001)
+
+
+def resolve_min_slope(profile_cfg, profile_name):
+    """Resolve the active min_slope rung for a profile, with guardrails.
+
+    Precedence: `min_slope_rung` (the ladder knob) → legacy `min_slope`.
+    A rung outside MIN_SLOPE_LADDER is refused rather than silently accepted,
+    so a typo cannot widen the filter beyond the agreed floor.
+    """
+    rung = profile_cfg.get("min_slope_rung")
+    if rung is None:
+        return profile_cfg["min_slope"]
+    if rung not in MIN_SLOPE_LADDER:
+        logger.warning(
+            f"⚠️ {profile_name}: min_slope_rung={rung} is not a ladder rung "
+            f"{MIN_SLOPE_LADDER} — using {MIN_SLOPE_LADDER[-1]} instead"
+        )
+        return MIN_SLOPE_LADDER[-1]
+    return rung
+
+# Tightening-ladder baseline: the original, strictest min_slope value.
+# SLOPE_DIAG uses it to decide whether a candidate's outcome changed because of
+# the relaxation:
+#   |slope| < SLOPE_DIAG_BASELINE and |slope| >= current min_slope
+#   → exactly the candidates the relaxation let through.
+# It is an absolute magnitude and does not track any profile's min_slope, so
+# each rung of the ladder (0.0003 -> 0.0005 -> 0.0007 -> 0.001) needs no edit
+# here.
+SLOPE_DIAG_BASELINE = 0.001
 
 
 # ─── TREND HELPERS ──────────────────────────────────────────────────────────
@@ -164,19 +204,44 @@ def evaluate_trend_and_tp(
 
     ema10 = calculate_ema(df_h1["Close"], cfg["ema_period"])
     slope, ema_level = calculate_ema_slope(ema10, cfg["slope_lookback"])
-    min_slope = cfg["min_slope"]
+    min_slope = resolve_min_slope(cfg, profile_name)
     current_price = entry_price
 
     if SLOPE_DIAG:
-        slope_abs = abs(slope)
-        # Band = profile's live threshold up to the stricter pre-relaxation value;
-        # any |slope| in here is a decision the old threshold would have blocked.
-        band_hi = min_slope / RELAXED_SLOPE_FRACTION
-        in_sensitive_zone = min_slope < slope_abs <= band_hi
+        # Mirror the filter's own branch so the diagnostic reports the real
+        # decision, not a proxy. The previous version only compared |slope|
+        # against a band, omitting the price condition entirely — so a candidate
+        # blocked purely by price (e.g. slope=+0.000092 with "Price above EMA10")
+        # was reported as a slope-sensitive sample and skewed the tuning data.
+        if direction == "BUY":
+            price_ok = current_price > ema_level
+            # >= and <= mirror the filter's own comparisons exactly; strict >/<
+            # would disagree with it on a slope exactly equal to the threshold.
+            slope_ok_loose = slope >= min_slope
+            slope_ok_strict = slope >= SLOPE_DIAG_BASELINE
+            cmp_loose, cmp_strict = "<=", "<="
+        else:
+            price_ok = current_price < ema_level
+            slope_ok_loose = slope <= -min_slope
+            slope_ok_strict = slope <= -SLOPE_DIAG_BASELINE
+            cmp_loose, cmp_strict = ">=", ">="
+        # Orthogonal flags on purpose:
+        #   sensitive   — the relaxation alone changes the SLOPE verdict
+        #                 (migrated from the band check, now exact and not
+        #                 masked by the price condition, so the slope
+        #                 distribution of every candidate stays measurable)
+        #   would_flip  — the candidate only passes because of the relaxation
+        #                 (price gate satisfied AND slope in the widened band).
+        #                 These are the exact rows the tightening ladder needs.
+        sensitive = slope_ok_loose and not slope_ok_strict
+        would_flip = price_ok and sensitive
         logger.info(
             f"📊 SLOPE DIAG: profile={profile_name} dir={direction} tf={timeframe} "
-            f"slope={slope:.6f} min_slope={min_slope:.6f} band=[{min_slope:.6f},{band_hi:.6f}] "
-            f"|slope|={slope_abs:.6f} sensitive={in_sensitive_zone}"
+            f"slope={slope:.6f} min_slope={min_slope:.6f} "
+            f"price_ok={price_ok} "
+            f"loose({-min_slope:.6f}{cmp_loose})={slope_ok_loose} "
+            f"strict({-SLOPE_DIAG_BASELINE:.6f}{cmp_strict})={slope_ok_strict} "
+            f"sensitive={sensitive} would_flip={would_flip}"
         )
 
     if ema_cross_filter:
@@ -298,6 +363,11 @@ logger = logging.getLogger(__name__)
 
 # ─── CONSOLIDATED STRATEGY CONSTANTS ─────────────────────────────────────────
 TREND_TP_CONFIG = cfg("TREND_TP_CONFIG", _TREND_TP_CONFIG)
+ACTIVE_MIN_SLOPE = resolve_min_slope(TREND_TP_CONFIG.get(PROFILE_NAME, {}), PROFILE_NAME)
+logger.info(
+    f"🪜 MIN_SLOPE LADDER: active rung={ACTIVE_MIN_SLOPE} "
+    f"(ladder {MIN_SLOPE_LADDER}, widest first; last entry = original strictest)"
+)
 REQUIRE_DIRECTION_CONSENSUS = cfg_bot("REQUIRE_DIRECTION_CONSENSUS", True)
 CONSENSUS_THRESHOLD = cfg_bot("CONSENSUS_THRESHOLD", 2)
 XGB_BULLISH_THRESHOLD = cfg_bot("XGB_BULLISH_THRESHOLD", 0.55)
@@ -567,10 +637,15 @@ def calc_weighted_score(
 
     S = max(0.0, min(100.0, abs(gap) / 3.5 * 100.0))
     rsi = max(0.0, min(100.0, rsi_val))
-    if direction == "BUY":
-        R = max(0.0, min(100.0, (50.0 - rsi) * 2.0))
-    else:
-        R = max(0.0, min(100.0, (rsi - 50.0) * 2.0))
+    # Score the deviation from the 50 midline in the direction of the trade.
+    # The previous form — `(rsi - 50) * 2` for a SELL, floored at 0 — was not a
+    # measurement of RSI but a hard gate at 50: any short with RSI <= 50 scored
+    # exactly 0, so the configured 15% RSI weight vanished for roughly half of
+    # all candidates purely because the reading landed on the wrong side of the
+    # midline (e.g. RSI 47.5 → 0.0 while RSI 63.5 → 26.9).
+    # |rsi - 50| * 2 keeps the same 0-100 scale at the extremes and stays
+    # monotonic in RSI conviction, with 50 → 0 exactly as the midline implies.
+    R = max(0.0, min(100.0, abs(rsi - 50.0) * 2.0))
 
     adx_normalized = min(adx_val * ADX_SCALE_FACTOR, 100.0)
     if ADX_FLOOR_ENABLED and adx_normalized < ADX_MIN_SCORE:
@@ -892,25 +967,23 @@ def main():
         direction, w = calc_weighted_score(
             pair, gap, rsi_val, adx_val, prob_raw, mc_pct_up
         )
+        if direction and w:
+            tag = "✅" if w["PASS"] else "❌"
+            logger.info(
+                f"{tag} SCORE {pair} {direction} | "
+                f"S={w['S']:5.1f}×{W_S:.2f}={w['S']*W_S:4.1f}  "
+                f"R={w['R']:5.1f}×{W_R:.2f}={w['R']*W_R:4.1f}  "
+                f"A={w['A']:5.1f}×{W_A:.2f}={w['A']*W_A:4.1f}  "
+                f"X={w['X']:5.1f}×{W_X:.2f}={w['X']*W_X:4.1f}  "
+                f"M={w['M']:5.1f}×{W_M:.2f}={w['M']*W_M:4.1f}  | FINAL={w['FINAL']:.2f}"
+            )
+
         if not (direction and w and w["PASS"]):
             if w and not w["PASS"]:
-                # .2f, not .1f: a score of 29.97 against a 30.0 floor printed as
-                # "FINAL 30.0 < 30.0", which reads as an impossible comparison.
-                # THRESHOLD is stored rounded to 1dp in calc_weighted_score(),
-                # so show the exact bar rather than the rounded one.
                 logger.info(
                     f"➖ REASON: FINAL {w['FINAL']:.2f} < MIN_CONVICTION={min_conv:.2f}"
                 )
             continue
-
-        logger.info(
-            f"⚖️  SCORE {pair} {direction} | "
-            f"S={w['S']:5.1f}×{W_S:.2f}={w['S']*W_S:4.1f}  "
-            f"R={w['R']:5.1f}×{W_R:.2f}={w['R']*W_R:4.1f}  "
-            f"A={w['A']:5.1f}×{W_A:.2f}={w['A']*W_A:4.1f}  "
-            f"X={w['X']:5.1f}×{W_X:.2f}={w['X']*W_X:4.1f}  "
-            f"M={w['M']:5.1f}×{W_M:.2f}={w['M']*W_M:4.1f}  | FINAL={w['FINAL']:5.1f}"
-        )
 
         weekly_ema100 = resolve_weekly_ema100(
             weekly_ema_cache.get(oanda),

@@ -25,6 +25,7 @@ WANTED = {
     "_pips_to_price",
     "_price_to_pips",
     "resolve_weekly_ema100",
+    "resolve_min_slope",
     "evaluate_trend_and_tp",
 }
 
@@ -56,11 +57,12 @@ def load_real_functions():
     cfg_src = module_literal("_TREND_TP_CONFIG")
     # Module-level scalar the diagnostic block reads, extracted the same way so
     # the test exercises the shipped value rather than a hardcoded copy.
-    band_fraction = module_literal("RELAXED_SLOPE_FRACTION")
+    baseline = module_literal("SLOPE_DIAG_BASELINE")
     ns = {
         "pd": pd,
         "logger": logging.getLogger("offline-test"),
-        "RELAXED_SLOPE_FRACTION": band_fraction,
+        "SLOPE_DIAG_BASELINE": baseline,
+        "MIN_SLOPE_LADDER": module_literal("MIN_SLOPE_LADDER"),
     }
     exec(compile(mod, str(BOT), "exec"), ns)
     return ns, cfg_src, missing
@@ -95,7 +97,7 @@ def run(profile, direction, min_slope, price_side_ok=True):
             "tp_mult": 1.2,
             "ema_period": 10,
             "slope_lookback": 5,
-            "min_slope": min_slope,
+            "min_slope_rung": min_slope,
         },
     }
     env = dict(NS)
@@ -182,15 +184,22 @@ def main():
     logging.basicConfig(level=logging.WARNING, format="      log| %(message)s")
     failures = []
 
-    p3_new = SHIPPED_CFG["profile3"]["min_slope"]
+    p3_rung = SHIPPED_CFG["profile3"]["min_slope_rung"]
     p2_now = SHIPPED_CFG["profile2"]["min_slope"]
-    print(f"shipped profile3.min_slope = {p3_new}")
-    print(f"shipped profile2.min_slope = {p2_now}\n")
+    print(f"shipped profile3.min_slope_rung = {p3_rung}")
+    print(f"shipped profile2.min_slope      = {p2_now}\n")
 
-    if p3_new != 0.0003:
-        failures.append(f"profile3.min_slope is {p3_new}, expected 0.0003")
+    ladder = NS["MIN_SLOPE_LADDER"]
+    print(f"MIN_SLOPE_LADDER = {ladder}")
+    if p3_rung not in ladder:
+        failures.append(f"profile3.min_slope_rung {p3_rung} is not a ladder rung")
+    if p3_rung != 0.0003:
+        failures.append(f"profile3 rung is {p3_rung}, expected the widest 0.0003")
     if p2_now != 0.001:
         failures.append(f"profile2.min_slope changed to {p2_now} — must stay 0.001")
+    # profile2 was never relaxed, so it must not carry a ladder knob at all.
+    if "min_slope_rung" in SHIPPED_CFG["profile2"]:
+        failures.append("profile2 gained a min_slope_rung it should not have")
 
     cases = [
         # (label, profile, direction, min_slope, price_side_ok, expect_pass)
@@ -229,26 +238,101 @@ def main():
     if f"{tiny:.6f}" == f"{0.0:.6f}":
         failures.append("log precision still collapses tiny slopes to 0.000000")
 
-    print("\nSLOPE DIAG band derivation (SLOPE_DIAG=True, profile3):")
-    handler = logging.StreamHandler(sys.stdout)
-    handler.setFormatter(logging.Formatter("      diag| %(message)s"))
+    print("\nSLOPE DIAG sensitive-band criteria (SLOPE_DIAG=True, profile3):")
+    import re
+
+    diag_lines = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record):
+            if "SLOPE DIAG" in record.getMessage():
+                diag_lines.append(record.getMessage())
+
+    handler = _Capture()
     diag_logger = NS["logger"]
     diag_logger.addHandler(handler)
     diag_logger.setLevel(logging.INFO)
     NS["SLOPE_DIAG"] = True
     try:
-        run("profile3", "SELL", p3_new)
+        # price_ok=True (entry on the correct side of EMA10)
+        run("profile3", "SELL", p3_rung, price_side_ok=True)
+        # price_ok=False — the USDJPY case: slope-sensitive but price-blocked
+        run("profile3", "SELL", p3_rung, price_side_ok=False)
+        run("profile3", "BUY", p3_rung, price_side_ok=True)
     finally:
         diag_logger.removeHandler(handler)
         NS["SLOPE_DIAG"] = False
 
-    frac = NS.get("RELAXED_SLOPE_FRACTION")
-    expected_hi = p3_new / frac if frac else None
-    print(f"   RELAXED_SLOPE_FRACTION={frac} -> band_hi={expected_hi}")
-    if frac is None or abs(expected_hi - 0.001) > 1e-12:
-        failures.append(
-            f"band_hi derived as {expected_hi}, expected 0.001 (0.0003/0.3)"
+    baseline = NS.get("SLOPE_DIAG_BASELINE")
+    print(f"   SLOPE_DIAG_BASELINE={baseline} (independent of min_slope)")
+    if baseline != 0.001:
+        failures.append(f"SLOPE_DIAG_BASELINE is {baseline}, expected 0.001")
+    if len(diag_lines) != 3:
+        failures.append(f"expected 3 diagnostic lines, captured {len(diag_lines)}")
+
+    pattern = re.compile(
+        r"slope=(?P<slope>-?\d+\.\d+) min_slope=(?P<min_slope>\d+\.\d+) "
+        r"price_ok=(?P<price_ok>True|False) "
+        r"loose\((?P<loose_th>-?[\d.]+)(?P<loose_cmp>[<>]=)\)=(?P<loose>True|False) "
+        r"strict\((?P<strict_th>-?[\d.]+)(?P<strict_cmp>[<>]=)\)=(?P<strict>True|False) "
+        r"sensitive=(?P<sensitive>True|False) would_flip=(?P<flip>True|False)"
+    )
+    for line in diag_lines:
+        # search(), not match(): the subject starts with "profile=..." and the
+        # slope fields come later.
+        m = pattern.search(line.split("SLOPE DIAG: ", 1)[1])
+        if not m:
+            failures.append(f"diagnostic line did not parse: {line}")
+            continue
+        d = m.groupdict()
+        slope = float(d["slope"])
+        loose = d["loose"] == "True"
+        strict = d["strict"] == "True"
+        sensitive = d["sensitive"] == "True"
+        flip = d["flip"] == "True"
+        price_ok = d["price_ok"] == "True"
+
+        # the printed thresholds must be the negated magnitudes
+        if float(d["loose_th"]) != -float(d["min_slope"]):
+            failures.append(f"loose threshold mismatch: {d['loose_th']}")
+        if float(d["strict_th"]) != -baseline:
+            failures.append(f"strict threshold mismatch: {d['strict_th']}")
+
+        # The two slope verdicts must match their own thresholds, using the
+        # filter's inclusive comparisons. The printed operator encodes
+        # direction: "<=" is the BUY predicate (slope >= min_slope) and ">=" is
+        # the SELL one (slope <= -min_slope).
+        if d["loose_cmp"] == "<=":
+            expect_loose = slope >= float(d["min_slope"])
+            expect_strict = slope >= baseline
+        else:
+            expect_loose = slope <= -float(d["min_slope"])
+            expect_strict = slope <= -baseline
+        if loose != expect_loose:
+            failures.append(f"loose verdict wrong for slope={slope}")
+        if strict != expect_strict:
+            failures.append(f"strict verdict wrong for slope={slope}")
+
+        # sensitive must be orthogonal to price, would_flip must require it
+        if sensitive != (loose and not strict):
+            failures.append(f"sensitive wrong for slope={slope}")
+        if flip != (price_ok and sensitive):
+            failures.append(f"would_flip wrong for slope={slope}")
+        print(
+            f"   slope={slope:+.6f} price_ok={price_ok!s:5} "
+            f"loose={loose!s:5} strict={strict!s:5} "
+            f"sensitive={sensitive!s:5} would_flip={flip!s:5}"
         )
+
+    # The regression the new criteria fixes: a price-blocked candidate must be
+    # reported as sensitive=False OR would_flip=False — never as a flip.
+    flips_while_price_blocked = [
+        d for d in diag_lines if "price_ok=False" in d and "would_flip=True" in d
+    ]
+    if flips_while_price_blocked:
+        failures.append("price_ok=False candidate reported would_flip=True")
+    if not any("price_ok=False" in d for d in diag_lines):
+        failures.append("no price-blocked diagnostic line was captured")
     if NS.get("SLOPE_DIAG") is not False:
         failures.append("SLOPE_DIAG was left enabled after the diagnostic run")
 

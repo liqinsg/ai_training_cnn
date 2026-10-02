@@ -70,6 +70,14 @@ MC_MOMENTUM_BAND = 0.001
 
 # TREND_FILTER_ENABLED = True   # Set False → skip EMA10 slope + EMA100 checks entirely
 WEEK_EMA100_FILTER_ENABLED = False   # Set False → skip Weekly EMA100 counter-trend check
+
+# ─── SLOPE_DIAG ───
+# Evidence collection for the min_slope tightening ladder (0.0003 -> 0.001).
+# Emits one "📊 SLOPE DIAG" line per evaluated candidate with price_ok,
+# the loose/strict slope verdicts, sensitive and would_flip. Log-only: it
+# cannot change any trading decision. Turn back off once enough
+# would_flip=True rows (target >= 20) have accumulated.
+SLOPE_DIAG = True
 if __name__ == "__main__":
     from config_oanda import OANDA_ACCOUNT_ID_4 as OANDA_ACCOUNT_ID
     print(OANDA_ACCOUNT_ID)
