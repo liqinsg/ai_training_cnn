@@ -242,58 +242,38 @@ def d_gate_compute_direction(
 ) -> str:
     """Return LONG/SHORT/BOTH from a series of daily-close prices.
 
-    Flip rule: bias is persistent. To switch from the previous direction (if
-    known) we need `confirm_bars` consecutive closes where
-        (ema_fast - ema_slow) / ema_slow  has the SAME sign and absolute
-        magnitude >= min_buffer_pct.
-    For the first call (no prior) we relax to 1 confirmed bar so the gate
-    still takes effect without waiting 2 days.
+    Confirmation rule (strict, anti-whipsaw):
+        For the last `confirm_bars` consecutive daily bars, every bar must have
+            sign( (EMAf - EMAs) / EMAs ) == same sign
+            AND abs( (EMAf - EMAs) / EMAs ) >= min_buffer_pct
+        If yes → LONG (positive) / SHORT (negative).
+        Otherwise → BOTH (neutral: within buffer, mixed signs, or insufficient
+        data → no direction lock applied).
+
+    Bar count: we need at least (slow_period + confirm_bars + 2) bars so the
+    slow EMA has fully burned in; also enforce a 2-month floor (≈40 trading
+    days). Anything less falls back to BOTH for safety.
     """
     n = len(daily_closes)
-    need = max(ema_slow_period + confirm_bars, 52)
-    if n < need:
+    min_bars = max(ema_slow_period + confirm_bars + 2, 42)
+    if n < min_bars:
         return D_GATE_BOTH
 
     ema_fast = calculate_ema(daily_closes, ema_fast_period)
     ema_slow = calculate_ema(daily_closes, ema_slow_period)
     diff_pct = (ema_fast - ema_slow) / ema_slow.replace(0.0, np.nan)
 
-    signals = []
-    for i in range(-confirm_bars, 0):
-        d = diff_pct.iloc[i]
-        if pd.isna(d):
-            return D_GATE_BOTH
-        if d >= min_buffer_pct:
-            signals.append(+1)
-        elif d <= -min_buffer_pct:
-            signals.append(-1)
-        else:
-            signals.append(0)
-
-    all_pos = all(s == +1 for s in signals)
-    all_neg = all(s == -1 for s in signals)
-    any_pos = any(s == +1 for s in signals)
-    any_neg = any(s == -1 for s in signals)
-
-    one_bar_ok = signals[-1] == +1 or signals[-1] == -1
-    if not one_bar_ok:
+    # Gather the trailing `confirm_bars` pct-gap readings (newest → last).
+    tail = diff_pct.iloc[-confirm_bars:].tolist()
+    if any(pd.isna(x) for x in tail):
         return D_GATE_BOTH
 
-    if confirm_bars == 1:
-        return D_GATE_LONG if signals[-1] == +1 else D_GATE_SHORT
-
-    if all_pos:
+    above = [x >= min_buffer_pct for x in tail]
+    below = [x <= -min_buffer_pct for x in tail]
+    if all(above):
         return D_GATE_LONG
-    if all_neg:
+    if all(below):
         return D_GATE_SHORT
-    if any_pos and not any_neg:
-        if confirm_bars >= 2 and signals[-1] == +1 and signals[-2] == +1:
-            return D_GATE_LONG
-        return D_GATE_BOTH
-    if any_neg and not any_pos:
-        if confirm_bars >= 2 and signals[-1] == -1 and signals[-2] == -1:
-            return D_GATE_SHORT
-        return D_GATE_BOTH
     return D_GATE_BOTH
 
 
@@ -1226,6 +1206,31 @@ def main():
                     f"➖ REASON: FINAL {w['FINAL']:.2f} < MIN_CONVICTION={min_conv:.2f}"
                 )
             continue
+
+        # ─── D-Gate: enforce D-timeframe direction lock (Solves flip-flop issue)
+        if D_GATE_ENABLED:
+            pair_gate = D_GATE_DIRECTIONS.get(pair, D_GATE_BOTH)
+            gate_ok = d_gate_allows(pair_gate, direction)
+            if not gate_ok:
+                if D_GATE_SHADOW:
+                    # Phase 0: DIAGNOSTIC ONLY — record that we WOULD block here
+                    # but let the order go through so we can collect outcomes.
+                    logger.warning(
+                        f"🧭 D-GATE SHADOW DIAG {pair}: D-dir={pair_gate} but "
+                        f"15m-wants {direction} — would_block=YES (SHADOW=True, "
+                        f"NO action taken yet)"
+                    )
+                else:
+                    logger.warning(
+                        f"🚫 D-GATE ENFORCED: {pair} {direction} BLOCKED "
+                        f"(D-dir={pair_gate})"
+                    )
+                    continue
+            else:
+                # Always log the allow case, so evidence chain knows gate was OK
+                logger.info(
+                    f"🧭 D-GATE: {pair} {direction} ALLOWED (D-dir={pair_gate})"
+                )
 
         weekly_ema100 = resolve_weekly_ema100(
             weekly_ema_cache.get(oanda),
