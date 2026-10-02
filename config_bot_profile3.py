@@ -87,6 +87,16 @@ MC_MOMENTUM_BAND = 0.001
 # TREND_FILTER_ENABLED = True   # Set False → skip EMA10 slope + EMA100 checks entirely
 WEEK_EMA100_FILTER_ENABLED = False   # Set False → skip Weekly EMA100 counter-trend check
 
+# ─── D-TIMEFRAME DIRECTION GATE (Phase 0 — SHADOW MODE BY DEFAULT)
+# Locks each pair into LONG / SHORT / BOTH based on D-EMA20 × D-EMA50 cross.
+# Solves "几小时前卖现在又买" flip-flop problem: daily cross locks direction.
+D_GATE_ENABLED = True
+D_GATE_SHADOW = True          # 🔒 Phase 0 default: observe only, NO blocking
+D_GATE_EMA_FAST = 20
+D_GATE_EMA_SLOW = 50
+D_GATE_CONFIRM_BARS = 2
+D_GATE_MIN_BUFFER_PCT = 0.002
+
 # ─── SLOPE_DIAG ───
 # Evidence collection for the min_slope tightening ladder (0.0003 -> 0.001).
 # Emits one "📊 SLOPE DIAG" line per evaluated candidate with price_ok,

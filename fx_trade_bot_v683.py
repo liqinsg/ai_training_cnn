@@ -213,6 +213,124 @@ def fetch_weekly_ema100(oanda_instrument, api):
         return None
 
 
+# ─── D-TIMEFRAME DIRECTION GATE (D-Gate) ────────────────────────────────────
+# Locks each currency pair into a LONG / SHORT / BOTH bias based on the daily
+# (Timeframe "D") EMA20 × EMA50 cross. Prevents the 15m engine from flip-flopping
+# between BUY/SELL on the same pair within hours.
+#
+# Design (answers = A/A/A per user spec):
+#   A1: EMA_FAST=20, EMA_SLOW=50 on daily closes
+#   A2: Flip confirmation: 2 consecutive daily closes past cross (min_buffer_pct
+#       = 0.2% gap between EMAs on flip bar) → prevents 1-day whipsaws
+#   A3: All pairs evaluate their OWN D-EMA cross (simple, no DXY synthetic).
+#       USD-quote pairs naturally vote the same direction, so USD exposure is
+#       implicitly one-sided; JPY crosses are independent.
+#   SHADOW mode (default True): emit a DIAG line but DO NOT block. Use for
+#   Phase-0 evidence collection (>= 20 rows with would_block=True required
+#   before advancing to ENFORCED).
+D_GATE_LONG = "LONG"
+D_GATE_SHORT = "SHORT"
+D_GATE_BOTH = "BOTH"  # EMA within buffer or insufficient bars → no gate
+
+
+def d_gate_compute_direction(
+    daily_closes: pd.Series,
+    ema_fast_period: int = 20,
+    ema_slow_period: int = 50,
+    confirm_bars: int = 2,
+    min_buffer_pct: float = 0.002,
+) -> str:
+    """Return LONG/SHORT/BOTH from a series of daily-close prices.
+
+    Flip rule: bias is persistent. To switch from the previous direction (if
+    known) we need `confirm_bars` consecutive closes where
+        (ema_fast - ema_slow) / ema_slow  has the SAME sign and absolute
+        magnitude >= min_buffer_pct.
+    For the first call (no prior) we relax to 1 confirmed bar so the gate
+    still takes effect without waiting 2 days.
+    """
+    n = len(daily_closes)
+    need = max(ema_slow_period + confirm_bars, 52)
+    if n < need:
+        return D_GATE_BOTH
+
+    ema_fast = calculate_ema(daily_closes, ema_fast_period)
+    ema_slow = calculate_ema(daily_closes, ema_slow_period)
+    diff_pct = (ema_fast - ema_slow) / ema_slow.replace(0.0, np.nan)
+
+    signals = []
+    for i in range(-confirm_bars, 0):
+        d = diff_pct.iloc[i]
+        if pd.isna(d):
+            return D_GATE_BOTH
+        if d >= min_buffer_pct:
+            signals.append(+1)
+        elif d <= -min_buffer_pct:
+            signals.append(-1)
+        else:
+            signals.append(0)
+
+    all_pos = all(s == +1 for s in signals)
+    all_neg = all(s == -1 for s in signals)
+    any_pos = any(s == +1 for s in signals)
+    any_neg = any(s == -1 for s in signals)
+
+    one_bar_ok = signals[-1] == +1 or signals[-1] == -1
+    if not one_bar_ok:
+        return D_GATE_BOTH
+
+    if confirm_bars == 1:
+        return D_GATE_LONG if signals[-1] == +1 else D_GATE_SHORT
+
+    if all_pos:
+        return D_GATE_LONG
+    if all_neg:
+        return D_GATE_SHORT
+    if any_pos and not any_neg:
+        if confirm_bars >= 2 and signals[-1] == +1 and signals[-2] == +1:
+            return D_GATE_LONG
+        return D_GATE_BOTH
+    if any_neg and not any_pos:
+        if confirm_bars >= 2 and signals[-1] == -1 and signals[-2] == -1:
+            return D_GATE_SHORT
+        return D_GATE_BOTH
+    return D_GATE_BOTH
+
+
+def d_gate_fetch_daily(fetcher, pair: str, oanda: str, count: int = 150):
+    """Fetch daily candles for a pair via the existing fetcher (reuses yfinance
+    session already authenticated). Falls back safely to BOTH on failure."""
+    try:
+        raw = fetcher.fetch(pair, oanda, count=count, granularity="1d")
+        if raw is None or raw.empty:
+            return None
+        closes = raw["Close"].dropna()
+        if len(closes) < 55:
+            return None
+        return closes.reset_index(drop=True)
+    except Exception:
+        try:
+            raw2 = fetcher.fetch(pair, oanda, count=count)
+            if raw2 is None or raw2.empty:
+                return None
+            closes2 = raw2["Close"].dropna()
+            return closes2.reset_index(drop=True) if len(closes2) >= 55 else None
+        except Exception as e2:
+            logger.info(f"ℹ️  D-Gate daily fetch fallthrough {pair}: {e2}")
+            return None
+
+
+def d_gate_allows(pair_direction: str, trade_direction: str) -> bool:
+    """True iff the trade direction is allowed by this pair's D-gate bias."""
+    if pair_direction == D_GATE_BOTH:
+        return True
+    if pair_direction == D_GATE_LONG:
+        return trade_direction == "BUY"
+    if pair_direction == D_GATE_SHORT:
+        return trade_direction == "SELL"
+    return True
+
+
 def resolve_weekly_ema100(cached_ema, filter_enabled):
     """Return the Weekly EMA100 level to filter on, or None to skip that filter.
 
@@ -373,6 +491,22 @@ logger.info(
     f"🪜 MIN_SLOPE LADDER: active rung={ACTIVE_MIN_SLOPE} "
     f"(ladder {MIN_SLOPE_LADDER}, widest first; last entry = original strictest)"
 )
+# ─── D-Gate CONFIG (resolved at import, directions computed per-run in main)
+D_GATE_ENABLED = cfg_bot("D_GATE_ENABLED", False)
+D_GATE_SHADOW = cfg_bot("D_GATE_SHADOW", True)  # Phase 0: log-only by default
+D_GATE_EMA_FAST = cfg_bot("D_GATE_EMA_FAST", 20)
+D_GATE_EMA_SLOW = cfg_bot("D_GATE_EMA_SLOW", 50)
+D_GATE_CONFIRM_BARS = cfg_bot("D_GATE_CONFIRM_BARS", 2)
+D_GATE_MIN_BUFFER_PCT = cfg_bot("D_GATE_MIN_BUFFER_PCT", 0.002)
+D_GATE_DIRECTIONS: dict[str, str] = {}  # populated in main(), keyed by yahoo pair
+if D_GATE_ENABLED:
+    mode = "SHADOW (log-only)" if D_GATE_SHADOW else "ENFORCED (real blocking)"
+    logger.info(
+        f"🧭 D-GATE: {mode} | EMA{D_GATE_EMA_FAST}×EMA{D_GATE_EMA_SLOW} | "
+        f"confirm={D_GATE_CONFIRM_BARS}D | buffer={D_GATE_MIN_BUFFER_PCT*100:.2f}%"
+    )
+else:
+    logger.info("ℹ️  D-GATE: disabled (D_GATE_ENABLED=False)")
 REQUIRE_DIRECTION_CONSENSUS = cfg_bot("REQUIRE_DIRECTION_CONSENSUS", True)
 CONSENSUS_THRESHOLD = cfg_bot("CONSENSUS_THRESHOLD", 2)
 XGB_BULLISH_THRESHOLD = cfg_bot("XGB_BULLISH_THRESHOLD", 0.55)
@@ -844,6 +978,38 @@ def main():
         logger.error("No pairs have usable data. Aborting.")
         send_telegram_message(f"❌ FX BOT {PROFILE_LABEL}: No usable data")
         return
+
+    # Step 2.5 — D-Gate: compute D-EMA20 × D-EMA50 direction for ALL pool pairs
+    D_GATE_DIRECTIONS.clear()
+    if D_GATE_ENABLED:
+        logger.info("[STEP 2.5] D-GATE — Daily Direction Locks...")
+        # Need ALL_PAIRS (not just selected) because WhiteList filter happens
+        # later, and USD-group majority works better if we see the whole pool.
+        for pair in ALL_PAIRS:
+            oanda = YAHOO_TO_OANDA.get(pair)
+            if not oanda:
+                continue
+            daily = d_gate_fetch_daily(fetcher, pair, oanda, count=180)
+            if daily is None:
+                D_GATE_DIRECTIONS[pair] = D_GATE_BOTH
+                continue
+            direction = d_gate_compute_direction(
+                daily,
+                ema_fast_period=D_GATE_EMA_FAST,
+                ema_slow_period=D_GATE_EMA_SLOW,
+                confirm_bars=D_GATE_CONFIRM_BARS,
+                min_buffer_pct=D_GATE_MIN_BUFFER_PCT,
+            )
+            D_GATE_DIRECTIONS[pair] = direction
+        long_n = sum(1 for v in D_GATE_DIRECTIONS.values() if v == D_GATE_LONG)
+        short_n = sum(1 for v in D_GATE_DIRECTIONS.values() if v == D_GATE_SHORT)
+        both_n = sum(1 for v in D_GATE_DIRECTIONS.values() if v == D_GATE_BOTH)
+        logger.info(
+            f"🧭 D-GATE SUMMARY: LONG={long_n} SHORT={short_n} BOTH={both_n} | "
+            f"SHADOW={D_GATE_SHADOW} (log-only, no block)"
+        )
+        for pair in sorted(D_GATE_DIRECTIONS.keys()):
+            logger.info(f"   {pair}: {D_GATE_DIRECTIONS[pair]}")
 
     # Step 3 — Monte Carlo
     if cfg_bot("SKIP_MC", False):
