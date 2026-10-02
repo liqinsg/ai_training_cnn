@@ -29,9 +29,9 @@ WEIGHT_MC = 0.10
 
 # ─── Strategy Conviction Thresholds ───
 MODE = "LEVEL10"
-MIN_CONVICTION_SCORE = 30.0
+MIN_CONVICTION_SCORE = 45.0    # 🔒 CONSERVATIVE: ↑ from 30 — drop borderline signals
 BASE_MIN_EDGE = 0.50
-MIN_SCORE_GAP = 0.25
+MIN_SCORE_GAP = 0.50           # 🔒 CONSERVATIVE: ↑ from 0.25 — avoid range-bound whipsaw
 
 # ─── Auto-Ranking ───
 # Read by fx_trade_bot_v683.py (profile module wins over config_bot).
@@ -42,15 +42,33 @@ TOP_N_CURRENCIES = 3
 # Legacy key for the retired v6.8.x bots. fx_trade_bot_v683.py does NOT read it
 # (it would resolve to 4 and contradict TOP_N_CURRENCIES = 3).
 TOP_PAIRS_COUNT = 4
-TOP_PAIRS_MIN_GAP = 0.25
+TOP_PAIRS_MIN_GAP = 0.50       # 🔒 CONSERVATIVE: ↑ from 0.25 — no open on weak divergence
 
 # ─── Execution Limits ───
-MAX_OPEN_POSITIONS = 4
+MAX_OPEN_POSITIONS = 3         # 🔒 CONSERVATIVE: ↓ from 4 — avoid correlated exposure
 DEFAULT_LOT_SIZE = 10000
+
+# ─── Risk & Dynamic SL Behaviour (DynamicPositionManager) ───
+# Anti-whipsaw: widen trailing distance, extend hold horizon (per user profile:
+# "宁愿被 SL 扫也不要频频被自己扫出局")
+TRAIL_ATR_MULT = 2.0           # 🔒 CONSERVATIVE: ↑ from 1.5 — wider SL trail on trend
+MAX_HOLD_BARS = 48             # 🔒 CONSERVATIVE: ↑ from 12 (3h → 12h on 15m) — no early exits
 
 # ─── XGB / MC Thresholds ───
 XGB_BULLISH_THRESHOLD = 0.55
 MC_BULLISH_THRESHOLD_PCT = 55.0
+
+# ─── Pair Whitelist (Ownership Tag, disjoint from Profile3)
+# A2: AUD + JPY group (亚系高波动组)
+# Profile2 独占：AUDUSD, AUDJPY, EURJPY, GBPJPY, USDJPY
+# Profile3 独占：EURUSD, GBPUSD, USDCHF  — 互斥，绝不重叠
+ALLOWED_PAIRS = [
+    "AUDUSD=X",
+    "AUDJPY=X",
+    "EURJPY=X",
+    "GBPJPY=X",
+    "USDJPY=X",
+]
 
 # ─── RSI-FIXED Toggle ───
 RSI_DIRECTION_AWARE = True  # ✅ RSI only scores if it AGREES with trade direction

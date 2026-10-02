@@ -487,6 +487,53 @@ for _sym, _oanda in _YAHOO_TO_OANDA_DEFAULT.items():
     YAHOO_TO_OANDA.setdefault(_sym, _oanda)
 logger.info(f"✅ Pair mappings loaded: {len(YAHOO_TO_OANDA)} entries")
 
+# ─── PAIR WHITELIST + DISJOINT SAFETY LOCK ───────────────────────────────────
+# Whitelist (Ownership Tag): restrict this profile to its own currency pool so
+# Profile2 / Profile3 never open the same pair on the same signal (prevents
+# correlated double-sizing when both crons run in parallel).
+ALLOWED_PAIRS = cfg_bot("ALLOWED_PAIRS", None)
+if ALLOWED_PAIRS is not None:
+    _known = set(YAHOO_TO_OANDA.keys())
+    _invalid = [p for p in ALLOWED_PAIRS if p not in _known]
+    if _invalid:
+        logger.warning(
+            f"⚠️  ALLOWED_PAIRS contains unknown symbols (will be ignored): {_invalid} "
+            f"— valid set: {sorted(_known)}"
+        )
+    ALLOWED_PAIRS = [p for p in ALLOWED_PAIRS if p in _known]
+    logger.info(
+        f"🔒 WHITELIST [{PROFILE_LABEL}] active = {len(ALLOWED_PAIRS)} pairs | "
+        f"ALLOWED: {ALLOWED_PAIRS}"
+    )
+
+    # Safety lock: cross-check disjointness with the *other* profile's whitelist
+    # by importing its config module (best-effort, never crash on failure).
+    try:
+        _other_module_name = (
+            "config_bot_profile3" if PROFILE_NAME == "profile2"
+            else "config_bot_profile2"
+        )
+        _other_cfg = importlib.import_module(_other_module_name)
+        _other_whitelist = set(getattr(_other_cfg, "ALLOWED_PAIRS", []) or [])
+        _mine = set(ALLOWED_PAIRS)
+        _overlap = _mine & _other_whitelist
+        if _overlap:
+            logger.error(
+                f"🚨 WHITELIST OVERLAP with {_other_module_name}! "
+                f"Shared pairs = {sorted(_overlap)} — this doubles exposure on the "
+                f"same signals. Fix the ALLOWED_PAIRS in one or both profile configs."
+            )
+        else:
+            _union = _mine | _other_whitelist
+            logger.info(
+                f"🔐 WHITELIST disjoint ✅ | overlap=0 | union covers {len(_union)} "
+                f"pairs vs {len(_known)} total available"
+            )
+    except Exception as _e:
+        logger.info(f"ℹ️  Skipped cross-profile overlap check: {_e}")
+else:
+    logger.info("ℹ️  No ALLOWED_PAIRS set — full 8-pair pool enabled (no whitelist filter)")
+
 MC_MAX_AGE_HOURS = cfg_bot("MC_MAX_AGE_HOURS", 24)
 SIMULATIONS = cfg_bot("MC_SIMULATIONS", 5000)
 CONFIDENCE = cfg_bot("MC_BAND_PCT", 90) / 100.0
@@ -935,6 +982,11 @@ def main():
             pair_data[pair]["rsi"],
             pair_data[pair]["adx"],
         )
+
+        # ─── Whitelist filter (Ownership Tag) — enforce disjoint pools for multi-account isolation
+        if ALLOWED_PAIRS is not None and pair not in ALLOWED_PAIRS:
+            logger.info(f"🔒 {pair}: not in {PROFILE_LABEL} ALLOWED_PAIRS — SKIP")
+            continue
 
         if pair in last_closed:
             d, r = last_closed[pair]
