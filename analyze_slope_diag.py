@@ -46,11 +46,14 @@ DIAG_RE = re.compile(
 )
 
 # Outcome markers the bot logs for a candidate, in the order they appear.
+# First match wins, so the sequence matters: "passed the trend filter" is a
+# meaningful middle state and must be tested before the rejection patterns.
 OUTCOME_PATTERNS: Sequence[Tuple[str, re.Pattern]] = (
     ("executed", re.compile(r"EXECUTED\s+(?P<pair>\S+)\s+(?P<dir>BUY|SELL)")),
+    ("qualified", re.compile(r": gap=[\d.]+ [≥>]=? [\d.]+ — QUALIFIED")),
+    ("rejected_score", re.compile(r"REASON: FINAL .*< MIN_CONVICTION")),
     ("skipped_trend", re.compile(r"SKIP (?:BUY|SELL): .*TREND MISALIGNED")),
     ("skipped_weekly", re.compile(r"SKIP (?:BUY|SELL): .*COUNTER-TREND")),
-    ("rejected_score", re.compile(r"REASON: FINAL .*< MIN_CONVICTION")),
     ("skipped_other", re.compile(r"SKIP DUPLICATE|MAX_OPEN reached|already open")),
 )
 
@@ -207,6 +210,14 @@ def fmt_pct(part: int, whole: int) -> str:
     return f"{part / whole * 100:5.1f}%" if whole else "    n/a"
 
 
+def _display_loc(path: str, lineno: int) -> str:
+    """Relative path + line when possible, so multi-file scans stay locatable."""
+    try:
+        return f"{Path(path).resolve().relative_to(Path.cwd().resolve())}:{lineno}"
+    except ValueError:
+        return f"{path}:{lineno}"
+
+
 def pctile(values: Sequence[float], q: float) -> float:
     if not values:
         return float("nan")
@@ -305,13 +316,13 @@ def report(rows: Sequence[DiagRow], target: int, files: Sequence[str]) -> int:
     if not flips:
         print("  (none)")
     else:
-        print(f"  {'file:line':28} {'profile':10} {'dir':5} {'slope':>11} "
-              f"{'min_slope':>10} {'outcome':>14}")
+        print(f"  {'file:line':34} {'profile':10} {'dir':5} {'slope':>11} "
+              f"{'min_slope':>10} {'outcome':>15}")
         for r in flips[:40]:
-            loc = f"{Path(r.file).name}:{r.lineno}"
-            print(f"  {loc:28} {r.profile:10} {r.direction:5} "
+            loc = _display_loc(r.file, r.lineno)
+            print(f"  {loc:34} {r.profile:10} {r.direction:5} "
                   f"{r.slope:11.6f} {r.min_slope:10.6f} "
-                  f"{(r.outcome or 'unknown'):>14}")
+                  f"{(r.outcome or 'unknown'):>15}")
         if len(flips) > 40:
             print(f"  ... and {len(flips) - 40} more")
 
