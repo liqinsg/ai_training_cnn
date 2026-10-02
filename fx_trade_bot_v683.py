@@ -29,10 +29,10 @@ from utils.strategy_helpers import (
 )
 from utils.strategy_config import (
     CURRENCIES,
-    USE_TOP_PAIRS_ONLY,
-    TOP_N_CURRENCIES,
-    TOP_PAIRS_MIN_GAP,
-    MIN_STRENGTH_GAP,
+    USE_TOP_PAIRS_ONLY as STRATEGY_USE_TOP_PAIRS_ONLY,
+    TOP_N_CURRENCIES as STRATEGY_TOP_N_CURRENCIES,
+    TOP_PAIRS_MIN_GAP as STRATEGY_TOP_PAIRS_MIN_GAP,
+    MIN_STRENGTH_GAP as STRATEGY_MIN_STRENGTH_GAP,
 )
 from telegram_message import send_telegram_message
 from oandapyV20.endpoints.instruments import InstrumentsCandles
@@ -323,19 +323,26 @@ logger.info(
     f"⚖️  {PROFILE_LABEL} WEIGHTS: S={W_S:.2f} R={W_R:.2f} A={W_A:.2f} X={W_X:.2f} M={W_M:.2f}"
 )
 
-# ===== TOP-N STRENGTH — FORCE ENABLE (highest priority) =====
-# Deliberately NOT routed through cfg_bot(): cfg_bot() resolves
-# profile_cfg → config_bot → config → default, and BOTH profiles still carry
-# the legacy auto-ranking values
-#   config_bot_profile2.py: USE_TOP_PAIRS_ONLY = False, TOP_PAIRS_COUNT = 4
-#   config_bot_profile3.py: USE_TOP_PAIRS_ONLY = False, TOP_PAIRS_COUNT = 4
-# which silently forced every run into "📋 MODE: Full scan — 8 pairs".
-# Authoritative values live in utils/strategy_config.py (imported at the top).
-USE_TOP_PAIRS_ONLY = True
-TOP_N_CURRENCIES = 3
+# ===== TOP-N STRENGTH — CONFIG-RESOLVED =====
+# Resolution order per key: active profile module → config (via cfg_bot) →
+# utils/strategy_config (authoritative) → explicit default.
+#
+# config_bot's own values are legacy and must NOT win over strategy_config:
+#   config_bot.py: USE_TOP_PAIRS_ONLY = False, TOP_PAIRS_MIN_GAP = 1.5
+# If those won, every run would fall back to "📋 MODE: Full scan — 8 pairs".
+# A profile module can still override either key deliberately, because the
+# profile module is consulted first.
+#
+# NOTE: TOP_N_CURRENCIES is the only key read here. The TOP_PAIRS_COUNT fallback
+# was removed when the v6.8.x bots that read it were retired — do NOT fall back
+# to it, because config_bot.py still defines TOP_PAIRS_COUNT = 5 and that value
+# would silently become this bot's default.
+USE_TOP_PAIRS_ONLY = cfg_bot("USE_TOP_PAIRS_ONLY", STRATEGY_USE_TOP_PAIRS_ONLY)
+TOP_N_CURRENCIES = cfg_bot("TOP_N_CURRENCIES", STRATEGY_TOP_N_CURRENCIES)
+# Legacy alias kept for this file's own log lines/history.
 TOP_PAIRS_COUNT = TOP_N_CURRENCIES
-TOP_PAIRS_MIN_GAP = 0.25
-MIN_STRENGTH_GAP = 0.25
+TOP_PAIRS_MIN_GAP = cfg_bot("TOP_PAIRS_MIN_GAP", STRATEGY_TOP_PAIRS_MIN_GAP)
+MIN_STRENGTH_GAP = cfg_bot("MIN_STRENGTH_GAP", STRATEGY_MIN_STRENGTH_GAP)
 # ===========================================================
 DEBUG_MODE = cfg_bot("DEBUG_MODE", False)
 # 独立的斜率诊断开关：不挂在 DEBUG_MODE 上，避免为了拿 slope 分布
@@ -887,7 +894,13 @@ def main():
         )
         if not (direction and w and w["PASS"]):
             if w and not w["PASS"]:
-                logger.info(f"➖ REASON: FINAL {w['FINAL']:.1f} < {w['THRESHOLD']}")
+                # .2f, not .1f: a score of 29.97 against a 30.0 floor printed as
+                # "FINAL 30.0 < 30.0", which reads as an impossible comparison.
+                # THRESHOLD is stored rounded to 1dp in calc_weighted_score(),
+                # so show the exact bar rather than the rounded one.
+                logger.info(
+                    f"➖ REASON: FINAL {w['FINAL']:.2f} < MIN_CONVICTION={min_conv:.2f}"
+                )
             continue
 
         logger.info(

@@ -136,7 +136,11 @@ ADX_BOOST_VALUE = 10.0
 WEIGHT_STRENGTH = 0.50
 WEIGHT_RSI = 0.15
 WEIGHT_ADX = 0.15
-WEIGHT_XGBOOST = 0.12
+# Canonical key: the name the bots read (cfg_bot("WEIGHT_XGB", ...)) and the
+# name both profile modules define. WEIGHT_XGBOOST used to be the only spelling
+# here, so validate_config() checked a key the scoring code never read.
+WEIGHT_XGB = 0.12
+WEIGHT_XGBOOST = WEIGHT_XGB  # legacy alias for older bots (v6.8 / v6.8.2)
 WEIGHT_MC = 0.08  # ✅ ↑ from 0.05
 
 #THRESHOLD_SCORE = 35.0
@@ -195,16 +199,22 @@ def validate_config():
     warns = []
 
     # ── Check Weight Sum ──
+    # Must use the canonical key the scoring code reads (WEIGHT_XGB), not the
+    # legacy WEIGHT_XGBOOST alias, otherwise this validates the wrong numbers.
     weights = {
         "S": WEIGHT_STRENGTH,
         "R": WEIGHT_RSI,
         "A": WEIGHT_ADX,
-        "X": WEIGHT_XGBOOST,
+        "X": WEIGHT_XGB,
         "M": WEIGHT_MC,
     }
     weight_sum = sum(weights.values())
 
-    print("\n🔍 CONFIG VALIDATION — v6.8")
+    print("\n🔍 CONFIG VALIDATION — v6.8 (config_bot.py defaults)")
+    print("   NOTE: this runs at import time, before a profile is selected, so")
+    print("         it only checks the values in THIS file. The weights a run")
+    print("         actually scores with are reported by the bot's own")
+    print("         '⚖️ <PROFILE> WEIGHTS' line right after startup.")
     print("─────────────────────────────────────")
     for k, v in weights.items():
         print(f"   Weight {k}: {v:.4f}")

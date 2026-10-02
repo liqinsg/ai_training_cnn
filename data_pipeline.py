@@ -239,10 +239,34 @@ class FeatureEngine:
             try:
                 import pandas_ta as ta
                 df["rsi"] = ta.rsi(df["Close"], length=self.cfg.rsi_period)
-                if n > self.cfg.rsi_period + 3:
-                    df["rsi_slope"] = df["rsi"].diff(3)
+                if df["rsi"] is None or df["rsi"].dropna().empty:
+                    raise ValueError("ta.rsi returned None/empty")
             except Exception as e:
-                logger.warning(f"RSI failed: {e}")
+                # Manual Wilder RSI, mirroring the ATR fallback above. Without
+                # this the column is absent, downstream `.get("rsi", 50.0)`
+                # silently substitutes 50.0, and the RSI scoring term
+                # ((rsi - 50) * 2) collapses to exactly 0.0 for every pair —
+                # i.e. the configured RSI weight stops existing.
+                logger.warning(f"RSI failed ({e}), using manual Wilder RSI")
+                period = self.cfg.rsi_period
+                delta = df["Close"].diff()
+                gain = delta.clip(lower=0)
+                loss = -delta.clip(upper=0)
+                # Wilder smoothing: alpha = 1/period (matches ta.rsi).
+                avg_gain = gain.ewm(alpha=1 / period, adjust=False, min_periods=period).mean()
+                avg_loss = loss.ewm(alpha=1 / period, adjust=False, min_periods=period).mean()
+                rs = avg_gain / avg_loss.replace(0.0, np.nan)
+                manual_rsi = 100.0 - (100.0 / (1.0 + rs))
+                # avg_loss == 0 → RSI 100 (pure uptrend); 0/0 → 50 (flat).
+                manual_rsi = manual_rsi.where(avg_loss != 0, 100.0)
+                manual_rsi = manual_rsi.where(
+                    ~((avg_gain == 0) & (avg_loss == 0)), 50.0
+                )
+                df["rsi"] = manual_rsi
+
+            # Slope is computed regardless of which path produced df["rsi"].
+            if n > self.cfg.rsi_period + 3:
+                df["rsi_slope"] = df["rsi"].diff(3)
 
 
         # ─── 6. ADX ✅ FIXED: self.config → self.cfg + bar guard ───

@@ -34,7 +34,13 @@ BASE_MIN_EDGE = 0.50
 MIN_SCORE_GAP = 0.25
 
 # ─── Auto-Ranking ───
-USE_TOP_PAIRS_ONLY = False
+# Read by fx_trade_bot_v683.py (profile module wins over config_bot).
+# Setting this False would silently revert to a full scan of 8 pairs.
+USE_TOP_PAIRS_ONLY = True
+# Single source of truth for N in v683; the profile module is consulted first.
+TOP_N_CURRENCIES = 3
+# Legacy key for the retired v6.8.x bots. fx_trade_bot_v683.py does NOT read it
+# (it would resolve to 4 and contradict TOP_N_CURRENCIES = 3).
 TOP_PAIRS_COUNT = 4
 TOP_PAIRS_MIN_GAP = 0.25
 
