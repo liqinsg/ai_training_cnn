@@ -5,11 +5,27 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 def compute_sl_zone(api, oanda_instrument, direction, entry_price, pip_size, cfg_fn):
-    """Hierarchical SL: H4 → H8 → Daily → ATR → Fixed"""
+    """Hierarchical SL: H4 → H8 → Daily → ATR → Fixed
+    Per-pair floor override (Gemini P0 advice): vol-matched floors instead of
+    a one-size-fits-all 20p for both GBPJPY (120p/d) and USDCHF (50p/d)."""
     BUFFER_PIPS   = cfg_fn("SL_BUFFER_PIPS", 25)
     MIN_DIST_PIPS = cfg_fn("SL_MIN_DISTANCE_PIPS", 20)
     ATR_MULT      = cfg_fn("ATR_SL_MULT", 2.0)
     FIXED_PIPS    = cfg_fn("SL_FALLBACK_FIXED_PIPS", 35)
+
+    PAIR_FLOOR_OVERRIDES = cfg_fn("SL_PAIR_FLOOR_OVERRIDES", {})
+    if oanda_instrument in PAIR_FLOOR_OVERRIDES:
+        new_floor = PAIR_FLOOR_OVERRIDES[oanda_instrument]
+        if new_floor > MIN_DIST_PIPS:
+            MIN_DIST_PIPS = new_floor
+            logger.info(
+                f"📏 PAIR-SPECIFIC FLOOR: {oanda_instrument} → MIN_DIST_PIPS="
+                f"{MIN_DIST_PIPS} (vol-matched override applied)"
+            )
+    if oanda_instrument in PAIR_FLOOR_OVERRIDES:
+        new_fixed = PAIR_FLOOR_OVERRIDES[oanda_instrument]
+        if new_fixed > FIXED_PIPS:
+            FIXED_PIPS = new_fixed
 
     TF_LIST = [
         ("H4",  "H4", cfg_fn("SL_H4_LOOKBACK_BARS", 6)),

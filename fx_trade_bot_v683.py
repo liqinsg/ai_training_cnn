@@ -107,9 +107,23 @@ from sl_zone_hierarchy import compute_sl_zone
 from config_oanda import api, get_oanda_profile, OANDA_ACCOUNT_ID_2_LIVE, OANDA_ACCOUNT_ID_3_LIVE
 
 # ─── TREND FILTER + SMART TP CONFIGURATION ──────────────────────────────────
+# NOTE (v6.8.3.4, ChatGPT P0 advice + Gemini audit lock-in):
+# Core strategy parameters are IDENTICAL across profile2/profile3.
+# Performance divergence must come from pair universe (JPY bucket vs Majors
+# bucket), NOT from TP/filter tuning. Minor pair-specific RISK overrides (e.g.
+# GBPJPY SL floor) are ALLOWED where justified by instrument volatility —
+# they are not considered "strategy divergence" because they only cap drawdown
+# on a single high-vol instrument and never change the signal direction or
+# ranking.
+#
+# ⚠️ MC STRONG THRESHOLD — LOCKED TO 0.625 (mc_pct_up ≥ 62.5%).
+#    Authoritative value (broker-state-level truth): the actual field below
+#    is "mc_strong_threshold" compared vs mc_pct_up/100.0. DO NOT EVER WRITE
+#    0.75 (= 75%) here or claim 75% in docs — that was a historical typo.
+#    Corresponds to MC bias ≥ |P_up - 0.50| ≥ 12.5% (one-sided).
 _TREND_TP_CONFIG = {
     "base_tp_pips": 30,
-    "mc_strong_threshold": 0.75,
+    "mc_strong_threshold": 0.625,  # ⚠️ 🔒 LOCKED: mc_pct_up ≥ 62.5% triggers STRONG ×2 TP (NOT 75%)
     "weekly_ema_period": 100,
     "ema100_buffer_pips": 30,
     "profile2": {
@@ -120,7 +134,9 @@ _TREND_TP_CONFIG = {
         "min_slope": 0.001,
     },
     "profile3": {
-        "tp_mult": 1.2,
+        # Same MC-adaptive TP as profile2 (Strategy = identical).
+        "tp_normal_mult": 1.0,
+        "tp_strong_mult": 2.0,
         "ema_period": 10,
         "slope_lookback": 5,
         # Widened from 0.001 to 0.0003. Three separate live runs showed this
@@ -408,16 +424,26 @@ def evaluate_trend_and_tp(
             logger.info(f"⏭️ SKIP SELL: {reason}")
             return False, 0.0, reason
 
-    if profile_name == "profile2":
-        if mc_momentum >= TREND_TP_CONFIG["mc_strong_threshold"]:
-            tp_pips = base_pips * cfg["tp_strong_mult"]
-            tp_mode = f"✅ STRONG MOMENTUM ×2 — MC={mc_pct_up:.1f}% → TP={tp_pips:.1f}p"
-        else:
-            tp_pips = base_pips * cfg["tp_normal_mult"]
-            tp_mode = f"✅ NORMAL ×1 — MC={mc_pct_up:.1f}% → TP={tp_pips:.1f}p"
+    # Smart TP — UNIFORM across ALL profiles (P2=P3, Core Strategy Identical).
+    # Uses per-profile tp_normal_mult / tp_strong_mult from TREND_TP_CONFIG
+    # which both default to ×1 / ×2 (MC≥62.5%). No P2/P3 behavioral difference.
+    # LOCKED THRESHOLD (authoritative): mc_pct_up ≥ 62.5% = STRONG momentum
+    profile_tp_cfg = TREND_TP_CONFIG.get(PROFILE_NAME, {})
+    tp_normal_mult = profile_tp_cfg.get("tp_normal_mult", 1.0)
+    tp_strong_mult = profile_tp_cfg.get("tp_strong_mult", 2.0)
+    strong_thr_pct = TREND_TP_CONFIG["mc_strong_threshold"] * 100.0  # = 62.5%
+    if mc_momentum >= TREND_TP_CONFIG["mc_strong_threshold"]:
+        tp_pips = base_pips * tp_strong_mult
+        tp_mode = (
+            f"✅ STRONG MOMENTUM ×{tp_strong_mult:.1f} — MC={mc_pct_up:.1f}% "
+            f"(≥{strong_thr_pct:.1f}% 🔒locked) → TP={tp_pips:.1f}p ({PROFILE_LABEL})"
+        )
     else:
-        tp_pips = base_pips * cfg["tp_mult"]
-        tp_mode = f"✅ FIXED ×{cfg['tp_mult']} — TP={tp_pips:.1f}p"
+        tp_pips = base_pips * tp_normal_mult
+        tp_mode = (
+            f"✅ NORMAL ×{tp_normal_mult:.1f} — MC={mc_pct_up:.1f}% "
+            f"(<{strong_thr_pct:.1f}%) → TP={tp_pips:.1f}p ({PROFILE_LABEL})"
+        )
 
     if weekly_ema100:
         tp_price = _pips_to_price(entry_price, direction, tp_pips, pip_value)
@@ -808,13 +834,53 @@ def calc_weighted_score(
     if REQUIRE_DIRECTION_CONSENSUS:
         if buy_votes >= CONSENSUS_THRESHOLD:
             direction = "BUY"
-            logger.info(f"✅ {pair}: BUY consensus ({buy_votes}/3)")
+            votes_unanimous = (buy_votes == 3)
+            logger.info(f"✅ {pair}: BUY consensus ({buy_votes}/3, unanimous={votes_unanimous})")
         elif sell_votes >= CONSENSUS_THRESHOLD:
             direction = "SELL"
-            logger.info(f"✅ {pair}: SELL consensus ({sell_votes}/3)")
+            votes_unanimous = (sell_votes == 3)
+            logger.info(f"✅ {pair}: SELL consensus ({sell_votes}/3, unanimous={votes_unanimous})")
         else:
             logger.info(f"⏭️  {pair}: NO CONSENSUS → SKIP")
             return None, None
+
+        # ─── Gemini P1 advice + Gemini-audit P0-6 upgrade: Dynamic Position
+        #     Sizing (Phase 0 — SHADOW DIAG ONLY). 3:0 unanimous = full lot;
+        #     2:1 split = possibly 50% lot in a future phase.
+        #     NOW LOGS THE DISAGREED VOTER (exactly which of Strength/XGB/MC
+        #     was the outlier) so we can later attribute the low-quality
+        #     signal source accurately.
+        #
+        #     Evidence-chain grep target:
+        #       grep "VOTE SIZE DIAG" logs/bot_profile*.log
+        #     Accumulate >= 20 rows, THEN compare PnL of 2:1 vs 3:0 AND
+        #     split the 2:1 set by Disagreed voter to see if MC dissent is
+        #     more harmful than Strength dissent, etc.
+        #
+        #     REAL 0.5x lot sizing stays OFF until statistical evidence
+        #     clearly justifies it.
+        if not votes_unanimous:
+            # Determine which voter (Strength/XGB/MC) dissented from the
+            # winning direction. Only called when 2:1 split so exactly ONE
+            # voter will be mismatched (Strength/XGB/MC ∈ {BUY, NEUTRAL, SELL}).
+            winner_dir = direction
+            # strength_dir ∈ {BUY,SELL,NEUTRAL}; treat NEUTRAL as auto-dissent
+            if strength_dir != winner_dir:
+                disagreed = "Strength"
+                detail = f"Strength={strength_dir} vs winner={winner_dir}"
+            elif xgb_dir != winner_dir:
+                disagreed = "XGB"
+                detail = f"Strength={strength_dir}, XGB={xgb_dir} (vs winner {winner_dir}), MC={mc_dir}"
+            else:
+                disagreed = "MC"
+                detail = f"Strength={strength_dir}, XGB={xgb_dir}, MC={mc_dir} (vs winner {winner_dir})"
+
+            logger.info(
+                f"📊 VOTE SIZE DIAG [{pair}]: 2:1 split consensus "
+                f"(BUY={buy_votes}, SELL={sell_votes}) | "
+                f"Disagreed: {disagreed} ({detail}) -> would_halve=True "
+                f"(Phase0: log-only; actual lot unchanged)"
+            )
     else:
         direction = "BUY" if gap > 0 else "SELL"
         logger.info(f"ℹ️  Consensus OFF — using Strength only: {direction}")

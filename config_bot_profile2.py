@@ -1,5 +1,13 @@
-# config_bot_profile1.py — v6.8.2 | Profile 1 (Account 001)
-# Weights: S=40 R=15 A=15 X=20 M=10 | RSI-FIXED | A/C ending 001
+# ═══════════════════════════════════════════════════════════════════════════════
+# Profile 2 (Account 002) — UNIVERSE BUCKET / EXECUTION UNIT
+#   ROLE:       Asia / JPY Theme — executes signals on JPY-cross universe only
+#   STRATEGY:   IDENTICAL to Profile3 (same weights, same TP, same filters).
+#               Strategy parameters are intentionally kept in sync with P3 so
+#               performance divergence can be cleanly attributed to universe.
+#   OANDA:      -002 account, separated cooldown/results from P3.
+# ═══════════════════════════════════════════════════════════════════════════════
+# config_bot_profile1.py — v6.8.3.4 | Profile 2 (Account 002)
+# Weights: S=40 R=15 A=15 X=20 M=10 | RSI-FIXED | Universe = JPY Bucket (4 pairs)
 from config_bot import *
 
 # ─── Account Identity ───
@@ -59,16 +67,28 @@ XGB_BULLISH_THRESHOLD = 0.55
 MC_BULLISH_THRESHOLD_PCT = 55.0
 
 # ─── Pair Whitelist (Ownership Tag, disjoint from Profile3)
-# A2: AUD + JPY group (亚系高波动组)
-# Profile2 独占：AUDUSD, AUDJPY, EURJPY, GBPJPY, USDJPY
-# Profile3 独占：EURUSD, GBPUSD, USDCHF  — 互斥，绝不重叠
+# Universe Bucket Definition (P2 = Pure JPY Cross Theme, 4 pairs):
+#   P2 owns: AUDJPY, EURJPY, GBPJPY, USDJPY     (all include JPY quote)
+#   P3 owns: AUDUSD, EURUSD, GBPUSD, USDCHF     (no JPY — EUR/GBP/CHF/AUD theme)
+#
+# RULES (hard invariant, verified by startup safety lock):
+#   union(P2, P3)  = ALL_PAIRS (8 total, full coverage)
+#   intersection() = empty set (no pair is double-booked across accounts)
 ALLOWED_PAIRS = [
-    "AUDUSD=X",
     "AUDJPY=X",
     "EURJPY=X",
     "GBPJPY=X",
     "USDJPY=X",
 ]
+
+# ─── Per-Pair SL Floor Override (Gemini P0 advice)
+# GBPJPY daily ATR ≈ 120-150 pips vs typical AUDUSD 50-70 pips. The universal
+# SL_MIN_DISTANCE_PIPS = 20 (zone floor) + SL_FALLBACK_FIXED_PIPS = 35 are too
+# tight for GBPJPY's natural volatility and would trigger early "unexpected"
+# stop-outs on routine intra-day swings. Set a per-pair floor MIN_DIST = 50.
+SL_PAIR_FLOOR_OVERRIDES = {
+    "GBPJPY=X": 50,
+}
 
 # ─── RSI-FIXED Toggle ───
 RSI_DIRECTION_AWARE = True  # ✅ RSI only scores if it AGREES with trade direction
