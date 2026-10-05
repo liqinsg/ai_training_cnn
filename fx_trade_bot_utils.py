@@ -102,8 +102,13 @@ def get_open_position(api, oanda_account_id: str, instrument: str):
     finally:
         oanda_logger.setLevel(original_level)
 
-def close_position(api, oanda_account_id: str, instrument: str, telegram_send=None):
-    """Close position — verifies order acceptance, logs fill outcome."""
+def close_position(api, oanda_account_id: str, instrument: str, telegram_send=None, dry_run: bool = False):
+    """Close position — verifies order acceptance, logs fill outcome.
+
+    dry_run=True (added v6.8.3.5, decoupled from account env): skip the actual
+    OrderCreate API call, still runs the read-only get_open_position() check
+    so callers can validate the full pipeline without mutating broker state.
+    """
     try:
         status, pos = get_open_position(api, oanda_account_id, instrument)
         if status != PositionStatus.OPEN:
@@ -112,6 +117,13 @@ def close_position(api, oanda_account_id: str, instrument: str, telegram_send=No
 
         units = pos["units"]
         close_units = -units  # Invert all units
+
+        if dry_run:
+            logger.info(
+                f"🧪 DRY_RUN CLOSE {instrument}: {units} units @ would close "
+                f"(dry_run=True, no OANDA OrderCreate write call issued)"
+            )
+            return True
 
         resp = api.request(
             OrderCreate(
@@ -230,13 +242,6 @@ def open_oanda_order_simple(
     dry_run: bool = False,
     max_sl_pips: int | None = None,
 ) -> dict:
-    """
-    Open order with full validation — NO false-success returns.
-    
-    - dry_run: validate only, no API call
-    - Returns dict with explicit status: OK/REJECTED/CANCELLED/TIMEDOUT/ERROR
-    - TradeID resolved via transaction chain — never picks old trades
-    """
     dec = price_decimals(instrument)
     pip = pip_size(instrument)
     is_jpy = "JPY" in instrument.upper()

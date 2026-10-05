@@ -104,7 +104,14 @@ from fx_trade_bot_mc import MCGenerator, MCConfig
 from fx_trade_bot_ml import ensure_model
 from portfolio_balance import balance_from_config
 from sl_zone_hierarchy import compute_sl_zone
-from config_oanda import api, get_oanda_profile, OANDA_ACCOUNT_ID_2_LIVE, OANDA_ACCOUNT_ID_3_LIVE
+from config_oanda import (
+    api,
+    get_oanda_profile,
+    OANDA_ACCOUNT_ID_2_LIVE,
+    OANDA_ACCOUNT_ID_3_LIVE,
+    OANDA_ACCOUNT_ID_DEMO_2,
+    OANDA_ACCOUNT_ID_DEMO_3,
+)
 
 # ─── TREND FILTER + SMART TP CONFIGURATION ──────────────────────────────────
 # NOTE (v6.8.3.4, ChatGPT P0 advice + Gemini audit lock-in):
@@ -256,55 +263,68 @@ def d_gate_compute_direction(
     confirm_bars: int = 2,
     min_buffer_pct: float = 0.002,
 ) -> str:
-    """Return LONG/SHORT/BOTH from a series of daily-close prices.
-
-    Confirmation rule (strict, anti-whipsaw):
-        For the last `confirm_bars` consecutive daily bars, every bar must have
-            sign( (EMAf - EMAs) / EMAs ) == same sign
-            AND abs( (EMAf - EMAs) / EMAs ) >= min_buffer_pct
-        If yes → LONG (positive) / SHORT (negative).
-        Otherwise → BOTH (neutral: within buffer, mixed signs, or insufficient
-        data → no direction lock applied).
-
-    Bar count: we need at least (slow_period + confirm_bars + 2) bars so the
-    slow EMA has fully burned in; also enforce a 2-month floor (≈40 trading
-    days). Anything less falls back to BOTH for safety.
-    """
     n = len(daily_closes)
     min_bars = max(ema_slow_period + confirm_bars + 2, 42)
     if n < min_bars:
+        logger.info(
+            f"🧭 D-GATE: BOTH (insufficient bars: {n} < min={min_bars})"
+        )
         return D_GATE_BOTH
 
     ema_fast = calculate_ema(daily_closes, ema_fast_period)
     ema_slow = calculate_ema(daily_closes, ema_slow_period)
     diff_pct = (ema_fast - ema_slow) / ema_slow.replace(0.0, np.nan)
 
-    # Gather the trailing `confirm_bars` pct-gap readings (newest → last).
     tail = diff_pct.iloc[-confirm_bars:].tolist()
     if any(pd.isna(x) for x in tail):
+        logger.info("🧭 D-GATE: BOTH (NaN in EMA tail)")
         return D_GATE_BOTH
+
+    close_last = float(daily_closes.iloc[-1])
+    e20_last = float(ema_fast.iloc[-1])
+    e50_last = float(ema_slow.iloc[-1])
+    dist_pct = (e20_last - e50_last) / e50_last * 100.0
 
     above = [x >= min_buffer_pct for x in tail]
     below = [x <= -min_buffer_pct for x in tail]
+    tail_vals = "[" + ", ".join(f"{x*100:+.4f}%" for x in tail) + "]"
+
     if all(above):
-        return D_GATE_LONG
-    if all(below):
-        return D_GATE_SHORT
-    return D_GATE_BOTH
+        result = D_GATE_LONG
+    elif all(below):
+        result = D_GATE_SHORT
+    else:
+        result = D_GATE_BOTH
+
+    logger.info(
+        f"🧭 D-GATE DIAG | Close={close_last:.4f} | "
+        f"EMA{ema_fast_period}={e20_last:.4f} | EMA{ema_slow_period}={e50_last:.4f} | "
+        f"Gap={dist_pct:+.4f}% (buf±{min_buffer_pct*100:.2f}%) | "
+        f"Tail({confirm_bars})={tail_vals} → {result}"
+    )
+    return result
 
 
 def d_gate_fetch_daily(fetcher, pair: str, oanda: str, count: int = 150):
-    """Fetch daily candles for a pair via the existing fetcher (reuses yfinance
-    session already authenticated). Falls back safely to BOTH on failure."""
     try:
-        raw = fetcher.fetch(pair, oanda, count=count, granularity="1d")
+        raw = fetcher.fetch(pair, oanda, count=count, granularity="D")
         if raw is None or raw.empty:
+            logger.info(f"ℹ️  D-Gate daily fetch empty (gran=D): {pair}")
             return None
         closes = raw["Close"].dropna()
         if len(closes) < 55:
+            logger.info(
+                f"ℹ️  D-Gate daily fetch too few bars ({len(closes)}<55): {pair}"
+            )
             return None
         return closes.reset_index(drop=True)
-    except Exception:
+    except TypeError as te:
+        logger.warning(
+            f"🚨 D-GATE FETCH API BUG: fetcher.fetch() rejected granularity=D "
+            f"with TypeError ({te}). Falling back — this fetcher may not support "
+            f"daily granularity natively. Verify data_pipeline.py::DataFetcher.fetch "
+            f"has a granularity kwarg."
+        )
         try:
             raw2 = fetcher.fetch(pair, oanda, count=count)
             if raw2 is None or raw2.empty:
@@ -314,6 +334,9 @@ def d_gate_fetch_daily(fetcher, pair: str, oanda: str, count: int = 150):
         except Exception as e2:
             logger.info(f"ℹ️  D-Gate daily fetch fallthrough {pair}: {e2}")
             return None
+    except Exception as e:
+        logger.info(f"ℹ️  D-Gate daily fetch {pair}: {type(e).__name__}: {e}")
+        return None
 
 
 def d_gate_allows(pair_direction: str, trade_direction: str) -> bool:
@@ -575,16 +598,68 @@ CONFLUENCE_REQUIRED_TFS = cfg_bot("CONFLUENCE_REQUIRED_TFS", 2)
 TP_RAISE_THRESHOLD_PIPS = cfg_bot("TP_RAISE_THRESHOLD_PIPS", 15)
 
 # ─── CLI MODE OVERRIDES ──────────────────────────────────────────────────────
+# ╔══════════════════════════════════════════════════════════════════════════╗
+# ║ MODE SEMANTICS (v6.8.3.5 AUTHORITATIVE POLICY):                        ║
+# ║                                                                          ║
+# ║ ① --live  selects the BROKER ACCOUNT:                                   ║
+# ║      OFF (default) → always connect Practice/Demo environment          ║
+# ║      ON              → connect LIVE real-money environment            ║
+# ║      This flag has NOTHING to do with whether orders are sent.         ║
+# ║                                                                          ║
+# ║ ② --dry-run controls EXECUTION GATE (what classes of OANDA API calls   ║
+# ║      are allowed to mutate broker state):                               ║
+# ║      OFF (default) → Open / Close / SL update / TP update / any        ║
+# ║                       mutating write calls are ALLOWED.               ║
+# ║      ON              → run the FULL pipeline end-to-end exactly as     ║
+# ║                       usual, but EVERY MUTATING CALL (Open/Close/      ║
+# ║                       SL/TP update) is short-circuited and replaced   ║
+# ║                       with a DRY_RUN diagnostic log.                   ║
+# ║      Read-only calls (get_open_position / OpenTrades / AccountDetails / ║
+# ║      PricingInfo / Candles / PositionDetails) are ALWAYS allowed,     ║
+# ║      regardless of --dry-run, so the pipeline can still see real      ║
+# ║      positions/prices when dry-run is used on the LIVE account.       ║
+# ║                                                                          ║
+# ║ ③ Combined behaviours (4 valid combos):                                ║
+# ║   (neither flag)     Practice/Demo env + real order execution         ║
+# ║   --dry-run only      Practice/Demo env + full pipeline + NO writes   ║
+# ║   --live only         LIVE real env   + real order execution         ║
+# ║   --live --dry-run    LIVE real env   + full pipeline + NO writes    ║
+# ║     (Portfolio Observer pattern — inspect LIVE state safely)          ║
+# ╚══════════════════════════════════════════════════════════════════════════╝
 MODE = cfg_bot("MODE", "LEVEL10")
 TIMEFRAME = args.timeframe
-if args.live and args.dry_run:
-    logger.warning("⚠️  Both --live and --dry-run given — --live wins, running LIVE")
-LIVE_MODE = args.live
-if args.live:
-    _live = get_oanda_profile("live")
-    api = _live["api"]
-    OANDA_ACCOUNT_ID = OANDA_ACCOUNT_ID_3_LIVE if PROFILE_NAME == "profile3" else OANDA_ACCOUNT_ID_2_LIVE
-    logger.info(f"🔴 LIVE ENVIRONMENT | Account: {OANDA_ACCOUNT_ID}")
+
+# ── 1) Broker account selection driven SOLELY by --live (never by --dry-run)
+# Requirement #1: "没有--live永远是demo账号"
+LIVE_MODE = bool(args.live)  # False = Practice/Demo; True = LIVE
+if LIVE_MODE:
+    _prof = get_oanda_profile("live")
+    api = _prof["oanda_client"]
+    OANDA_ACCOUNT_ID = (
+        OANDA_ACCOUNT_ID_3_LIVE if PROFILE_NAME == "profile3"
+        else OANDA_ACCOUNT_ID_2_LIVE
+    )
+    logger.info(f"🔴 LIVE ENVIRONMENT (--live set) | Account: {OANDA_ACCOUNT_ID}")
+else:
+    _prof = get_oanda_profile("practice")
+    api = _prof["oanda_client"]
+    OANDA_ACCOUNT_ID = (
+        OANDA_ACCOUNT_ID_DEMO_3 if PROFILE_NAME == "profile3"
+        else OANDA_ACCOUNT_ID_DEMO_2
+    )
+    logger.info(f"🧪 PRACTICE/DEMO ENVIRONMENT (no --live) | Account: {OANDA_ACCOUNT_ID}")
+
+# ── 2) Execution gate driven SOLELY by --dry-run (never influenced by --live)
+# Requirement #2: "--dry-run和账号没有关系。跑完全程只是不操作OANDA的
+#                 open,close,update操作。get info还是可以的"
+DRY_RUN_MODE = bool(args.dry_run)
+if DRY_RUN_MODE:
+    logger.info(
+        "🧪 DRY_RUN MODE (--dry-run set) | Full pipeline will run; ONLY "
+        "mutating OANDA calls (Open/Close/SL/TP update) are suppressed; "
+        "ALL read-only calls (positions, prices, candles, account info) "
+        "still execute normally."
+    )
 MAX_ENTRIES = args.max_entries
 OANDA_GRANULARITY_MAP = {"15m": "M15", "1H": "H1", "H4": "H4", "D": "D"}
 OANDA_GRANULARITY = OANDA_GRANULARITY_MAP.get(TIMEFRAME, "H4")
@@ -592,7 +667,18 @@ DEFAULT_LOT_SIZE = cfg_bot("DEFAULT_LOT_SIZE", 10000)
 if args.lots is not None:
     DEFAULT_LOT_SIZE = args.lots
 
-_run_mode_label = "LIVE (real orders)" if LIVE_MODE else "DRY-RUN (no orders sent)"
+# Build run mode banner from TWO INDEPENDENT AXES (account env × execution gate)
+_env_label = (
+    f"🔴 LIVE-ENV Account={OANDA_ACCOUNT_ID}"
+    if LIVE_MODE
+    else f"🧪 DEMO-ENV Account={OANDA_ACCOUNT_ID}"
+)
+_exec_label = (
+    "DRY_RUN (NO Open/Close/SL-update/TP-update writes)"
+    if DRY_RUN_MODE
+    else "EXECUTE (mutating OANDA write calls ALLOWED)"
+)
+_run_mode_label = f"{_env_label} | {_exec_label}"
 _max_entries_label = f"{MAX_ENTRIES}" if MAX_ENTRIES else "unlimited (within MAX_OPEN)"
 logger.info(
     f"🖥️  RUN MODE: {_run_mode_label} | MAX_OPEN={MAX_OPEN} | "

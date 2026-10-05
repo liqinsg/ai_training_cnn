@@ -523,19 +523,27 @@ class DataFetcher:
         self.oanda_granularity = oanda_granularity
 
 
-    def fetch(self, pair: str, oanda_sym: str, count: int = 200) -> pd.DataFrame:
+    def fetch(
+        self,
+        pair: str,
+        oanda_sym: str,
+        count: int = 200,
+        granularity: str = None,
+    ) -> pd.DataFrame:
+        g = granularity or self.oanda_granularity
         if self.use_oanda and self.oanda_api:
-            return self._from_oanda(oanda_sym, count)
+            return self._from_oanda(oanda_sym, count, g)
         else:
-            return self._from_yfinance(pair, count)
+            return self._from_yfinance(pair, count, g)
 
 
-    def _from_oanda(self, instrument: str, count: int) -> pd.DataFrame:
+    def _from_oanda(self, instrument: str, count: int, granularity: str = None) -> pd.DataFrame:
         from oandapyV20.endpoints.instruments import InstrumentsCandles
+        g = granularity or self.oanda_granularity
         resp = self.oanda_api.request(
             InstrumentsCandles(
                 instrument=instrument,
-                params={"count": count, "granularity": self.oanda_granularity}
+                params={"count": count, "granularity": g}
             )
         )
         candles = resp.get("candles", [])
@@ -565,9 +573,22 @@ class DataFetcher:
         return df
 
 
-    def _from_yfinance(self, pair: str, count: int) -> pd.DataFrame:
+    def _from_yfinance(self, pair: str, count: int, granularity: str = None) -> pd.DataFrame:
         import yfinance as yf
-        df = yf.download(pair, period="5d", interval="15m", progress=False)
+        period_map = {
+            "D": "1y", "W": "2y", "M": "5y",
+            "H1": "3mo", "H4": "6mo",
+            "M15": "5d", "M5": "5d", "M1": "5d",
+        }
+        interval_map = {
+            "D": "1d", "W": "1wk", "M": "1mo",
+            "H1": "1h", "H4": "4h",
+            "M15": "15m", "M5": "5m", "M1": "1m",
+        }
+        g = granularity or self.oanda_granularity
+        interval = interval_map.get(g, "15m")
+        period = period_map.get(g, "5d")
+        df = yf.download(pair, period=period, interval=interval, progress=False)
         if df.empty:
             return pd.DataFrame(columns=["Open", "High", "Low", "Close", "Volume"])
         if isinstance(df.columns, pd.MultiIndex):
