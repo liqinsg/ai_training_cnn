@@ -112,9 +112,9 @@ TREND_FILTER_ENABLED = False   # Set False → skip EMA10 slope + EMA100 checks 
 # explicitly to False so re-enabling the EMA10 filter cannot silently revive it.
 WEEK_EMA100_FILTER_ENABLED = False   # Set False → skip Weekly EMA100 counter-trend check
 
-# ─── D-TIMEFRAME DIRECTION GATE (Phase 0 — SHADOW MODE BY DEFAULT)
-# Locks each pair into LONG / SHORT / BOTH based on D-EMA20 × D-EMA50 cross.
-# Solves "几小时前卖现在又买" flip-flop problem: daily cross locks direction.
+# ─── H1-TIMEFRAME DIRECTION GATE (Phase 0 — SHADOW MODE BY DEFAULT)
+# Locks each pair into LONG / SHORT / BOTH based on H1-EMA20 × H1-EMA50 cross.
+# Solves "几小时前卖现在又买" flip-flop problem: H1 cross locks direction.
 #
 # PHASE RULE (per user's "记录≠执行" workflow):
 #   SHADOW=True   → Emit diagnostic lines (would_block=yes/no) but do NOT BLOCK
@@ -125,7 +125,7 @@ D_GATE_ENABLED = True
 D_GATE_SHADOW = True          # 🔒 Phase 0 default: observe only, NO blocking
 D_GATE_EMA_FAST = 20          # A1: fast EMA
 D_GATE_EMA_SLOW = 50          # A1: slow EMA
-D_GATE_CONFIRM_BARS = 2       # A2: how many consecutive D-closes must confirm cross
+D_GATE_CONFIRM_BARS = 2       # A2: how many consecutive H1-closes must confirm cross
 D_GATE_MIN_BUFFER_PCT = 0.002 # A2: 0.2% minimum EMA gap magnitude on flip (anti-whipsaw)
 
 if __name__ == "__main__":

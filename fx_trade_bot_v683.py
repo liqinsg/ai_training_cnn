@@ -236,16 +236,16 @@ def fetch_weekly_ema100(oanda_instrument, api):
         return None
 
 
-# ─── D-TIMEFRAME DIRECTION GATE (D-Gate) ────────────────────────────────────
-# Locks each currency pair into a LONG / SHORT / BOTH bias based on the daily
-# (Timeframe "D") EMA20 × EMA50 cross. Prevents the 15m engine from flip-flopping
+# ─── H1-TIMEFRAME DIRECTION GATE (D-Gate) ────────────────────────────────────
+# Locks each currency pair into a LONG / SHORT / BOTH bias based on the H1
+# (Timeframe "H1") EMA20 × EMA50 cross. Prevents the 15m engine from flip-flopping
 # between BUY/SELL on the same pair within hours.
 #
 # Design (answers = A/A/A per user spec):
-#   A1: EMA_FAST=20, EMA_SLOW=50 on daily closes
-#   A2: Flip confirmation: 2 consecutive daily closes past cross (min_buffer_pct
-#       = 0.2% gap between EMAs on flip bar) → prevents 1-day whipsaws
-#   A3: All pairs evaluate their OWN D-EMA cross (simple, no DXY synthetic).
+#   A1: EMA_FAST=20, EMA_SLOW=50 on H1 closes
+#   A2: Flip confirmation: 2 consecutive H1 closes past cross (min_buffer_pct
+#       = 0.2% gap between EMAs on flip bar) → prevents 1-bar whipsaws
+#   A3: All pairs evaluate their OWN H1-EMA cross (simple, no DXY synthetic).
 #       USD-quote pairs naturally vote the same direction, so USD exposure is
 #       implicitly one-sided; JPY crosses are independent.
 #   SHADOW mode (default True): emit a DIAG line but DO NOT block. Use for
@@ -305,24 +305,24 @@ def d_gate_compute_direction(
     return result
 
 
-def d_gate_fetch_daily(fetcher, pair: str, oanda: str, count: int = 150):
+def d_gate_fetch_h1(fetcher, pair: str, oanda: str, count: int = 500):
     try:
-        raw = fetcher.fetch(pair, oanda, count=count, granularity="D")
+        raw = fetcher.fetch(pair, oanda, count=count, granularity="H1")
         if raw is None or raw.empty:
-            logger.info(f"ℹ️  D-Gate daily fetch empty (gran=D): {pair}")
+            logger.info(f"ℹ️  D-Gate H1 fetch empty (gran=H1): {pair}")
             return None
         closes = raw["Close"].dropna()
-        if len(closes) < 55:
+        if len(closes) < 100:
             logger.info(
-                f"ℹ️  D-Gate daily fetch too few bars ({len(closes)}<55): {pair}"
+                f"ℹ️  D-Gate H1 fetch too few bars ({len(closes)}<100): {pair}"
             )
             return None
         return closes.reset_index(drop=True)
     except TypeError as te:
         logger.warning(
-            f"🚨 D-GATE FETCH API BUG: fetcher.fetch() rejected granularity=D "
+            f"🚨 D-GATE FETCH API BUG: fetcher.fetch() rejected granularity=H1 "
             f"with TypeError ({te}). Falling back — this fetcher may not support "
-            f"daily granularity natively. Verify data_pipeline.py::DataFetcher.fetch "
+            f"H1 granularity natively. Verify data_pipeline.py::DataFetcher.fetch "
             f"has a granularity kwarg."
         )
         try:
@@ -330,12 +330,12 @@ def d_gate_fetch_daily(fetcher, pair: str, oanda: str, count: int = 150):
             if raw2 is None or raw2.empty:
                 return None
             closes2 = raw2["Close"].dropna()
-            return closes2.reset_index(drop=True) if len(closes2) >= 55 else None
+            return closes2.reset_index(drop=True) if len(closes2) >= 100 else None
         except Exception as e2:
-            logger.info(f"ℹ️  D-Gate daily fetch fallthrough {pair}: {e2}")
+            logger.info(f"ℹ️  D-Gate H1 fetch fallthrough {pair}: {e2}")
             return None
     except Exception as e:
-        logger.info(f"ℹ️  D-Gate daily fetch {pair}: {type(e).__name__}: {e}")
+        logger.info(f"ℹ️  D-Gate H1 fetch {pair}: {type(e).__name__}: {e}")
         return None
 
 
@@ -532,7 +532,7 @@ if D_GATE_ENABLED:
     mode = "SHADOW (log-only)" if D_GATE_SHADOW else "ENFORCED (real blocking)"
     logger.info(
         f"🧭 D-GATE: {mode} | EMA{D_GATE_EMA_FAST}×EMA{D_GATE_EMA_SLOW} | "
-        f"confirm={D_GATE_CONFIRM_BARS}D | buffer={D_GATE_MIN_BUFFER_PCT*100:.2f}%"
+        f"confirm={D_GATE_CONFIRM_BARS}H1 | buffer={D_GATE_MIN_BUFFER_PCT*100:.2f}%"
     )
 else:
     logger.info("ℹ️  D-GATE: disabled (D_GATE_ENABLED=False)")
@@ -1111,17 +1111,17 @@ def main():
         send_telegram_message(f"❌ FX BOT {PROFILE_LABEL}: No usable data")
         return
 
-    # Step 2.5 — D-Gate: compute D-EMA20 × D-EMA50 direction for ALL pool pairs
+    # Step 2.5 — D-Gate: compute H1-EMA20 × H1-EMA50 direction for ALL pool pairs
     D_GATE_DIRECTIONS.clear()
     if D_GATE_ENABLED:
-        logger.info("[STEP 2.5] D-GATE — Daily Direction Locks...")
+        logger.info("[STEP 2.5] D-GATE — H1 Direction Locks...")
         # Need ALL_PAIRS (not just selected) because WhiteList filter happens
         # later, and USD-group majority works better if we see the whole pool.
         for pair in ALL_PAIRS:
             oanda = YAHOO_TO_OANDA.get(pair)
             if not oanda:
                 continue
-            daily = d_gate_fetch_daily(fetcher, pair, oanda, count=180)
+            daily = d_gate_fetch_h1(fetcher, pair, oanda, count=500)
             if daily is None:
                 D_GATE_DIRECTIONS[pair] = D_GATE_BOTH
                 continue
@@ -1437,6 +1437,37 @@ def main():
                 dec,
                 smart_tp_pips,
             )
+        )
+
+    # ─── Conflict Detection: shared quote currency with opposite direction ─────
+    # Within this profile's group, if two or more candidates share the same
+    # quote currency but have opposite directions (e.g. short AUDUSD + long
+    # EURUSD → both quote USD), ALL candidates in that quote group are skipped.
+    from collections import defaultdict
+    quote_dirs = defaultdict(list)
+    for i, (_, score, pair, oanda, direction, *_rest) in enumerate(all_candidates):
+        base, quote = pair_parts[pair]
+        quote_dirs[quote].append((direction, pair, score, i))
+
+    conflict_idx = set()
+    for quote, entries in quote_dirs.items():
+        has_buy = any(d == "BUY" for d, _, _, _ in entries)
+        has_sell = any(d == "SELL" for d, _, _, _ in entries)
+        if has_buy and has_sell:
+            for d, pair, score, i in entries:
+                conflict_idx.add(i)
+            logger.warning(
+                f"⚔️  CONFLICT: quote={quote} has both BUY and SELL — "
+                f"skipping ALL {len(entries)} candidates: "
+                f"{[(p, d) for d, p, _, _ in entries]}"
+            )
+
+    if conflict_idx:
+        before = len(all_candidates)
+        all_candidates = [c for i, c in enumerate(all_candidates) if i not in conflict_idx]
+        logger.info(
+            f"⚔️  After conflict resolution: {len(all_candidates)}/{before} remain "
+            f"({before - len(all_candidates)} skipped)"
         )
 
     # Execute Top Candidates

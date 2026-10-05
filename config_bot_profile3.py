@@ -105,9 +105,9 @@ MC_MOMENTUM_BAND = 0.001
 # TREND_FILTER_ENABLED = True   # Set False → skip EMA10 slope + EMA100 checks entirely
 WEEK_EMA100_FILTER_ENABLED = False   # Set False → skip Weekly EMA100 counter-trend check
 
-# ─── D-TIMEFRAME DIRECTION GATE (Phase 0 — SHADOW MODE BY DEFAULT)
-# Locks each pair into LONG / SHORT / BOTH based on D-EMA20 × D-EMA50 cross.
-# Solves "几小时前卖现在又买" flip-flop problem: daily cross locks direction.
+# ─── H1-TIMEFRAME DIRECTION GATE (Phase 0 — SHADOW MODE BY DEFAULT)
+# Locks each pair into LONG / SHORT / BOTH based on H1-EMA20 × H1-EMA50 cross.
+# Solves "几小时前卖现在又买" flip-flop problem: H1 cross locks direction.
 D_GATE_ENABLED = True
 D_GATE_SHADOW = True          # 🔒 Phase 0 default: observe only, NO blocking
 D_GATE_EMA_FAST = 20
