@@ -107,6 +107,17 @@ from fx_trade_bot_mc import MCGenerator, MCConfig
 from fx_trade_bot_ml import ensure_model
 from portfolio_balance import balance_from_config
 from sl_zone_hierarchy import compute_sl_zone
+from data_guard import (
+    MIN_REQUIRED_BARS,
+    get_safe_series,
+    has_min_bars,
+    insufficient_bars,
+    safe_iloc,
+    safe_last,
+    safe_last_row,
+    safe_tail,
+    to_float,
+)
 from config_oanda import (
     api,
     get_oanda_profile,
@@ -205,8 +216,16 @@ def calculate_ema(series, period):
 
 
 def calculate_ema_slope(ema_series, lookback_bars):
+    # ── 数据边界保护 ── 数据不足时优雅返回，绝不让 .iloc 抛 IndexError。
+    n = 0 if ema_series is None else len(ema_series)
+    if n == 0:
+        logger.warning("数据不足：需要 1 根，实际只有 0 根 → 跳过（calculate_ema_slope）")
+        return None, None
+    # 索引范围不硬写：lookback 夹到实际可用长度（数据充足时 lb == lookback_bars，
+    # 计算结果与原实现完全一致）。
+    lb = max(1, min(int(lookback_bars), n))
     ema_now = ema_series.iloc[-1]
-    ema_prev = ema_series.iloc[-lookback_bars]
+    ema_prev = ema_series.iloc[-lb]
     slope_pct = (ema_now - ema_prev) / ema_prev
     return slope_pct, ema_now
 
@@ -233,7 +252,12 @@ def fetch_weekly_ema100(oanda_instrument, api):
             return None
         closes = [float(c["mid"]["c"]) for c in candles]
         series = pd.Series(closes)
-        return calculate_ema(series, 100).iloc[-1]
+        # safe_last 内部先做长度检查：candles 恰好为 0/1 时不再触发 iloc[-1] 越界
+        return safe_last(
+            calculate_ema(series, 100),
+            default=None,
+            context=f"Weekly EMA100 {oanda_instrument}",
+        )
     except Exception as e:
         logger.warning(f"⚠️ Cannot fetch Weekly EMA100 for {oanda_instrument}: {e}")
         return None
@@ -278,7 +302,8 @@ def d_gate_compute_direction(
     ema_slow = calculate_ema(daily_closes, ema_slow_period)
     diff_pct = (ema_fast - ema_slow) / ema_slow.replace(0.0, np.nan)
 
-    tail = diff_pct.iloc[-confirm_bars:].tolist()
+    # safe_tail 把 confirm_bars 夹到实际长度，切片范围永不越界（数据充足时等价原实现）
+    tail = safe_tail(diff_pct, confirm_bars, context="D-GATE tail").tolist()
     if any(pd.isna(x) for x in tail):
         logger.info("🧭 D-GATE: BOTH (NaN in EMA tail)")
         return D_GATE_BOTH
@@ -383,6 +408,21 @@ def evaluate_trend_and_tp(
     logger.info(
         f"🔍 {timeframe} TREND FILTER: ema_cross_filter={ema_cross_filter} | profile={profile_name}"
     )
+
+    # ── 数据边界保护 ── 计算 EMA10 斜率至少需要 max(ema_period, slope_lookback)+1 根。
+    # 列缺失 / 数据不足 → 优雅返回「不放行」，避免 df_h1["Close"] 或 iloc 越界崩溃。
+    _min_bars = max(int(cfg["ema_period"]), int(cfg["slope_lookback"])) + 1
+    _close_series = get_safe_series(
+        df_h1,
+        "Close",
+        min_bars=_min_bars,
+        context=f"evaluate_trend_and_tp/{profile_name}/{timeframe}",
+    )
+    if _close_series is None:
+        _have = 0 if df_h1 is None else len(df_h1)
+        reason = f"数据不足 — 需要 ≥{_min_bars} 根，实际 {_have} 根"
+        logger.info(f"⏭️ SKIP {timeframe} TREND FILTER: {reason}")
+        return False, 0.0, reason
 
     ema10 = calculate_ema(df_h1["Close"], cfg["ema_period"])
     slope, ema_level = calculate_ema_slope(ema10, cfg["slope_lookback"])
@@ -1114,8 +1154,18 @@ def main():
             logger.warning(f"⚠️ No OANDA mapping for {pair} — skipping")
             continue
         try:
-            raw = fetcher.fetch(pair, oanda, count=200)
-            if raw.empty:
+            # 请求量 = max(原实现 200, MIN_REQUIRED_BARS)，再夹到 OANDA 上限 5000。
+            # 不夹的话 MIN_REQUIRED_BARS > 5000 会被 API 拒绝
+            # ("Maximum value for 'count' exceeded")，反而拿不到数据、也打不出
+            # 标准的「数据不足」日志。
+            _fetch_count = min(max(200, MIN_REQUIRED_BARS), 5000)
+            raw = fetcher.fetch(pair, oanda, count=_fetch_count)
+            if raw is None or raw.empty:
+                # 空数据同样走标准日志（原实现是静默 continue，排查困难）
+                insufficient_bars(MIN_REQUIRED_BARS, 0, context=f"Step2 取数 {pair}")
+                continue
+            # ── 数据边界保护：统一最小数据量校验，不足则跳过该标的 ──
+            if not has_min_bars(raw, MIN_REQUIRED_BARS, context=f"Step2 取数 {pair}"):
                 continue
             df = (
                 feat_engine.build(raw)
@@ -1126,13 +1176,16 @@ def main():
             )
             if len(df) < 5:
                 continue
+            _last_row = safe_last_row(df, context=f"最新指标 {pair}")
+            if _last_row is None:
+                continue
             pair_data[pair] = {
                 "df": df,
                 "oanda": oanda,
                 "raw": raw,
-                "atr": df.iloc[-1].get("atr", 0.0),
-                "rsi": df.iloc[-1].get("rsi", 50.0),
-                "adx": df.iloc[-1].get("adx", -1.0),
+                "atr": _last_row.get("atr", 0.0),
+                "rsi": _last_row.get("rsi", 50.0),
+                "adx": _last_row.get("adx", -1.0),
             }
             if pair_data[pair]["adx"] < 10:
                 logger.info(
@@ -1237,13 +1290,25 @@ def main():
                     raw_tf = fetch_candles(pair_data[pair]["oanda"], gran)
                     if len(raw_tf) < 5:
                         continue
+                    # ── 数据边界保护：取最新收盘价前先校验长度 / 列存在 ──
+                    _tf_close = to_float(
+                        safe_last(
+                            get_safe_series(
+                                raw_tf, "Close", min_bars=5,
+                                context=f"confluence {pair}/{gran}",
+                            ),
+                            context=f"confluence {pair}/{gran}",
+                        )
+                    )
+                    if _tf_close is None:
+                        continue
                     sig = strat_engine.generate_signal(
                         pair,
                         pair_data[pair]["oanda"],
                         feat_engine.build(raw_tf),
                         None,
                         strength_scores,
-                        raw_tf.iloc[-1]["Close"],
+                        _tf_close,
                         1.0,
                     )
                     if sig:
@@ -1357,7 +1422,13 @@ def main():
             else:
                 raise ValueError()
         except Exception:
-            current = float(pair_data[pair]["df"].iloc[-1]["Close"])
+            # ── 数据边界保护：实时价拿不到时回退到最后一根 Close ──
+            _fb_row = safe_last_row(pair_data[pair]["df"], context=f"价格回退 {pair}")
+            _fb_close = to_float(_fb_row.get("Close")) if _fb_row is not None else None
+            if _fb_close is None:
+                logger.warning(f"数据不足：{pair} 无可用收盘价 → 跳过")
+                continue
+            current = _fb_close
             spread_pips = 1.0
 
         base, quote = pair_parts[pair]

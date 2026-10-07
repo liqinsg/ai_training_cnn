@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from enum import Enum
 import numpy as np
 import pandas as pd
+from data_guard import get_safe_series, safe_last
 from telegram_message import send_telegram_message
 from utils.strategy_helpers import get_live_prices
 
@@ -600,9 +601,13 @@ class DynamicPositionManager:
         for pair, info in pair_data.items():
             instrument = info["oanda"]
             df = info.get("df")
-            if df is None or len(df) < 2:
+            # ── 数据边界保护：取最新 ATR 前先校验长度 / 列存在 / 非空 ──
+            atr_series = get_safe_series(
+                df, "atr", min_bars=2, context=f"ExitManager {pair}"
+            )
+            if atr_series is None:
                 continue
-            atr_val = df.iloc[-1].get("atr")
+            atr_val = safe_last(atr_series, context=f"ExitManager {pair}")
             if atr_val is None or np.isnan(atr_val) or atr_val <= 0:
                 continue
 

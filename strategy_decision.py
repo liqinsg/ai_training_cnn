@@ -8,6 +8,7 @@ from enum import Enum
 import numpy as np
 import pandas as pd
 from config import MAX_TOTAL_TRADES, MAX_PER_USD_GROUP, MAX_PER_JPY_GROUP
+from data_guard import has_min_bars
 
 
 class Direction(Enum):
@@ -111,7 +112,8 @@ class StrategyEngine:
         notes: List[str] = []
         breakdown: Dict[str, float] = {"base": self.cfg.base_score}
 
-        if df.empty or len(df) < 5:
+        # ── 数据边界保护：下面立刻 `df.iloc[-1]`，数据不足时打日志并优雅返回 ──
+        if not has_min_bars(df, 5, context="StrategyEngine.generate_signal"):
             return None
 
         latest = df.iloc[-1]
@@ -315,7 +317,8 @@ class StrategyEngine:
             return 0.0, "", None
         try:
             daily = self._resample_daily(df)
-            if len(daily) < 2:
+            # ── 数据边界保护：下面要取 daily.iloc[-2]，至少 2 根 ──
+            if not has_min_bars(daily, 2, context="pivots"):
                 return 0.0, "No daily data for pivots", None
         except Exception:
             return 0.0, "Pivot resample failed", None

@@ -16,6 +16,15 @@ from pathlib import Path
 
 import pandas as pd
 
+from data_guard import (
+    MIN_REQUIRED_BARS,
+    get_safe_series,
+    has_min_bars,
+    safe_last,
+    safe_tail,
+    to_float,
+)
+
 BASE_DIR = Path(__file__).resolve().parent
 BOT = BASE_DIR / "fx_trade_bot_v683.py"
 
@@ -63,6 +72,14 @@ def load_real_functions():
         "logger": logging.getLogger("offline-test"),
         "SLOPE_DIAG_BASELINE": baseline,
         "MIN_SLOPE_LADDER": module_literal("MIN_SLOPE_LADDER"),
+        # 数据边界保护 helpers —— evaluate_trend_and_tp 现在会调用它们，
+        # AST 抽取执行时必须一并注入，否则 NameError（同 PROFILE_NAME 的坑）。
+        "MIN_REQUIRED_BARS": MIN_REQUIRED_BARS,
+        "get_safe_series": get_safe_series,
+        "has_min_bars": has_min_bars,
+        "safe_last": safe_last,
+        "safe_tail": safe_tail,
+        "to_float": to_float,
     }
     exec(compile(mod, str(BOT), "exec"), ns)
     return ns, cfg_src, missing

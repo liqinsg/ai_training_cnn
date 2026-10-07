@@ -1,6 +1,8 @@
 import pandas as pd
 import yfinance as yf
 
+from data_guard import MIN_REQUIRED_BARS, has_min_bars
+
 OANDA_TO_YAHOO = {
     "EUR_USD": "EURUSD=X",
     "GBP_USD": "GBPUSD=X",
@@ -107,8 +109,16 @@ def fetch_price_data(symbol: str, period: str = "60d", interval: str = "1h") -> 
     return df
 
 
-def summarize_indicator_data(symbol: str, period: str = "60d", interval: str = "1h") -> dict:
+def summarize_indicator_data(
+    symbol: str, period: str = "60d", interval: str = "1h"
+) -> "dict | None":
     df = fetch_price_data(symbol, period=period, interval=interval)
+
+    # ── 数据边界保护 ── 不足 MIN_REQUIRED_BARS 直接优雅返回。
+    # 后面的 `df.iloc[-1]` / `high_ser.iloc[-2]` / 指标序列在短数据上都会越界。
+    if not has_min_bars(df, MIN_REQUIRED_BARS, context=f"indicator_provider {symbol}"):
+        return None
+
     indicators = compute_indicators(df)
 
     close_ser = safe_column(df, "Close")
