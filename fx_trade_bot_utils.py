@@ -432,11 +432,22 @@ def update_order_tp(
     instrument,
     new_tp_price,
     send_telegram=None,
+    dry_run: bool = False,
 ):
     """Update TP on an open trade — raises on failure, returns dict on success."""
     dec = price_decimals(instrument)
     new_tp_str = f"{float(new_tp_price):.{dec}f}"
     data = {"takeProfit": {"price": new_tp_str, "timeInForce": "GTC"}}
+
+    if dry_run:
+        # DRY_RUN contract: full pipeline runs, but NO mutating write is sent.
+        logger.info(
+            f"🧪 DRY_RUN TP UPDATE {instrument}: would set takeProfit → {new_tp_str} "
+            f"(no TradeCRCOR write sent)"
+        )
+        if send_telegram:
+            send_telegram(f"🧪 DRY-RUN would TP UPDATED {instrument} → {new_tp_str}")
+        return {"ok": True, "status": "DRY_RUN", "new_tp": new_tp_price, "txid": ""}
 
     try:
         resp = api.request(
@@ -530,6 +541,7 @@ class DynamicPositionManager:
         dynamic_tp: bool = False,  # ⚠️ DEFAULT: DISABLED — opt-in only
         tp_raise_thresh_pips: int = 15,
         telegram_send=None,
+        dry_run: bool = False,  # v6.8.3.6: suppress ALL mutating writes (SL/TP modify); reads still run
     ):
         self.api = api
         self.account_id = account_id
@@ -541,6 +553,7 @@ class DynamicPositionManager:
         self.dynamic_tp = dynamic_tp
         self.tp_thresh_pips = tp_raise_thresh_pips
         self.telegram = telegram_send
+        self.dry_run = dry_run
 
     def _get_open_trades(self, instrument: str):
         try:
@@ -561,6 +574,13 @@ class DynamicPositionManager:
             return None
 
     def _update_trade_sl(self, trade_id: str, new_sl: float, decimals: int) -> bool:
+        if self.dry_run:
+            # DRY_RUN contract: full pipeline runs, but NO mutating write is sent.
+            logger.info(
+                f"   🧪 DRY_RUN SL #{trade_id}: would set stopLoss → {new_sl:.{decimals}f} "
+                f"(no TradeCRCOR write sent)"
+            )
+            return True  # logical "handled" → caller reports with DRY-RUN wording
         try:
             self.api.request(TradeCRCDO(
                 accountID=self.account_id,
@@ -626,14 +646,14 @@ class DynamicPositionManager:
                         if current_tp is None or new_tp > current_tp + (self.tp_thresh_pips * pip):
                             update_order_tp(
                                 self.api, self.account_id, tid, instrument, new_tp,
-                                send_telegram=self.telegram
+                                send_telegram=self.telegram, dry_run=self.dry_run
                             )
                     else:
                         new_tp = current_price - (atr_mult_tp * atr_val)
                         if current_tp is None or new_tp < current_tp - (self.tp_thresh_pips * pip):
                             update_order_tp(
                                 self.api, self.account_id, tid, instrument, new_tp,
-                                send_telegram=self.telegram
+                                send_telegram=self.telegram, dry_run=self.dry_run
                             )
 
                 # Breakeven → Trailing SL
@@ -667,8 +687,11 @@ class DynamicPositionManager:
                     ):
                         continue  # Never move SL against position
                     if self._update_trade_sl(tid, new_sl, decimals) and self.telegram:
+                        _action_txt = (
+                            f"🧪 DRY-RUN would {action}" if self.dry_run else f"🎯 {action}"
+                        )
                         self.telegram(
-                            f"🎯 {action} {pair} #{tid} | Profit: {profit_pips:.1f}p → SL: {new_sl:.{decimals}f}"
+                            f"{_action_txt} {pair} #{tid} | Profit: {profit_pips:.1f}p → SL: {new_sl:.{decimals}f}"
                         )
 
 # ============================================================================

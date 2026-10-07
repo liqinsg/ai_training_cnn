@@ -37,7 +37,7 @@
 | B1 | `tuple indices must be integers or slices, not str` 扫持仓必崩 | `get_open_position()` 返回 `(PositionStatus, dict)` 被直接当 dict 访问 | 正确解包 `status, pos = get_open_position(...)`，用 `status == PositionStatus.OPEN` 判断 |
 | B2 | 下单后 TradeID 永远显示 `TradeID=?` | 主循环去取不存在的 `resp["orderFillTransaction"]["id"]`，实际路径是 `resp["trade_id"]` | 按 status 分支读取，仅 `status=="OK"` 才打印 `trade_id` |
 | B3 | 被拒的订单日志显示 `✅ OANDA accepted order`（假成功），还占 MAX_OPEN 坑 | utils 中判拒前就打成功日志；主循环不管 status 一律 `✅ EXECUTED` 并 `entries_this_run++` | utils 先判 `orderRejectTransaction / orderCancel` 后判成功；主循环仅当 `status ∈ {OK, DRY_RUN}` 才占坑；REJECTED/CANCELLED/REDUCED/ERROR 打原因后 continue，不占坑，允许候补替补 |
-| B4 | crontab 激活行缺少 `--live`，永远 DRY-RUN 不开仓 | `LIVE_MODE = args.live` 默认 False；cron 行没加 `--live` 就永远不发单 | 手动修复 crontab（见 §4） |
+| B4 | crontab 激活行缺少 `--live`，永远 DRY-RUN 不开仓 | `LIVE_MODE = args.live` 默认 False；开仓门控绑在 `LIVE_MODE` 上，cron 行没加 `--live` 就永远不发单；`run.env` 的 `DRY_RUN` 从未被读取 | v6.8.3.6：开仓门控改读 `DRY_RUN`（CLI `--dry-run/--no-dry-run` > `run.env DRY_RUN` > 默认 true），`--live` 只管账户环境；新增 `🚦 EXECUTION GATE` 启动日志 |
 
 ### 新增 & 改进特性（v6.8.3.4 Gemini-audit locked）
 
@@ -60,6 +60,9 @@
 ### CLI 常用命令
 
 ```bash
+# 0) Demo 账户真实开仓（run.env: DRY_RUN=false，无需 --live；启动看 🚦 EXECUTION GATE 确认来源）
+python fx_trade_bot_v683.py --profile2 -p 3
+
 # 1) Dry-run 安全验证（每次改完先跑这个，确认白名单/overlap 锁/D-Gate banner）
 python fx_trade_bot_v683.py --profile2 --dry-run
 python fx_trade_bot_v683.py --profile3 --dry-run
@@ -76,8 +79,8 @@ python fx_trade_bot_v683.py --profile2 --live --lots 1000 --max-entries 3
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
 | `--profile2 / --profile3` | — | 选其一，决定 **Universe Bucket**（P2=JPY 桶 / P3=Majors 桶）+ **OANDA 账户（-002 / -003）** + 独立 cooldown/results |
-| `--live` | False | **不加这个永远 DRY-RUN（不会发单）** |
-| `--dry-run` | False | 若 `--live` 和 `--dry-run` 同时给出，`--live` 胜出（打印警告） |
+| `--live` | False | 只决定**连哪个账户环境**（False=Practice/Demo，True=LIVE 实盘）；**不再控制是否发单**（v6.8.3.6 起） |
+| `--dry-run / --no-dry-run` | 不加 = 读 `run.env` 的 `DRY_RUN`（默认 true） | 执行门控。优先级：CLI > `run.env DRY_RUN` > 默认 true。`--dry-run` 强制不发单，`--no-dry-run` 强制发单。启动时看 `🚦 EXECUTION GATE` 行确认来源 |
 | `--lots N` | `DEFAULT_LOT_SIZE=10000` | **OANDA 的 1 lot = 1 USD 名义价值（和 MT4 标准手完全不同！）**。对照见 §4 表 |
 | `--max-entries N` | unlimited（within MAX_OPEN） | 本轮运行最多新开几单（和 `MAX_OPEN_POSITIONS`「总持仓上限」并行）。**§4 方案 B 用这个把两桶并发上限压到 2+2=4** |
 | `--timeframe` | 15m | 15m / H1 / H4 / D |

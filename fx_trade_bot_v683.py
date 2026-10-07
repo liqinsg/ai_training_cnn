@@ -36,9 +36,13 @@ parser.add_argument("--no-confluence", action="store_false", dest="confluence")
 parser.add_argument("--skip-mc", action="store_true")
 parser.add_argument("--mc-only", action="store_true")
 parser.add_argument("--live", action="store_true",
-                    help="Actually execute trades. Default is DRY-RUN (signals logged, no orders sent).")
-parser.add_argument("--dry-run", action="store_true",
-                    help="Explicit dry-run — no orders sent to OANDA (this is the default).")
+                    help="Connect the LIVE real-money environment (ACCOUNT selection ONLY — "
+                         "does NOT control whether orders are sent; see DRY_RUN / --dry-run).")
+parser.add_argument("--dry-run", action="store_true", default=None,
+                    help="Force DRY-RUN — no mutating OANDA calls, orders are logged only "
+                         "(overrides run.env DRY_RUN).")
+parser.add_argument("--no-dry-run", action="store_false", dest="dry_run", default=None,
+                    help="Force EXECUTION — send orders to OANDA (overrides run.env DRY_RUN).")
 parser.add_argument("-p", "--max-entries", type=int, default=None,
                     help="Max signals to enter per cycle; 1=top only, 2+=basket (overrides MAX_OPEN_POSITIONS)")
 parser.add_argument("--lots", type=int, default=None,
@@ -606,17 +610,17 @@ TP_RAISE_THRESHOLD_PIPS = cfg_bot("TP_RAISE_THRESHOLD_PIPS", 15)
 # ║      ON              → connect LIVE real-money environment            ║
 # ║      This flag has NOTHING to do with whether orders are sent.         ║
 # ║                                                                          ║
-# ║ ② --dry-run controls EXECUTION GATE (what classes of OANDA API calls   ║
-# ║      are allowed to mutate broker state):                               ║
-# ║      OFF (default) → Open / Close / SL update / TP update / any        ║
-# ║                       mutating write calls are ALLOWED.               ║
-# ║      ON              → run the FULL pipeline end-to-end exactly as     ║
-# ║                       usual, but EVERY MUTATING CALL (Open/Close/      ║
-# ║                       SL/TP update) is short-circuited and replaced   ║
-# ║                       with a DRY_RUN diagnostic log.                   ║
-# ║      Read-only calls (get_open_position / OpenTrades / AccountDetails / ║
+# ║ ② DRY_RUN controls the EXECUTION GATE (whether mutating OANDA        ║
+# ║      write calls are issued). Resolution priority:                    ║
+# ║        CLI (--dry-run / --no-dry-run) > run.env DRY_RUN > default(true)║
+# ║      ON (default) → FULL pipeline runs end-to-end (all reads +        ║
+# ║                       evaluations), but EVERY mutating call           ║
+# ║                       (Open / Close / SL update / TP update) is       ║
+# ║                       short-circuited into a 🧪 DRY_RUN log.          ║
+# ║      OFF          → Open orders are SENT to OANDA.                    ║
+# ║      Read-only calls (get_open_position / OpenTrades / AccountDetails /║
 # ║      PricingInfo / Candles / PositionDetails) are ALWAYS allowed,     ║
-# ║      regardless of --dry-run, so the pipeline can still see real      ║
+# ║      regardless of DRY_RUN, so the pipeline can still see real        ║
 # ║      positions/prices when dry-run is used on the LIVE account.       ║
 # ║                                                                          ║
 # ║ ③ Combined behaviours (4 valid combos):                                ║
@@ -625,6 +629,8 @@ TP_RAISE_THRESHOLD_PIPS = cfg_bot("TP_RAISE_THRESHOLD_PIPS", 15)
 # ║   --live only         LIVE real env   + real order execution         ║
 # ║   --live --dry-run    LIVE real env   + full pipeline + NO writes    ║
 # ║     (Portfolio Observer pattern — inspect LIVE state safely)          ║
+# ║   NOTE: before v6.8.3.6 the ENTRY path was wrongly gated on --live    ║
+# ║   (not DRY_RUN), so combos 1/2 could never send orders. Fixed.        ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
 MODE = cfg_bot("MODE", "LEVEL10")
 TIMEFRAME = args.timeframe
@@ -649,13 +655,29 @@ else:
     )
     logger.info(f"🧪 PRACTICE/DEMO ENVIRONMENT (no --live) | Account: {OANDA_ACCOUNT_ID}")
 
-# ── 2) Execution gate driven SOLELY by --dry-run (never influenced by --live)
+# ── 2) Execution gate: CLI (--dry-run / --no-dry-run) > run.env DRY_RUN > default(true)
 # Requirement #2: "--dry-run和账号没有关系。跑完全程只是不操作OANDA的
 #                 open,close,update操作。get info还是可以的"
-DRY_RUN_MODE = bool(args.dry_run)
+# NOTE (v6.8.3.6): this gate previously read ONLY args.dry_run while the actual
+#                  order path was gated on LIVE_MODE (line ~1515), so run.env's
+#                  DRY_RUN was silently ignored AND the RUN MODE banner could
+#                  claim "EXECUTE" while every order was still suppressed.
+#                  Both are now unified on DRY_RUN_MODE below.
+_DRY_RUN_ENV_RAW = os.getenv("DRY_RUN", "true").strip()
+_DRY_RUN_ENV = _DRY_RUN_ENV_RAW.lower() in ("1", "true", "yes", "on")
+if args.dry_run is None:
+    DRY_RUN_MODE = _DRY_RUN_ENV                      # no CLI flag → run.env DRY_RUN (default: true)
+    _dry_run_source = f"env DRY_RUN={_DRY_RUN_ENV_RAW or '<unset→true>'}"
+else:
+    DRY_RUN_MODE = bool(args.dry_run)                # CLI wins in BOTH directions
+    _dry_run_source = "CLI --dry-run" if args.dry_run else "CLI --no-dry-run"
+logger.info(
+    f"🚦 EXECUTION GATE: DRY_RUN={DRY_RUN_MODE} (source: {_dry_run_source}) | "
+    f"account env selected solely by --live={'ON' if args.live else 'OFF'}"
+)
 if DRY_RUN_MODE:
     logger.info(
-        "🧪 DRY_RUN MODE (--dry-run set) | Full pipeline will run; ONLY "
+        "🧪 DRY_RUN MODE | Full pipeline will run; ONLY "
         "mutating OANDA calls (Open/Close/SL/TP update) are suppressed; "
         "ALL read-only calls (positions, prices, candles, account info) "
         "still execute normally."
@@ -1214,7 +1236,9 @@ def main():
     logger.info("[STEP 5] Dynamic Exit Manager...")
 
     def close_wrap(instr):
-        return close_position(api, OANDA_ACCOUNT_ID, instr, send_telegram_message)
+        return close_position(
+            api, OANDA_ACCOUNT_ID, instr, send_telegram_message, dry_run=DRY_RUN_MODE
+        )
 
     dyn_mgr = DynamicPositionManager(
         api,
@@ -1227,6 +1251,7 @@ def main():
         dynamic_tp=DYNAMIC_TP,
         tp_raise_thresh_pips=TP_RAISE_THRESHOLD_PIPS,
         telegram_send=send_telegram_message,
+        dry_run=DRY_RUN_MODE,  # v6.8.3.6: BE/Trailing SL + dynamic TP writes suppressed in DRY_RUN
     )
     oanda_level = logging.getLogger("oandapyV20").level
     logging.getLogger("oandapyV20").setLevel(logging.CRITICAL)
@@ -1512,7 +1537,7 @@ def main():
             )
             continue
 
-        if not LIVE_MODE:
+        if DRY_RUN_MODE:
             logger.info(
                 f"🧪 [DRY-RUN] SIGNAL {pair} {direction} | "
                 f"SL={sl_price} | TP={tp_price} | Score={FINAL:.1f} — NO ORDER SENT"
@@ -1534,6 +1559,7 @@ def main():
                 DEFAULT_LOT_SIZE,
                 sl_price,
                 tp_price,
+                dry_run=DRY_RUN_MODE,  # defence-in-depth (entry gate above already blocks)
             )
             status = resp.get("status", "UNKNOWN")
             tid = resp.get("trade_id", "") or "?"
