@@ -181,6 +181,168 @@ SL_FALLBACK_FIXED_PIPS = 35  # ✅ Final fallback fixed pips
 
 TREND_FILTER_ENABLED = True   # Set False → skip EMA10 slope + EMA100 checks entirely
 
+# ─── H1-TIMEFRAME DIRECTION GATE — Weekly EMA100 counter-trend (both profiles) ──
+WEEK_EMA100_FILTER_ENABLED = False   # Set False → skip Weekly EMA100 counter-trend check
+
+# ═════════════════════════════════════════════════════════════════════════════
+# ✅ UNIFIED PROFILE REGISTRY (v6.8.4) — merges config_bot_profile2/3.py
+#    Single source of truth for what used to live in the two profile modules.
+#    Resolution order (unchanged shape):
+#        profile_cfg (= PROFILES + _PROFILE_EXTRAS) → config_bot → config → default
+# ═════════════════════════════════════════════════════════════════════════════
+
+# Basis for the import-time validation banner: config_bot's OWN defaults.
+# Deliberately NOT the weights a run scores with — those come from
+# PROFILES[pid]["WEIGHTS"] and are reported by the bot's
+# "⚖️ <PROFILE> WEIGHTS" line right after startup.
+WEIGHTS_BASE = {
+    "S": WEIGHT_STRENGTH,
+    "R": WEIGHT_RSI,
+    "A": WEIGHT_ADX,
+    "X": WEIGHT_XGB,
+    "M": WEIGHT_MC,
+}
+
+PROFILES = {
+    2: {
+        "NAME": "Profile2",
+        "WEIGHTS": {"S": 0.40, "R": 0.15, "A": 0.15, "X": 0.20, "M": 0.10},
+        "WHITELIST": ["AUDJPY=X", "EURJPY=X", "GBPJPY=X", "USDJPY=X"],
+        "MAX_OPEN": 3,
+        "MAX_ENTRIES_THIS_RUN": 3,
+        "MIN_CONVICTION": 45.0,
+        "MIN_GAP": 0.25,
+        "D_GATE_ENABLED": False,
+        "D_GATE_BUFFER_PCT": 0.15,
+        "D_GATE_SHADOW": True,
+        "D_GATE_CONFIRM": "2H1",
+    },
+    3: {
+        "NAME": "Profile3",
+        "WEIGHTS": {"S": 0.40, "R": 0.15, "A": 0.15, "X": 0.20, "M": 0.10},
+        # P3 keeps its disjoint majors bucket. P2 owns the 4 JPY crosses; the two
+        # whitelists must never overlap (startup safety lock enforces this).
+        "WHITELIST": ["AUDUSD=X", "EURUSD=X", "GBPUSD=X", "USDCHF=X"],
+        "MAX_OPEN": 3,
+        "MAX_ENTRIES_THIS_RUN": 3,
+        "MIN_CONVICTION": 45.0,
+        "MIN_GAP": 0.25,
+        "D_GATE_ENABLED": True,
+        "D_GATE_BUFFER_PCT": 0.15,
+        "D_GATE_SHADOW": True,
+        "D_GATE_CONFIRM": "2H1",
+    },
+}
+
+
+# Settings that lived in config_bot_profile2/3.py but are NOT part of the
+# PROFILES contract. Migrated verbatim so cfg_bot() resolves identically to the
+# pre-merge modules. Keys absent from a profile fall through to config_bot /
+# config / default, exactly as `from config_bot import *` did before.
+_PROFILE_EXTRAS = {
+    2: {
+        "MIN_SCORE_GAP": 0.50,
+        "USE_TOP_PAIRS_ONLY": True,
+        "TOP_N_CURRENCIES": 3,
+        "TOP_PAIRS_COUNT": 4,
+        "TOP_PAIRS_MIN_GAP": 0.50,
+        "TRAIL_ATR_MULT": 2.0,
+        "MAX_HOLD_BARS": 48,
+        "YF_INTERVAL": "4h",
+        "MC_BAND_PCT": 90,
+        "MC_SIGNIFICANT_PCT": 60,
+        "MC_MOMENTUM_BAND": 0.001,
+        "MC_BULLISH_THRESHOLD_PCT": 55.0,
+        "RSI_DIRECTION_AWARE": True,
+        "D_GATE_EMA_FAST": 20,
+        "D_GATE_EMA_SLOW": 50,
+        # --- Profile2-only behaviour switches ---
+        "TREND_FILTER_ENABLED": False,
+        "SL_PAIR_FLOOR_OVERRIDES": {"GBPJPY=X": 50},
+        # SLOPE_DIAG intentionally absent → cfg_bot default False (diag off)
+    },
+    3: {
+        "MIN_SCORE_GAP": 0.50,
+        "USE_TOP_PAIRS_ONLY": True,
+        "TOP_N_CURRENCIES": 3,
+        "TOP_PAIRS_COUNT": 4,
+        "TOP_PAIRS_MIN_GAP": 0.50,
+        "TRAIL_ATR_MULT": 2.0,
+        "MAX_HOLD_BARS": 48,
+        "YF_INTERVAL": "4h",
+        "MC_BAND_PCT": 90,
+        "MC_SIGNIFICANT_PCT": 60,
+        "MC_MOMENTUM_BAND": 0.001,
+        "MC_BULLISH_THRESHOLD_PCT": 55.0,
+        "RSI_DIRECTION_AWARE": True,
+        "D_GATE_EMA_FAST": 20,
+        "D_GATE_EMA_SLOW": 50,
+        # --- Profile3-only behaviour switches ---
+        "SLOPE_DIAG": True,
+        "SL_PAIR_FLOOR_OVERRIDES": {},
+        # TREND_FILTER_ENABLED intentionally absent → inherits config_bot (True)
+    },
+}
+
+
+def get_profile(profile_id):
+    """Return the unified PROFILES block for profile 2 or 3."""
+    pid = int(profile_id)
+    if pid not in PROFILES:
+        raise ValueError(f"Invalid profile {pid}. Available: {list(PROFILES.keys())}")
+    return PROFILES[pid]
+
+
+def _oanda_account_id(pid):
+    # Imported lazily: config_oanda reads run.env/.env at import time, and a
+    # module-level import here would fire during config_bot's own import.
+    from config_oanda import OANDA_ACCOUNT_ID_2, OANDA_ACCOUNT_ID_3
+
+    return OANDA_ACCOUNT_ID_2 if int(pid) == 2 else OANDA_ACCOUNT_ID_3
+
+
+def build_profile_cfg(profile_id):
+    """Namespace replacing `importlib.import_module("config_bot_profileN")`.
+
+    Exposes config_bot's globals (exactly what `from config_bot import *` gave the
+    profile modules) overlaid with PROFILES[pid] mapped onto the historical
+    cfg_bot key names, plus the migrated _PROFILE_EXTRAS. The bot's cfg_bot()
+    chain keeps both its shape and its resolved values.
+    """
+    from types import SimpleNamespace
+
+    pid = int(profile_id)
+    p = get_profile(pid)
+    d = {k: v for k, v in globals().items() if not k.startswith("_")}
+
+    # --- PROFILES contract → historical cfg_bot key names ---
+    w = p["WEIGHTS"]
+    d["WEIGHT_STRENGTH"] = w["S"]
+    d["WEIGHT_RSI"] = w["R"]
+    d["WEIGHT_ADX"] = w["A"]
+    d["WEIGHT_XGB"] = w["X"]
+    d["WEIGHT_XGBOOST"] = w["X"]          # legacy alias, kept in sync
+    d["WEIGHT_MC"] = w["M"]
+    d["ALLOWED_PAIRS"] = list(p["WHITELIST"])
+    d["MAX_OPEN_POSITIONS"] = p["MAX_OPEN"]
+    d["MAX_ENTRIES_THIS_RUN"] = p["MAX_ENTRIES_THIS_RUN"]
+    d["MIN_CONVICTION_SCORE"] = p["MIN_CONVICTION"]
+    d["MIN_STRENGTH_GAP"] = p["MIN_GAP"]
+    d["D_GATE_ENABLED"] = p["D_GATE_ENABLED"]
+    d["D_GATE_SHADOW"] = p["D_GATE_SHADOW"]
+    d["D_GATE_MIN_BUFFER_PCT"] = p["D_GATE_BUFFER_PCT"] / 100.0    # 0.15% → 0.0015
+    # Split on "H" — NOT "join all digits", which would turn "2H1" into 21.
+    d["D_GATE_CONFIRM_BARS"] = int(str(p["D_GATE_CONFIRM"]).split("H", 1)[0])  # "2H1" → 2
+
+    # --- migrated per-profile extras ---
+    d.update(_PROFILE_EXTRAS[pid])
+    d["OANDA_ACCOUNT_ID"] = _oanda_account_id(pid)
+
+    ns = SimpleNamespace()
+    ns.__dict__.update(d)
+    return ns
+
+
 # ─────────────────────────────────────────────
 # ✅ v6.8 CONFIG VALIDATION — Runs on Import
 # ─────────────────────────────────────────────
@@ -199,15 +361,10 @@ def validate_config():
     warns = []
 
     # ── Check Weight Sum ──
-    # Must use the canonical key the scoring code reads (WEIGHT_XGB), not the
-    # legacy WEIGHT_XGBOOST alias, otherwise this validates the wrong numbers.
-    weights = {
-        "S": WEIGHT_STRENGTH,
-        "R": WEIGHT_RSI,
-        "A": WEIGHT_ADX,
-        "X": WEIGHT_XGB,
-        "M": WEIGHT_MC,
-    }
+    # WEIGHTS_BASE holds config_bot's own numbers built from the canonical keys
+    # (WEIGHT_XGB, not the legacy WEIGHT_XGBOOST alias), otherwise this validates
+    # the wrong numbers. Per-run scoring weights live in PROFILES[pid]["WEIGHTS"].
+    weights = dict(WEIGHTS_BASE)
     weight_sum = sum(weights.values())
 
     print("\n🔍 CONFIG VALIDATION — v6.8 (config_bot.py defaults)")

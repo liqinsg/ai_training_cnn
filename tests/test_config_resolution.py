@@ -132,11 +132,12 @@ def config_bot():
     return importlib.import_module("config_bot")
 
 
-@pytest.mark.parametrize("profile", ["config_bot_profile2", "config_bot_profile3"])
+@pytest.mark.parametrize("profile", [2, 3])
 def test_canonical_weight_key_sums_to_one(profile):
     """Both profiles define WEIGHT_XGB and their weights sum to 1.0."""
-    mod = importlib.import_module(profile)
-    assert hasattr(mod, "WEIGHT_XGB"), f"{profile} has no WEIGHT_XGB"
+    config_bot = importlib.import_module("config_bot")
+    mod = config_bot.build_profile_cfg(profile)
+    assert hasattr(mod, "WEIGHT_XGB"), f"profile {profile} has no WEIGHT_XGB"
     total = (
         mod.WEIGHT_STRENGTH
         + mod.WEIGHT_RSI
@@ -204,15 +205,15 @@ def test_top_n_resolution_ignores_legacy_config_bot(strategy_config, config_bot)
             )
 
 
-@pytest.mark.parametrize("profile", ["config_bot_profile2", "config_bot_profile3"])
+@pytest.mark.parametrize("profile", [2, 3])
 def test_profile_resolution_matches_shipped_run_values(profile):
     """Mirror the bot's cfg_bot chain: profile wins, then config_bot/default.
 
     The 2026-10-02 profile2 run logged TOP_N=3 and Top-3, so both profiles must
     resolve to 3 with the top-pairs mode enabled.
     """
-    profile_cfg = importlib.import_module(profile)
     config_bot = importlib.import_module("config_bot")
+    profile_cfg = config_bot.build_profile_cfg(profile)
     strategy_config = importlib.import_module("utils.strategy_config")
 
     def cfg_bot(name, default):

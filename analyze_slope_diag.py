@@ -240,7 +240,7 @@ def report(rows: Sequence[DiagRow], target: int, files: Sequence[str]) -> int:
         print()
         print("No SLOPE DIAG rows found.")
         print("  1. Is SLOPE_DIAG enabled for this profile?")
-        print("     grep -n '^SLOPE_DIAG' config_bot_profile3.py")
+        print("     grep -n 'SLOPE_DIAG' config_bot.py")
         print("  2. The bot writes to BOTH <repo>/bot_profileN.log (FileHandler)")
         print("     and logs/bot_profileN.log (cron redirect). Point this script")
         print("     at the one that exists:")

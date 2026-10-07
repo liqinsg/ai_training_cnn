@@ -12,7 +12,6 @@ import sys
 import os
 import logging
 import argparse
-import importlib
 from pathlib import Path
 from datetime import datetime, timezone
 
@@ -51,14 +50,14 @@ args = parser.parse_args()
 
 # ─── PROFILE SELECTION ────────────────────────────────────────────────────────
 if args.profile3 or (args.account and args.account.lower() in ("3", "profile3", "account003", "003")):
-    PROFILE_MODULE = "config_bot_profile3"
+    profile_id = 3
     PROFILE_LABEL = "PROFILE3"
     ACCOUNT_NAME = "Account 003"
     PROFILE_NAME = "profile3"
     COOLDOWN_FILE = BASE_DIR / "cooldown_profile3.json"
     RESULTS_DIR = BASE_DIR / "daily_results_profile3"
 else:
-    PROFILE_MODULE = "config_bot_profile2"
+    profile_id = 2
     PROFILE_LABEL = "PROFILE2"
     ACCOUNT_NAME = "Account 002"
     PROFILE_NAME = "profile2"
@@ -487,11 +486,30 @@ def evaluate_trend_and_tp(
     return True, round(tp_pips, 1), tp_mode
 
 
-# ─── PROFILE MODULE LOAD ─────────────────────────────────────────────────────
-profile_cfg = importlib.import_module(PROFILE_MODULE)
+# ─── UNIFIED PROFILE LOADER (config_bot.py — replaces config_bot_profile2/3) ───
+# profile_id is resolved in PROFILE SELECTION above, straight after args parsing.
+# This block sits here (not earlier) because every config module — config_bot,
+# config, config_oanda — is imported by this point.
+#   P           → the unified PROFILES block (weights/whitelist/limits/D-GATE)
+#   profile_cfg → namespace exposing the same attribute surface the old
+#                 per-profile modules did, so cfg_bot() resolves identically.
+P = config_bot.get_profile(profile_id)
+profile_cfg = config_bot.build_profile_cfg(profile_id)
+
+WEIGHTS = P["WEIGHTS"]
+ALLOWED_PAIRS = P["WHITELIST"]
+MAX_OPEN = P["MAX_OPEN"]
+MAX_ENTRIES_THIS_RUN = P["MAX_ENTRIES_THIS_RUN"]
+MIN_CONVICTION = P["MIN_CONVICTION"]
+MIN_GAP = P["MIN_GAP"]
+D_GATE_ENABLED = P["D_GATE_ENABLED"]
+D_GATE_BUFFER_PCT = P["D_GATE_BUFFER_PCT"]
+D_GATE_SHADOW = P["D_GATE_SHADOW"]
+D_GATE_CONFIRM = P["D_GATE_CONFIRM"]
+
 OANDA_ACCOUNT_ID = getattr(profile_cfg, "OANDA_ACCOUNT_ID", None)
 if not OANDA_ACCOUNT_ID:
-    raise RuntimeError(f"OANDA_ACCOUNT_ID not found in {PROFILE_MODULE}")
+    raise RuntimeError(f"OANDA_ACCOUNT_ID not found for profile {profile_id}")
 
 
 def cfg_bot(name, default):
@@ -524,22 +542,24 @@ logger.info(
     f"🪜 MIN_SLOPE LADDER: active rung={ACTIVE_MIN_SLOPE} "
     f"(ladder {MIN_SLOPE_LADDER}, widest first; last entry = original strictest)"
 )
-# ─── D-Gate CONFIG (resolved at import, directions computed per-run in main)
-D_GATE_ENABLED = cfg_bot("D_GATE_ENABLED", False)
-D_GATE_SHADOW = cfg_bot("D_GATE_SHADOW", True)  # Phase 0: log-only by default
+# ─── D-Gate CONFIG (from unified PROFILES; directions computed per-run in main)
+# D_GATE_ENABLED / D_GATE_SHADOW / D_GATE_BUFFER_PCT / D_GATE_CONFIRM are set by
+# the unified loader above, so a profile switches the whole gate on or off.
 D_GATE_EMA_FAST = cfg_bot("D_GATE_EMA_FAST", 20)
 D_GATE_EMA_SLOW = cfg_bot("D_GATE_EMA_SLOW", 50)
+# Single-source: build_profile_cfg() derives these from PROFILES[pid]
+# (D_GATE_BUFFER_PCT / D_GATE_CONFIRM), so the banner and the maths agree.
 D_GATE_CONFIRM_BARS = cfg_bot("D_GATE_CONFIRM_BARS", 2)
-D_GATE_MIN_BUFFER_PCT = cfg_bot("D_GATE_MIN_BUFFER_PCT", 0.002)
+D_GATE_MIN_BUFFER_PCT = cfg_bot("D_GATE_MIN_BUFFER_PCT", 0.0015)
 D_GATE_DIRECTIONS: dict[str, str] = {}  # populated in main(), keyed by yahoo pair
 if D_GATE_ENABLED:
-    mode = "SHADOW (log-only)" if D_GATE_SHADOW else "ENFORCED (real blocking)"
+    mode = "SHADOW (log-only)" if D_GATE_SHADOW else "ACTIVE"
     logger.info(
         f"🧭 D-GATE: {mode} | EMA{D_GATE_EMA_FAST}×EMA{D_GATE_EMA_SLOW} | "
-        f"confirm={D_GATE_CONFIRM_BARS}H1 | buffer={D_GATE_MIN_BUFFER_PCT*100:.2f}%"
+        f"confirm={D_GATE_CONFIRM} | buffer={D_GATE_BUFFER_PCT:.2f}%"
     )
-else:
-    logger.info("ℹ️  D-GATE: disabled (D_GATE_ENABLED=False)")
+# When disabled, [STEP 2.5] instead logs "🧭 D-GATE: DISABLED — skipped entirely
+# per profile config" and the whole block (fetch / DIAG / SUMMARY) is skipped.
 REQUIRE_DIRECTION_CONSENSUS = cfg_bot("REQUIRE_DIRECTION_CONSENSUS", True)
 CONSENSUS_THRESHOLD = cfg_bot("CONSENSUS_THRESHOLD", 2)
 XGB_BULLISH_THRESHOLD = cfg_bot("XGB_BULLISH_THRESHOLD", 0.55)
@@ -757,19 +777,17 @@ if ALLOWED_PAIRS is not None:
     # Safety lock: cross-check disjointness with the *other* profile's whitelist
     # by importing its config module (best-effort, never crash on failure).
     try:
-        _other_module_name = (
-            "config_bot_profile3" if PROFILE_NAME == "profile2"
-            else "config_bot_profile2"
-        )
-        _other_cfg = importlib.import_module(_other_module_name)
-        _other_whitelist = set(getattr(_other_cfg, "ALLOWED_PAIRS", []) or [])
+        _other_pid = 3 if profile_id == 2 else 2
+        _other_profile = config_bot.get_profile(_other_pid)
+        _other_label = _other_profile["NAME"]
+        _other_whitelist = set(_other_profile["WHITELIST"])
         _mine = set(ALLOWED_PAIRS)
         _overlap = _mine & _other_whitelist
         if _overlap:
             logger.error(
-                f"🚨 WHITELIST OVERLAP with {_other_module_name}! "
+                f"🚨 WHITELIST OVERLAP with {_other_label}! "
                 f"Shared pairs = {sorted(_overlap)} — this doubles exposure on the "
-                f"same signals. Fix the ALLOWED_PAIRS in one or both profile configs."
+                f"same signals. Fix the WHITELIST in config_bot.PROFILES."
             )
         else:
             _union = _mine | _other_whitelist
@@ -1135,6 +1153,13 @@ def main():
 
     # Step 2.5 — D-Gate: compute H1-EMA20 × H1-EMA50 direction for ALL pool pairs
     D_GATE_DIRECTIONS.clear()
+    SKIP_DGATE = not D_GATE_ENABLED
+    if SKIP_DGATE:
+        # Profile config switched the gate off → skip the ENTIRE block below:
+        # no H1 fetch, no per-pair DIAG lines, no SUMMARY, no compute at all.
+        logger.info("🧭 D-GATE: DISABLED — skipped entirely per profile config")
+        for inst in ALL_PAIRS:
+            D_GATE_DIRECTIONS[inst] = D_GATE_BOTH  # unrestricted
     if D_GATE_ENABLED:
         logger.info("[STEP 2.5] D-GATE — H1 Direction Locks...")
         # Need ALL_PAIRS (not just selected) because WhiteList filter happens

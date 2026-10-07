@@ -370,7 +370,7 @@ def main():
         failures.append("could not reproduce the original short-circuit symptom")
 
     # Both shipped profile switches must actually be off.
-    for profile_cfg in ("config_bot_profile2.py", "config_bot_profile3.py"):
+    for profile_cfg in ("config_bot.py",):
         cfg_path = BASE_DIR / profile_cfg
         flag = next(
             (
