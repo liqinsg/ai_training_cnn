@@ -12,6 +12,7 @@ import sys
 import os
 import logging
 import argparse
+import importlib
 from pathlib import Path
 from datetime import datetime, timezone
 
@@ -49,6 +50,9 @@ parser.add_argument("--lots", type=int, default=None,
 args = parser.parse_args()
 
 # ─── PROFILE SELECTION ────────────────────────────────────────────────────────
+# Unified config: both profiles now live in config_bot.PROFILES. The former
+# config_bot_profile2 / config_bot_profile3 modules are retired and no longer
+# imported — everything below is resolved from config_bot.get_profile().
 if args.profile3 or (args.account and args.account.lower() in ("3", "profile3", "account003", "003")):
     profile_id = 3
     PROFILE_LABEL = "PROFILE3"
@@ -69,6 +73,57 @@ import numpy as np
 import pandas as pd
 import config_bot
 import config
+
+# ─── UNIFIED PROFILE LOADER ───────────────────────────────────────────────────
+P = config_bot.get_profile(profile_id)
+
+WEIGHTS = P['WEIGHTS']
+ALLOWED_PAIRS = P['WHITELIST']
+MAX_OPEN = P['MAX_OPEN']
+MAX_ENTRIES_THIS_RUN = P['MAX_ENTRIES_THIS_RUN']
+MIN_CONVICTION = P['MIN_CONVICTION']
+MIN_GAP = P['MIN_GAP']
+D_GATE_ENABLED = P['D_GATE_ENABLED']
+D_GATE_BUFFER_PCT = P['D_GATE_BUFFER_PCT']
+D_GATE_SHADOW = P['D_GATE_SHADOW']
+D_GATE_CONFIRM = P['D_GATE_CONFIRM']
+
+# ─── STRATEGY WEIGHTS (from unified PROFILE) ─────────────────────────────────
+# The bot scores with cfg_bot("WEIGHT_XGB", ...) — the canonical key. The unified
+# PROFILE dicts carry short keys (S/R/A/X/M); expose them under the canonical
+# WEIGHT_* names so the resolution chain picks the PROFILE values, not the
+# legacy config_bot.py defaults.
+WEIGHT_STRENGTH = WEIGHTS['S']
+WEIGHT_RSI = WEIGHTS['R']
+WEIGHT_ADX = WEIGHTS['A']
+WEIGHT_XGB = WEIGHTS['X']
+WEIGHT_MC = WEIGHTS['M']
+
+# ─── TOP-N / RANKING (from unified PROFILE) ──────────────────────────────────
+# Same values as the former config_bot_profile{2,3}.py modules: top-pairs mode
+# ON, N=3 strongest × 3 weakest, ranking gap = MIN_GAP (0.25).
+USE_TOP_PAIRS_ONLY = True
+TOP_N_CURRENCIES = 3
+TOP_PAIRS_COUNT = TOP_N_CURRENCIES
+TOP_PAIRS_MIN_GAP = MIN_GAP
+
+# ─── EXECUTION LIMITS (from unified PROFILE) ─────────────────────────────────
+MAX_OPEN_POSITIONS = MAX_OPEN
+
+# ─── D-GATE EMA / CONFIRM SETTINGS (from unified PROFILE) ────────────────────
+D_GATE_EMA_FAST = 20
+D_GATE_EMA_SLOW = 50
+
+# ─── RSI / TREND FILTER (from former profile modules) ────────────────────────
+RSI_DIRECTION_AWARE = True
+TREND_FILTER_ENABLED = False
+WEEK_EMA100_FILTER_ENABLED = False
+
+# ─── RISK OVERRIDES (former profile2 GBPJPY SL floor) ────────────────────────
+SL_PAIR_FLOOR_OVERRIDES = {'GBPJPY=X': 50}
+
+# ─── SLOPE_DIAG (former profile3 evidence-collection switch) ─────────────────
+SLOPE_DIAG = True
 from utils.trading_core import forex_market_closed
 from utils.strategy_helpers import (
     build_strength_matrix,
@@ -107,17 +162,6 @@ from fx_trade_bot_mc import MCGenerator, MCConfig
 from fx_trade_bot_ml import ensure_model
 from portfolio_balance import balance_from_config
 from sl_zone_hierarchy import compute_sl_zone
-from data_guard import (
-    MIN_REQUIRED_BARS,
-    get_safe_series,
-    has_min_bars,
-    insufficient_bars,
-    safe_iloc,
-    safe_last,
-    safe_last_row,
-    safe_tail,
-    to_float,
-)
 from config_oanda import (
     api,
     get_oanda_profile,
@@ -216,16 +260,8 @@ def calculate_ema(series, period):
 
 
 def calculate_ema_slope(ema_series, lookback_bars):
-    # ── 数据边界保护 ── 数据不足时优雅返回，绝不让 .iloc 抛 IndexError。
-    n = 0 if ema_series is None else len(ema_series)
-    if n == 0:
-        logger.warning("数据不足：需要 1 根，实际只有 0 根 → 跳过（calculate_ema_slope）")
-        return None, None
-    # 索引范围不硬写：lookback 夹到实际可用长度（数据充足时 lb == lookback_bars，
-    # 计算结果与原实现完全一致）。
-    lb = max(1, min(int(lookback_bars), n))
     ema_now = ema_series.iloc[-1]
-    ema_prev = ema_series.iloc[-lb]
+    ema_prev = ema_series.iloc[-lookback_bars]
     slope_pct = (ema_now - ema_prev) / ema_prev
     return slope_pct, ema_now
 
@@ -252,12 +288,7 @@ def fetch_weekly_ema100(oanda_instrument, api):
             return None
         closes = [float(c["mid"]["c"]) for c in candles]
         series = pd.Series(closes)
-        # safe_last 内部先做长度检查：candles 恰好为 0/1 时不再触发 iloc[-1] 越界
-        return safe_last(
-            calculate_ema(series, 100),
-            default=None,
-            context=f"Weekly EMA100 {oanda_instrument}",
-        )
+        return calculate_ema(series, 100).iloc[-1]
     except Exception as e:
         logger.warning(f"⚠️ Cannot fetch Weekly EMA100 for {oanda_instrument}: {e}")
         return None
@@ -302,8 +333,7 @@ def d_gate_compute_direction(
     ema_slow = calculate_ema(daily_closes, ema_slow_period)
     diff_pct = (ema_fast - ema_slow) / ema_slow.replace(0.0, np.nan)
 
-    # safe_tail 把 confirm_bars 夹到实际长度，切片范围永不越界（数据充足时等价原实现）
-    tail = safe_tail(diff_pct, confirm_bars, context="D-GATE tail").tolist()
+    tail = diff_pct.iloc[-confirm_bars:].tolist()
     if any(pd.isna(x) for x in tail):
         logger.info("🧭 D-GATE: BOTH (NaN in EMA tail)")
         return D_GATE_BOTH
@@ -409,21 +439,6 @@ def evaluate_trend_and_tp(
         f"🔍 {timeframe} TREND FILTER: ema_cross_filter={ema_cross_filter} | profile={profile_name}"
     )
 
-    # ── 数据边界保护 ── 计算 EMA10 斜率至少需要 max(ema_period, slope_lookback)+1 根。
-    # 列缺失 / 数据不足 → 优雅返回「不放行」，避免 df_h1["Close"] 或 iloc 越界崩溃。
-    _min_bars = max(int(cfg["ema_period"]), int(cfg["slope_lookback"])) + 1
-    _close_series = get_safe_series(
-        df_h1,
-        "Close",
-        min_bars=_min_bars,
-        context=f"evaluate_trend_and_tp/{profile_name}/{timeframe}",
-    )
-    if _close_series is None:
-        _have = 0 if df_h1 is None else len(df_h1)
-        reason = f"数据不足 — 需要 ≥{_min_bars} 根，实际 {_have} 根"
-        logger.info(f"⏭️ SKIP {timeframe} TREND FILTER: {reason}")
-        return False, 0.0, reason
-
     ema10 = calculate_ema(df_h1["Close"], cfg["ema_period"])
     slope, ema_level = calculate_ema_slope(ema10, cfg["slope_lookback"])
     min_slope = resolve_min_slope(cfg, profile_name)
@@ -526,36 +541,21 @@ def evaluate_trend_and_tp(
     return True, round(tp_pips, 1), tp_mode
 
 
-# ─── UNIFIED PROFILE LOADER (config_bot.py — replaces config_bot_profile2/3) ───
-# profile_id is resolved in PROFILE SELECTION above, straight after args parsing.
-# This block sits here (not earlier) because every config module — config_bot,
-# config, config_oanda — is imported by this point.
-#   P           → the unified PROFILES block (weights/whitelist/limits/D-GATE)
-#   profile_cfg → namespace exposing the same attribute surface the old
-#                 per-profile modules did, so cfg_bot() resolves identically.
-P = config_bot.get_profile(profile_id)
-profile_cfg = config_bot.build_profile_cfg(profile_id)
-
-WEIGHTS = P["WEIGHTS"]
-ALLOWED_PAIRS = P["WHITELIST"]
-MAX_OPEN = P["MAX_OPEN"]
-MAX_ENTRIES_THIS_RUN = P["MAX_ENTRIES_THIS_RUN"]
-MIN_CONVICTION = P["MIN_CONVICTION"]
-MIN_GAP = P["MIN_GAP"]
-D_GATE_ENABLED = P["D_GATE_ENABLED"]
-D_GATE_BUFFER_PCT = P["D_GATE_BUFFER_PCT"]
-D_GATE_SHADOW = P["D_GATE_SHADOW"]
-D_GATE_CONFIRM = P["D_GATE_CONFIRM"]
-
-OANDA_ACCOUNT_ID = getattr(profile_cfg, "OANDA_ACCOUNT_ID", None)
+# ─── ACCOUNT IDENTITY ────────────────────────────────────────────────────────
+# Account IDs stay in config_oanda.py (credentials are never inlined in configs).
+if PROFILE_NAME == "profile2":
+    OANDA_ACCOUNT_ID = OANDA_ACCOUNT_ID_2_LIVE
+else:
+    OANDA_ACCOUNT_ID = OANDA_ACCOUNT_ID_3_LIVE
 if not OANDA_ACCOUNT_ID:
-    raise RuntimeError(f"OANDA_ACCOUNT_ID not found for profile {profile_id}")
+    raise RuntimeError(f"OANDA_ACCOUNT_ID not found for {PROFILE_LABEL}")
 
 
 def cfg_bot(name, default):
-    return getattr(
-        profile_cfg, name, getattr(config_bot, name, getattr(config, name, default))
-    )
+    # Resolution: active PROFILE dict → config_bot.py → config.py → default.
+    if name in P:
+        return P[name]
+    return getattr(config_bot, name, getattr(config, name, default))
 
 
 def cfg(name, default):
@@ -582,15 +582,21 @@ logger.info(
     f"🪜 MIN_SLOPE LADDER: active rung={ACTIVE_MIN_SLOPE} "
     f"(ladder {MIN_SLOPE_LADDER}, widest first; last entry = original strictest)"
 )
-# ─── D-Gate CONFIG (from unified PROFILES; directions computed per-run in main)
-# D_GATE_ENABLED / D_GATE_SHADOW / D_GATE_BUFFER_PCT / D_GATE_CONFIRM are set by
-# the unified loader above, so a profile switches the whole gate on or off.
+# ─── D-Gate CONFIG (from unified profile; directions computed per-run in main)
+# D_GATE_ENABLED / D_GATE_SHADOW / D_GATE_BUFFER_PCT / D_GATE_CONFIRM are read
+# from the active PROFILE dict by the unified loader above. The per-pair
+# DIAG/SUMMARY block only runs when D_GATE_ENABLED is True (Profile3); Profile2
+# skips it entirely — no compute, no logs.
 D_GATE_EMA_FAST = cfg_bot("D_GATE_EMA_FAST", 20)
 D_GATE_EMA_SLOW = cfg_bot("D_GATE_EMA_SLOW", 50)
-# Single-source: build_profile_cfg() derives these from PROFILES[pid]
-# (D_GATE_BUFFER_PCT / D_GATE_CONFIRM), so the banner and the maths agree.
-D_GATE_CONFIRM_BARS = cfg_bot("D_GATE_CONFIRM_BARS", 2)
-D_GATE_MIN_BUFFER_PCT = cfg_bot("D_GATE_MIN_BUFFER_PCT", 0.0015)
+# D_GATE_CONFIRM is a human label like "2H1" → 2 consecutive H1 closes.
+# Fall back to the legacy numeric D_GATE_CONFIRM_BARS key when absent.
+try:
+    D_GATE_CONFIRM_BARS = int(str(D_GATE_CONFIRM).strip().lower().split("h")[0])
+except (TypeError, ValueError):
+    D_GATE_CONFIRM_BARS = cfg_bot("D_GATE_CONFIRM_BARS", 2)
+# D_GATE_BUFFER_PCT is in percent (0.15) → convert to a fraction (0.0015).
+D_GATE_MIN_BUFFER_PCT = D_GATE_BUFFER_PCT / 100.0
 D_GATE_DIRECTIONS: dict[str, str] = {}  # populated in main(), keyed by yahoo pair
 if D_GATE_ENABLED:
     mode = "SHADOW (log-only)" if D_GATE_SHADOW else "ACTIVE"
@@ -598,8 +604,8 @@ if D_GATE_ENABLED:
         f"🧭 D-GATE: {mode} | EMA{D_GATE_EMA_FAST}×EMA{D_GATE_EMA_SLOW} | "
         f"confirm={D_GATE_CONFIRM} | buffer={D_GATE_BUFFER_PCT:.2f}%"
     )
-# When disabled, [STEP 2.5] instead logs "🧭 D-GATE: DISABLED — skipped entirely
-# per profile config" and the whole block (fetch / DIAG / SUMMARY) is skipped.
+else:
+    logger.info("🧭 D-GATE: DISABLED — skipped entirely per profile config")
 REQUIRE_DIRECTION_CONSENSUS = cfg_bot("REQUIRE_DIRECTION_CONSENSUS", True)
 CONSENSUS_THRESHOLD = cfg_bot("CONSENSUS_THRESHOLD", 2)
 XGB_BULLISH_THRESHOLD = cfg_bot("XGB_BULLISH_THRESHOLD", 0.55)
@@ -639,22 +645,33 @@ logger.info(
 # was removed when the v6.8.x bots that read it were retired — do NOT fall back
 # to it, because config_bot.py still defines TOP_PAIRS_COUNT = 5 and that value
 # would silently become this bot's default.
-USE_TOP_PAIRS_ONLY = cfg_bot("USE_TOP_PAIRS_ONLY", STRATEGY_USE_TOP_PAIRS_ONLY)
-TOP_N_CURRENCIES = cfg_bot("TOP_N_CURRENCIES", STRATEGY_TOP_N_CURRENCIES)
+# Profile-derived values are authoritative: read them from the module-level
+# names set by the unified loader, falling back to config_bot/config/default.
+USE_TOP_PAIRS_ONLY = USE_TOP_PAIRS_ONLY if USE_TOP_PAIRS_ONLY is not None else cfg_bot(
+    "USE_TOP_PAIRS_ONLY", STRATEGY_USE_TOP_PAIRS_ONLY
+)
+TOP_N_CURRENCIES = TOP_N_CURRENCIES if TOP_N_CURRENCIES is not None else cfg_bot(
+    "TOP_N_CURRENCIES", STRATEGY_TOP_N_CURRENCIES
+)
 # Legacy alias kept for this file's own log lines/history.
 TOP_PAIRS_COUNT = TOP_N_CURRENCIES
-TOP_PAIRS_MIN_GAP = cfg_bot("TOP_PAIRS_MIN_GAP", STRATEGY_TOP_PAIRS_MIN_GAP)
-MIN_STRENGTH_GAP = cfg_bot("MIN_STRENGTH_GAP", STRATEGY_MIN_STRENGTH_GAP)
+# MIN_GAP comes from the unified PROFILE (config_bot.PROFILES); TOP_PAIRS_MIN_GAP
+# remains the top-pairs ranking gap from strategy_config.
+TOP_PAIRS_MIN_GAP = TOP_PAIRS_MIN_GAP if TOP_PAIRS_MIN_GAP is not None else cfg_bot(
+    "TOP_PAIRS_MIN_GAP", STRATEGY_TOP_PAIRS_MIN_GAP
+)
+MIN_STRENGTH_GAP = MIN_GAP if MIN_GAP is not None else cfg_bot(
+    "MIN_STRENGTH_GAP", STRATEGY_MIN_STRENGTH_GAP
+)
 # ===========================================================
 DEBUG_MODE = cfg_bot("DEBUG_MODE", False)
 # 独立的斜率诊断开关：不挂在 DEBUG_MODE 上，避免为了拿 slope 分布
 # 而连带把 oandapyV20 的 HTTP 日志放出来污染日志文件。
-SLOPE_DIAG = cfg_bot("SLOPE_DIAG", False)
+SLOPE_DIAG = SLOPE_DIAG if SLOPE_DIAG is not None else cfg_bot("SLOPE_DIAG", False)
 if not DEBUG_MODE:
     logging.getLogger("oandapyV20").setLevel(logging.WARNING)
 
-MAX_SIMULTANEOUS_TRADES = cfg_bot("MAX_OPEN_POSITIONS", 4)
-MAX_OPEN = MAX_SIMULTANEOUS_TRADES
+MAX_SIMULTANEOUS_TRADES = MAX_OPEN  # from unified PROFILE (config_bot.PROFILES)
 TRAILING_TP = cfg_bot("TRAILING_TP", False)
 DYNAMIC_TP = cfg_bot("DYNAMIC_TP", True)
 MULTI_TF_CONFLUENCE = cfg_bot("MULTI_TF_CONFLUENCE", False)
@@ -742,7 +759,8 @@ if DRY_RUN_MODE:
         "ALL read-only calls (positions, prices, candles, account info) "
         "still execute normally."
     )
-MAX_ENTRIES = args.max_entries
+# CLI -p/--max-entries overrides the unified PROFILE's MAX_ENTRIES_THIS_RUN.
+MAX_ENTRIES = args.max_entries if args.max_entries is not None else MAX_ENTRIES_THIS_RUN
 OANDA_GRANULARITY_MAP = {"15m": "M15", "1H": "H1", "H4": "H4", "D": "D"}
 OANDA_GRANULARITY = OANDA_GRANULARITY_MAP.get(TIMEFRAME, "H4")
 DEFAULT_LOT_SIZE = cfg_bot("DEFAULT_LOT_SIZE", 10000)
@@ -796,10 +814,10 @@ for _sym, _oanda in _YAHOO_TO_OANDA_DEFAULT.items():
 logger.info(f"✅ Pair mappings loaded: {len(YAHOO_TO_OANDA)} entries")
 
 # ─── PAIR WHITELIST + DISJOINT SAFETY LOCK ───────────────────────────────────
-# Whitelist (Ownership Tag): restrict this profile to its own currency pool so
-# Profile2 / Profile3 never open the same pair on the same signal (prevents
-# correlated double-sizing when both crons run in parallel).
-ALLOWED_PAIRS = cfg_bot("ALLOWED_PAIRS", None)
+# Whitelist (Ownership Tag) comes from the unified PROFILE dict. Profiles now
+# share pairs (P3 includes P2's JPY bucket), so the whitelist is a universe
+# filter only — it is no longer treated as an error if two profiles overlap.
+ALLOWED_PAIRS = ALLOWED_PAIRS if ALLOWED_PAIRS is not None else cfg_bot("ALLOWED_PAIRS", None)
 if ALLOWED_PAIRS is not None:
     _known = set(YAHOO_TO_OANDA.keys())
     _invalid = [p for p in ALLOWED_PAIRS if p not in _known]
@@ -813,30 +831,6 @@ if ALLOWED_PAIRS is not None:
         f"🔒 WHITELIST [{PROFILE_LABEL}] active = {len(ALLOWED_PAIRS)} pairs | "
         f"ALLOWED: {ALLOWED_PAIRS}"
     )
-
-    # Safety lock: cross-check disjointness with the *other* profile's whitelist
-    # by importing its config module (best-effort, never crash on failure).
-    try:
-        _other_pid = 3 if profile_id == 2 else 2
-        _other_profile = config_bot.get_profile(_other_pid)
-        _other_label = _other_profile["NAME"]
-        _other_whitelist = set(_other_profile["WHITELIST"])
-        _mine = set(ALLOWED_PAIRS)
-        _overlap = _mine & _other_whitelist
-        if _overlap:
-            logger.error(
-                f"🚨 WHITELIST OVERLAP with {_other_label}! "
-                f"Shared pairs = {sorted(_overlap)} — this doubles exposure on the "
-                f"same signals. Fix the WHITELIST in config_bot.PROFILES."
-            )
-        else:
-            _union = _mine | _other_whitelist
-            logger.info(
-                f"🔐 WHITELIST disjoint ✅ | overlap=0 | union covers {len(_union)} "
-                f"pairs vs {len(_known)} total available"
-            )
-    except Exception as _e:
-        logger.info(f"ℹ️  Skipped cross-profile overlap check: {_e}")
 else:
     logger.info("ℹ️  No ALLOWED_PAIRS set — full 8-pair pool enabled (no whitelist filter)")
 
@@ -889,11 +883,7 @@ FEAT_CFG = FeatureConfig(
     target_horizon=cfg_bot("TARGET_HORIZON", 6),
     train_lookback_bars=cfg_bot("TRAIN_LOOKBACK_BARS", 5000),
 )
-min_conv = (
-    cfg_bot("MIN_CONVICTION_SCORE", 30.0)
-    if MODE == "LEVEL10"
-    else cfg_bot("MIN_CONVICTION_SCORE_ALT", 45.0)
-)
+min_conv = MIN_CONVICTION  # from unified PROFILE (config_bot.PROFILES)
 min_edge = (
     cfg_bot("BASE_MIN_EDGE", 0.50)
     if MODE == "LEVEL10"
@@ -1154,18 +1144,8 @@ def main():
             logger.warning(f"⚠️ No OANDA mapping for {pair} — skipping")
             continue
         try:
-            # 请求量 = max(原实现 200, MIN_REQUIRED_BARS)，再夹到 OANDA 上限 5000。
-            # 不夹的话 MIN_REQUIRED_BARS > 5000 会被 API 拒绝
-            # ("Maximum value for 'count' exceeded")，反而拿不到数据、也打不出
-            # 标准的「数据不足」日志。
-            _fetch_count = min(max(200, MIN_REQUIRED_BARS), 5000)
-            raw = fetcher.fetch(pair, oanda, count=_fetch_count)
-            if raw is None or raw.empty:
-                # 空数据同样走标准日志（原实现是静默 continue，排查困难）
-                insufficient_bars(MIN_REQUIRED_BARS, 0, context=f"Step2 取数 {pair}")
-                continue
-            # ── 数据边界保护：统一最小数据量校验，不足则跳过该标的 ──
-            if not has_min_bars(raw, MIN_REQUIRED_BARS, context=f"Step2 取数 {pair}"):
+            raw = fetcher.fetch(pair, oanda, count=200)
+            if raw.empty:
                 continue
             df = (
                 feat_engine.build(raw)
@@ -1176,16 +1156,13 @@ def main():
             )
             if len(df) < 5:
                 continue
-            _last_row = safe_last_row(df, context=f"最新指标 {pair}")
-            if _last_row is None:
-                continue
             pair_data[pair] = {
                 "df": df,
                 "oanda": oanda,
                 "raw": raw,
-                "atr": _last_row.get("atr", 0.0),
-                "rsi": _last_row.get("rsi", 50.0),
-                "adx": _last_row.get("adx", -1.0),
+                "atr": df.iloc[-1].get("atr", 0.0),
+                "rsi": df.iloc[-1].get("rsi", 50.0),
+                "adx": df.iloc[-1].get("adx", -1.0),
             }
             if pair_data[pair]["adx"] < 10:
                 logger.info(
@@ -1206,14 +1183,12 @@ def main():
 
     # Step 2.5 — D-Gate: compute H1-EMA20 × H1-EMA50 direction for ALL pool pairs
     D_GATE_DIRECTIONS.clear()
-    SKIP_DGATE = not D_GATE_ENABLED
-    if SKIP_DGATE:
-        # Profile config switched the gate off → skip the ENTIRE block below:
-        # no H1 fetch, no per-pair DIAG lines, no SUMMARY, no compute at all.
+    if not D_GATE_ENABLED:
         logger.info("🧭 D-GATE: DISABLED — skipped entirely per profile config")
-        for inst in ALL_PAIRS:
-            D_GATE_DIRECTIONS[inst] = D_GATE_BOTH  # unrestricted
-    if D_GATE_ENABLED:
+        D_GATE_DIRECTIONS.update({inst: D_GATE_BOTH for inst in ALL_PAIRS})
+        SKIP_DGATE = True
+    else:
+        SKIP_DGATE = False
         logger.info("[STEP 2.5] D-GATE — H1 Direction Locks...")
         # Need ALL_PAIRS (not just selected) because WhiteList filter happens
         # later, and USD-group majority works better if we see the whole pool.
@@ -1290,25 +1265,13 @@ def main():
                     raw_tf = fetch_candles(pair_data[pair]["oanda"], gran)
                     if len(raw_tf) < 5:
                         continue
-                    # ── 数据边界保护：取最新收盘价前先校验长度 / 列存在 ──
-                    _tf_close = to_float(
-                        safe_last(
-                            get_safe_series(
-                                raw_tf, "Close", min_bars=5,
-                                context=f"confluence {pair}/{gran}",
-                            ),
-                            context=f"confluence {pair}/{gran}",
-                        )
-                    )
-                    if _tf_close is None:
-                        continue
                     sig = strat_engine.generate_signal(
                         pair,
                         pair_data[pair]["oanda"],
                         feat_engine.build(raw_tf),
                         None,
                         strength_scores,
-                        _tf_close,
+                        raw_tf.iloc[-1]["Close"],
                         1.0,
                     )
                     if sig:
@@ -1422,13 +1385,7 @@ def main():
             else:
                 raise ValueError()
         except Exception:
-            # ── 数据边界保护：实时价拿不到时回退到最后一根 Close ──
-            _fb_row = safe_last_row(pair_data[pair]["df"], context=f"价格回退 {pair}")
-            _fb_close = to_float(_fb_row.get("Close")) if _fb_row is not None else None
-            if _fb_close is None:
-                logger.warning(f"数据不足：{pair} 无可用收盘价 → 跳过")
-                continue
-            current = _fb_close
+            current = float(pair_data[pair]["df"].iloc[-1]["Close"])
             spread_pips = 1.0
 
         base, quote = pair_parts[pair]

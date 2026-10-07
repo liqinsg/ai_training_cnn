@@ -128,28 +128,23 @@ def strategy_config():
 
 
 @pytest.fixture(scope="module")
-def config_bot():
+def config_bot_mod():
     return importlib.import_module("config_bot")
 
 
-@pytest.mark.parametrize("profile", [2, 3])
-def test_canonical_weight_key_sums_to_one(profile):
+@pytest.mark.parametrize("profile_id", [2, 3])
+def test_canonical_weight_key_sums_to_one(profile_id, config_bot_mod):
     """Both profiles define WEIGHT_XGB and their weights sum to 1.0."""
-    config_bot = importlib.import_module("config_bot")
-    mod = config_bot.build_profile_cfg(profile)
-    assert hasattr(mod, "WEIGHT_XGB"), f"profile {profile} has no WEIGHT_XGB"
-    total = (
-        mod.WEIGHT_STRENGTH
-        + mod.WEIGHT_RSI
-        + mod.WEIGHT_ADX
-        + mod.WEIGHT_XGB
-        + mod.WEIGHT_MC
-    )
-    assert abs(total - 1.0) < 1e-9, f"{profile} weights sum to {total}"
+    p = config_bot_mod.get_profile(profile_id)
+    weights = p["WEIGHTS"]
+    assert set(weights) == {"S", "R", "A", "X", "M"}
+    total = sum(weights.values())
+    assert abs(total - 1.0) < 1e-9, f"profile {profile_id} weights sum to {total}"
 
 
-def test_validate_config_reads_canonical_key(config_bot):
+def test_validate_config_reads_canonical_key(config_bot_mod):
     """The banner must print the canonical key's value, not the alias."""
+    config_bot = config_bot_mod
     assert config_bot.WEIGHT_XGB == 0.12
     assert config_bot.WEIGHT_XGBOOST == config_bot.WEIGHT_XGB, (
         "legacy alias drifted from the canonical key that scoring reads"
@@ -177,7 +172,7 @@ def test_scoring_reads_the_same_key_as_the_banner():
     )
 
 
-def test_top_n_resolution_ignores_legacy_config_bot(strategy_config, config_bot):
+def test_top_n_resolution_ignores_legacy_config_bot(strategy_config, config_bot_mod):
     """The bot's fallback defaults must come from strategy_config, not config_bot.
 
     config_bot.py still carries USE_TOP_PAIRS_ONLY = False and
@@ -205,25 +200,39 @@ def test_top_n_resolution_ignores_legacy_config_bot(strategy_config, config_bot)
             )
 
 
-@pytest.mark.parametrize("profile", [2, 3])
-def test_profile_resolution_matches_shipped_run_values(profile):
-    """Mirror the bot's cfg_bot chain: profile wins, then config_bot/default.
+@pytest.mark.parametrize("profile_id", [2, 3])
+def test_profile_resolution_matches_shipped_run_values(profile_id, config_bot_mod):
+    """Mirror the bot's unified profile loader: PROFILE dict wins, then default.
 
     The 2026-10-02 profile2 run logged TOP_N=3 and Top-3, so both profiles must
     resolve to 3 with the top-pairs mode enabled.
     """
-    config_bot = importlib.import_module("config_bot")
-    profile_cfg = config_bot.build_profile_cfg(profile)
     strategy_config = importlib.import_module("utils.strategy_config")
+    # The bot hardcodes these after loading the PROFILE (same values the former
+    # config_bot_profile{2,3}.py modules defined); read them from its source so
+    # this test tracks the shipped wiring instead of a copy.
+    consts = bot_module_constants()
 
-    def cfg_bot(name, default):
-        return getattr(profile_cfg, name, getattr(config_bot, name, default))
-
-    use_top = cfg_bot("USE_TOP_PAIRS_ONLY", strategy_config.USE_TOP_PAIRS_ONLY)
+    use_top = consts.get("USE_TOP_PAIRS_ONLY", strategy_config.USE_TOP_PAIRS_ONLY)
     # Mirrors the bot exactly: no TOP_PAIRS_COUNT fallback any more.
-    top_n = cfg_bot("TOP_N_CURRENCIES", strategy_config.TOP_N_CURRENCIES)
-    min_gap = cfg_bot("TOP_PAIRS_MIN_GAP", strategy_config.TOP_PAIRS_MIN_GAP)
+    top_n = consts.get("TOP_N_CURRENCIES", strategy_config.TOP_N_CURRENCIES)
+    min_gap = consts.get("TOP_PAIRS_MIN_GAP")
+    if min_gap is None:
+        min_gap = config_bot_mod.get_profile(profile_id)["MIN_GAP"]
 
-    assert use_top is True, f"{profile}: expected top-pairs mode ON"
-    assert top_n == 3, f"{profile}: resolved TOP_N={top_n}, run logged 3"
-    assert min_gap == 0.25, f"{profile}: resolved TOP_PAIRS_MIN_GAP={min_gap}"
+    assert use_top is True, f"profile {profile_id}: expected top-pairs mode ON"
+    assert top_n == 3, f"profile {profile_id}: resolved TOP_N={top_n}, run logged 3"
+    assert min_gap == 0.25, f"profile {profile_id}: resolved TOP_PAIRS_MIN_GAP={min_gap}"
+
+
+@pytest.mark.parametrize("profile_id", [2, 3])
+def test_profile_d_gate_settings(profile_id, config_bot_mod):
+    """D-GATE is the ONLY deliberate difference between the two profiles."""
+    p = config_bot_mod.get_profile(profile_id)
+    assert p["D_GATE_BUFFER_PCT"] == 0.15
+    assert p["D_GATE_SHADOW"] is True
+    assert p["D_GATE_CONFIRM"] == "2H1"
+    if profile_id == 2:
+        assert p["D_GATE_ENABLED"] is False, "Profile2 must fully disable D-GATE"
+    else:
+        assert p["D_GATE_ENABLED"] is True, "Profile3 must activate D-GATE"

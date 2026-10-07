@@ -16,15 +16,6 @@ from pathlib import Path
 
 import pandas as pd
 
-from data_guard import (
-    MIN_REQUIRED_BARS,
-    get_safe_series,
-    has_min_bars,
-    safe_last,
-    safe_tail,
-    to_float,
-)
-
 BASE_DIR = Path(__file__).resolve().parent
 BOT = BASE_DIR / "fx_trade_bot_v683.py"
 
@@ -72,14 +63,6 @@ def load_real_functions():
         "logger": logging.getLogger("offline-test"),
         "SLOPE_DIAG_BASELINE": baseline,
         "MIN_SLOPE_LADDER": module_literal("MIN_SLOPE_LADDER"),
-        # 数据边界保护 helpers —— evaluate_trend_and_tp 现在会调用它们，
-        # AST 抽取执行时必须一并注入，否则 NameError（同 PROFILE_NAME 的坑）。
-        "MIN_REQUIRED_BARS": MIN_REQUIRED_BARS,
-        "get_safe_series": get_safe_series,
-        "has_min_bars": has_min_bars,
-        "safe_last": safe_last,
-        "safe_tail": safe_tail,
-        "to_float": to_float,
     }
     exec(compile(mod, str(BOT), "exec"), ns)
     return ns, cfg_src, missing
@@ -119,6 +102,10 @@ def run(profile, direction, min_slope, price_side_ok=True):
     }
     env = dict(NS)
     env["TREND_TP_CONFIG"] = cfg
+    # PROFILE_NAME / PROFILE_LABEL are module-level globals the shipped function
+    # reads for the per-profile TP config lookup and its log line; supply them.
+    env["PROFILE_NAME"] = profile
+    env["PROFILE_LABEL"] = profile.upper()
     env["cfg_bot"] = lambda name, default: {"TREND_FILTER_ENABLED": True}.get(
         name, default
     )
@@ -156,6 +143,14 @@ def verify_resolve_helper(bot_path, label):
     each fix must be proven against that file's own source text rather than
     assumed identical.
     """
+    if not bot_path.exists():
+        # The sibling bot was moved into archives/ when it was retired; fall back
+        # to that location so this historical check keeps working.
+        archived = bot_path.parent / "archives" / bot_path.name
+        if archived.exists():
+            return verify_resolve_helper(archived, label)
+        return [f"{label}: {bot_path.name} not found"]
+
     tree = ast.parse(bot_path.read_text(encoding="utf-8"))
     node = next(
         (
@@ -386,20 +381,16 @@ def main():
     if not (157.21 > (cached and True)):
         failures.append("could not reproduce the original short-circuit symptom")
 
-    # Both shipped profile switches must actually be off.
-    for profile_cfg in ("config_bot.py",):
-        cfg_path = BASE_DIR / profile_cfg
-        flag = next(
-            (
-                line.split("#")[0].strip()
-                for line in cfg_path.read_text(encoding="utf-8").splitlines()
-                if line.startswith("WEEK_EMA100_FILTER_ENABLED")
-            ),
-            None,
-        )
-        print(f"   {profile_cfg}: {flag}")
-        if flag != "WEEK_EMA100_FILTER_ENABLED = False":
-            failures.append(f"{profile_cfg} WEEK flag not disabled: {flag!r}")
+    # WEEK_EMA100_FILTER_ENABLED lives in the unified config_bot.PROFILES now
+    # (the former config_bot_profile{2,3}.py modules are retired). Both profiles
+    # must keep it disabled — read the flag from the profile dicts.
+    import config_bot as _config_bot
+
+    for pid in (2, 3):
+        flag = _config_bot.get_profile(pid).get("WEEK_EMA100_FILTER_ENABLED", False)
+        print(f"   profile{pid}: WEEK_EMA100_FILTER_ENABLED = {flag}")
+        if flag is not False:
+            failures.append(f"profile{pid} WEEK flag not disabled: {flag!r}")
 
     # Same gate bug shipped in the sibling bot; prove that fix against its source.
     failures.extend(
