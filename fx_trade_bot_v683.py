@@ -24,8 +24,13 @@ sys.path.extend([str(BASE_DIR), str(BASE_DIR / "utils")])
 parser = argparse.ArgumentParser(
     description="FX Trading Bot v6.8.3.3 | TREND+TP+TOP-N"
 )
-parser.add_argument("-a", "--account", "--profile", type=str, default=None,
-                    help="Account/profile: '2'/'profile2' or '3'/'profile3' (default: profile2)")
+parser.add_argument("-a", "--account", type=str, default=None,
+                    help=(
+                        "Dual purpose — (1) profile selector if '2'/'3'/'profile2'/'profile3' "
+                        "(legacy behaviour); (2) --live account index override if numeric "
+                        "(e.g. '-a 4 --live' forces LIVE_ACCOUNT_ID_4 regardless of profile). "
+                        "Demo mode keeps legacy mapping unchanged."
+                    ))
 parser.add_argument("--profile2", action="store_true",
                     help="Force Profile2 / Account 002 (shorthand for -a 2)")
 parser.add_argument("--profile3", action="store_true",
@@ -165,8 +170,10 @@ from sl_zone_hierarchy import compute_sl_zone
 from config_oanda import (
     api,
     get_oanda_profile,
+    OANDA_ACCOUNT_ID_1_LIVE,
     OANDA_ACCOUNT_ID_2_LIVE,
     OANDA_ACCOUNT_ID_3_LIVE,
+    OANDA_ACCOUNT_ID_4_LIVE,
     OANDA_ACCOUNT_ID_DEMO_2,
     OANDA_ACCOUNT_ID_DEMO_3,
 )
@@ -541,16 +548,6 @@ def evaluate_trend_and_tp(
     return True, round(tp_pips, 1), tp_mode
 
 
-# ─── ACCOUNT IDENTITY ────────────────────────────────────────────────────────
-# Account IDs stay in config_oanda.py (credentials are never inlined in configs).
-if PROFILE_NAME == "profile2":
-    OANDA_ACCOUNT_ID = OANDA_ACCOUNT_ID_2_LIVE
-else:
-    OANDA_ACCOUNT_ID = OANDA_ACCOUNT_ID_3_LIVE
-if not OANDA_ACCOUNT_ID:
-    raise RuntimeError(f"OANDA_ACCOUNT_ID not found for {PROFILE_LABEL}")
-
-
 def cfg_bot(name, default):
     # Resolution: active PROFILE dict → config_bot.py → config.py → default.
     if name in P:
@@ -714,15 +711,47 @@ TIMEFRAME = args.timeframe
 
 # ── 1) Broker account selection driven SOLELY by --live (never by --dry-run)
 # Requirement #1: "没有--live永远是demo账号"
+# Rules:
+#   Demo (no --live): keep legacy — profile2→DEMO_2, profile3→DEMO_3.
+#   --live:
+#       -a N explicitly given (N ∈ {1,2,3,4}) → use LIVE_ACCOUNTS[N],
+#         OVERRIDING the account bound to the selected profile.
+#       no -a → fall back to the profile's own live account.
+LIVE_ACCOUNTS = {
+    1: OANDA_ACCOUNT_ID_1_LIVE,
+    2: OANDA_ACCOUNT_ID_2_LIVE,
+    3: OANDA_ACCOUNT_ID_3_LIVE,
+    4: OANDA_ACCOUNT_ID_4_LIVE,
+}
+PROFILE_DEFAULT_LIVE = {
+    2: OANDA_ACCOUNT_ID_2_LIVE,
+    3: OANDA_ACCOUNT_ID_3_LIVE,
+}
 LIVE_MODE = bool(args.live)  # False = Practice/Demo; True = LIVE
 if LIVE_MODE:
     _prof = get_oanda_profile("live")
     api = _prof["oanda_client"]
-    OANDA_ACCOUNT_ID = (
-        OANDA_ACCOUNT_ID_3_LIVE if PROFILE_NAME == "profile3"
-        else OANDA_ACCOUNT_ID_2_LIVE
-    )
-    logger.info(f"🔴 LIVE ENVIRONMENT (--live set) | Account: {OANDA_ACCOUNT_ID}")
+    _override = None
+    if args.account is not None:
+        try:
+            _cli_idx = int(args.account)
+            if _cli_idx in LIVE_ACCOUNTS:
+                _override = LIVE_ACCOUNTS[_cli_idx]
+        except ValueError:
+            pass
+    if _override is not None:
+        OANDA_ACCOUNT_ID = _override
+        logger.info(
+            f"🔴 LIVE: -a {args.account} EXPLICIT override → "
+            f"{OANDA_ACCOUNT_ID} (profile={PROFILE_NAME}, "
+            f"default would be {PROFILE_DEFAULT_LIVE.get(profile_id, '?')})"
+        )
+    else:
+        OANDA_ACCOUNT_ID = PROFILE_DEFAULT_LIVE[profile_id]
+        logger.info(
+            f"🔴 LIVE: no explicit -a → profile{profile_id} default → "
+            f"{OANDA_ACCOUNT_ID}"
+        )
 else:
     _prof = get_oanda_profile("practice")
     api = _prof["oanda_client"]
