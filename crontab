@@ -1,2 +1,17 @@
 # Every 15 mins — pulls latest code, rebuilds, runs once
-*/15 * * * * cd /home/nie/projects/ai_training_cnn && /usr/bin/docker-compose run --rm fx-bot
+*/15 * * * * cd /home/nie/projects/ai_training_cnn && /usr/bin/docker-compose run --rm fx-bot#*/15 * * * 1-5 cd /home/ubuntu/projects/gemini_ai/ && /usr/local/bin/jitter-run.sh -m 1 -- /home/ubuntu/miniconda3/envs/ai-sprint/bin/python scheduled_runner_v3.py --live -a 1 --max-entries 1 --trade-jpy-only >> logs/scheduled_runner_v1_jpy.log 2>&1
+#*/15 * * * 1-5 cd /home/ubuntu/projects/gemini_ai/ && /usr/local/bin/jitter-run.sh -m 3 -- /home/ubuntu/miniconda3/envs/ai-sprint/bin/python scheduled_runner_v3.py -a 2 --no-trade-jpy >> logs/scheduled_runner_v2_nojpy.log 2>&1
+#*/15 * * * 1-5 cd /home/ubuntu/projects/gemini_ai/ && /usr/local/bin/jitter-run.sh -m 4 -- /home/ubuntu/miniconda3/envs/ai-sprint/bin/python scheduled_runner_v3.py -a 3 >> logs/scheduled_runner_v3.log 2>&1
+
+#0 8 * * 1-5 cd $HOME/projects/gemini_ai/ && python get_mc_data.py --date latest > /dev/null 2>&1
+#0 9 * * 1 cd $HOME/projects/gemini_ai/ && python get_mc_data.py --week latest > /dev/null 2>&1
+
+0 0 * * 0 cd $HOME/projects/ai_training_cnn && mv logs/bot_h4.log logs/bot_h4_$(date +\%Y\%m\%d).log && touch logs/bot_h4.log
+
+0 3 * * 1-5 find $HOME/projects/ai_training_cnn/daily_results -name "*.json" -mtime +7 -delete
+
+0 0 * * 1-5 cd $HOME/projects/ai_training_cnn && python retrain_model.py >> logs/bot_cron.log 2>&1
+
+*/15 * * * 1-5 cd $HOME/projects/ai_training_cnn && /usr/local/bin/jitter-run.sh -m 9 -- /home/ubuntu/miniconda3/envs/ai-sprint/bin/python fx_trade_bot_v683.py -a 4 -p 1 >> logs/bot_profile4.log 2>&1
+*/15 * * * 1-5 cd $HOME/projects/ai_training_cnn && /usr/local/bin/jitter-run.sh -m 8 -- /home/ubuntu/miniconda3/envs/ai-sprint/bin/python fx_trade_bot_v683.py -a 3 -p 3 >> logs/bot_profile2.log 2>&1
+*/15 * * * 1-5 cd $HOME/projects/ai_training_cnn && /usr/local/bin/jitter-run.sh -m 9 -- /home/ubuntu/miniconda3/envs/ai-sprint/bin/python fx_trade_bot_v683.py -a 2 -p 2 >> logs/bot_profile3.log 2>&1
