@@ -32,6 +32,8 @@
   ],
   "WHITELIST": {
     "1": ["AUDJPY", "EURJPY", "GBPJPY", "USDJPY"],
-    "2": ["AUDUSD", "EURUSD", "GBPUSD", "USDCHF"]
+    "2": ["AUDJPY", "EURJPY", "GBPJPY", "USDJPY"],
+    "3": ["AUDUSD", "EURUSD", "GBPUSD", "USDCHF"],
+    "4": ["AUDUSD", "EURUSD", "GBPUSD", "USDCHF"]
   }
 }
