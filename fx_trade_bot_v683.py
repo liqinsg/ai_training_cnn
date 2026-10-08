@@ -24,51 +24,49 @@ sys.path.extend([str(BASE_DIR), str(BASE_DIR / "utils")])
 parser = argparse.ArgumentParser(
     description="FX Trading Bot v6.8.3.3 | TREND+TP+TOP-N"
 )
-parser.add_argument("-a", "--account", type=str, default=None,
-                    help=(
-                        "Dual purpose — (1) profile selector if '2'/'3'/'profile2'/'profile3' "
-                        "(legacy behaviour); (2) --live account index override if numeric "
-                        "(e.g. '-a 4 --live' forces LIVE_ACCOUNT_ID_4 regardless of profile). "
-                        "Demo mode keeps legacy mapping unchanged."
-                    ))
+parser.add_argument("-p", "--profile", type=int, default=None,
+                    help="Profile number (2 or 3); compatible with --profile2 / --profile3")
 parser.add_argument("--profile2", action="store_true",
-                    help="Force Profile2 / Account 002 (shorthand for -a 2)")
+                    help="Force Profile2 (shorthand for -p 2)")
 parser.add_argument("--profile3", action="store_true",
-                    help="Force Profile3 / Account 003 (shorthand for -a 3)")
+                    help="Force Profile3 (shorthand for -p 3)")
+parser.add_argument("-a", "--account", type=str, default=None,
+                    help="Account number override (numeric index, e.g. '2' / '3' / '4')")
+parser.add_argument("-m", "--max-entries", type=int, default=None,
+                    help="Max signals to enter per cycle; overrides PROFILE's MAX_ENTRIES_THIS_RUN")
 parser.add_argument("--timeframe", type=str, default="15m", choices=["15m", "1H", "H4"])
 parser.add_argument("--confluence", action="store_true", default=None)
 parser.add_argument("--no-confluence", action="store_false", dest="confluence")
 parser.add_argument("--skip-mc", action="store_true")
 parser.add_argument("--mc-only", action="store_true")
 parser.add_argument("--live", action="store_true",
-                    help="Connect the LIVE real-money environment (ACCOUNT selection ONLY — "
-                         "does NOT control whether orders are sent; see DRY_RUN / --dry-run).")
-parser.add_argument("--dry-run", action="store_true", default=None,
-                    help="Force DRY-RUN — no mutating OANDA calls, orders are logged only "
-                         "(overrides run.env DRY_RUN).")
-parser.add_argument("--no-dry-run", action="store_false", dest="dry_run", default=None,
-                    help="Force EXECUTION — send orders to OANDA (overrides run.env DRY_RUN).")
-parser.add_argument("-p", "--max-entries", type=int, default=None,
-                    help="Max signals to enter per cycle; 1=top only, 2+=basket (overrides MAX_OPEN_POSITIONS)")
+                    help="Connect the LIVE real-money environment")
+parser.add_argument("--demo", "--dry-run", action="store_true", dest="dry_run", default=None,
+                    help="Force DRY-RUN — no mutating OANDA calls, orders are logged only")
+parser.add_argument("--no-dry-run", "--no-demo", action="store_false", dest="dry_run", default=None,
+                    help="Force EXECUTION — send orders to OANDA (overrides run.env DRY_RUN)")
 parser.add_argument("--lots", type=int, default=None,
                     help="Override lot size / units per trade (overrides DEFAULT_LOT_SIZE from config)")
 args = parser.parse_args()
 
 # ─── PROFILE SELECTION ────────────────────────────────────────────────────────
-# Unified config: both profiles now live in config_bot.PROFILES. The former
-# config_bot_profile2 / config_bot_profile3 modules are retired and no longer
-# imported — everything below is resolved from config_bot.get_profile().
-if args.profile3 or (args.account and args.account.lower() in ("3", "profile3", "account003", "003")):
+# Resolution order: -p N  >  --profile2 / --profile3  >  default = 2
+if args.profile is not None:
+    profile_id = args.profile
+elif args.profile3:
     profile_id = 3
+elif args.profile2:
+    profile_id = 2
+else:
+    profile_id = 2
+
+if profile_id == 3:
     PROFILE_LABEL = "PROFILE3"
-    ACCOUNT_NAME = "Account 003"
     PROFILE_NAME = "profile3"
     COOLDOWN_FILE = BASE_DIR / "cooldown_profile3.json"
     RESULTS_DIR = BASE_DIR / "daily_results_profile3"
 else:
-    profile_id = 2
     PROFILE_LABEL = "PROFILE2"
-    ACCOUNT_NAME = "Account 002"
     PROFILE_NAME = "profile2"
     COOLDOWN_FILE = BASE_DIR / "cooldown_profile2.json"
     RESULTS_DIR = BASE_DIR / "daily_results_profile2"
@@ -491,14 +489,28 @@ def evaluate_trend_and_tp(
     if ema_cross_filter:
         if direction == "BUY":
             filter_slope = slope >= min_slope
-            if not (current_price > ema_level and filter_slope):
-                reason = f"{timeframe} TREND MISALIGNED — Price below EMA10 or slope={slope:.6f} < {min_slope}"
+            price_ok = current_price > ema_level
+            slope_ok = filter_slope
+            if not (price_ok and slope_ok):
+                failed = []
+                if not price_ok:
+                    failed.append(f"price {current_price:.5f} below EMA10 {ema_level:.5f}")
+                if not slope_ok:
+                    failed.append(f"slope {slope:.6f} < min_slope {min_slope:.6f}")
+                reason = f"{timeframe} TREND MISALIGNED — " + " AND ".join(failed)
                 logger.info(f"⏭️ SKIP BUY: {reason}")
                 return False, 0.0, reason
         else:
             filter_slope = slope <= -min_slope
-            if not (current_price < ema_level and filter_slope):
-                reason = f"{timeframe} TREND MISALIGNED — Price above EMA10 or slope={slope:.6f} > {-min_slope}"
+            price_ok = current_price < ema_level
+            slope_ok = filter_slope
+            if not (price_ok and slope_ok):
+                failed = []
+                if not price_ok:
+                    failed.append(f"price {current_price:.5f} above EMA10 {ema_level:.5f}")
+                if not slope_ok:
+                    failed.append(f"slope {slope:.6f} > -min_slope {-min_slope:.6f}")
+                reason = f"{timeframe} TREND MISALIGNED — " + " AND ".join(failed)
                 logger.info(f"⏭️ SKIP SELL: {reason}")
                 return False, 0.0, reason
 
@@ -761,6 +773,10 @@ else:
     )
     logger.info(f"🧪 PRACTICE/DEMO ENVIRONMENT (no --live) | Account: {OANDA_ACCOUNT_ID}")
 
+_ACCT_SUFFIX = OANDA_ACCOUNT_ID.split("-")[-1] if "-" in OANDA_ACCOUNT_ID else OANDA_ACCOUNT_ID
+_ENV_LABEL = "LIVE" if LIVE_MODE else "DEMO"
+ACCOUNT_NAME = f"{_ENV_LABEL} Account {_ACCT_SUFFIX}"
+
 # ── 2) Execution gate: CLI (--dry-run / --no-dry-run) > run.env DRY_RUN > default(true)
 # Requirement #2: "--dry-run和账号没有关系。跑完全程只是不操作OANDA的
 #                 open,close,update操作。get info还是可以的"
@@ -962,8 +978,8 @@ def build_top_pairs(
         for weak in weakest:
             if strong == weak:
                 continue
-            gap = strength_scores[strong] - strength_scores[weak]
-            if abs(gap) < min_gap:
+            gap_base_positive = strength_scores[strong] - strength_scores[weak]
+            if abs(gap_base_positive) < min_gap:
                 continue
             for base, quote in [(strong, weak), (weak, strong)]:
                 yahoo_sym = f"{base}{quote}=X"
@@ -971,12 +987,13 @@ def build_top_pairs(
                     oanda_inst = oanda_map.get(yahoo_sym)
                     if oanda_inst:
                         seen.add(yahoo_sym)
+                        pair_gap = strength_scores[base] - strength_scores[quote]
                         candidates.append(
                             {
                                 "pair": yahoo_sym,
                                 "oanda": oanda_inst,
-                                "gap": gap,
-                                "gap_abs": abs(gap),
+                                "gap": pair_gap,
+                                "gap_abs": abs(pair_gap),
                             }
                         )
 

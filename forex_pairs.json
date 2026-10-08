@@ -1,0 +1,37 @@
+{
+  "DEFAULT_PAIRS": [
+    "EURUSD",
+    "GBPUSD",
+    "AUDUSD",
+    "USDCHF",
+    "NZDUSD",
+    "USDCAD",
+    "EURGBP",
+    "USDJPY",
+    "EURJPY",
+    "GBPJPY",
+    "AUDJPY",
+    "CADJPY",
+    "CHFJPY",
+    "NZDJPY",
+    "GBPAUD",
+    "EURCHF",
+    "AUDCHF",
+    "CADCHF",
+    "NZDCHF",
+    "GBPCHF",
+    "EURAUD",
+    "EURNZD",
+    "GBPNZD",
+    "AUDNZD",
+    "CADNZD",
+    "CHFNZD",
+    "GBPCAD",
+    "EURCAD",
+    "AUDCAD"
+  ],
+  "WHITELIST": {
+    "1": ["AUDJPY", "EURJPY", "GBPJPY", "USDJPY"],
+    "2": ["AUDUSD", "EURUSD", "GBPUSD", "USDCHF"]
+  }
+}

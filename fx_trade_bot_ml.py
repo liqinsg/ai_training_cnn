@@ -21,12 +21,18 @@ def ensure_model(
 ):
     """Load or train XGBoost model. Returns (model_wrapper, strat_engine)."""
     needs_train = False
-    if not MODEL_PATH.exists():
+    stem = MODEL_PATH.with_suffix("") if MODEL_PATH.suffix else MODEL_PATH
+    xgb_json = stem.with_suffix(".json")
+    scaler_jl = stem.parent / "scaler.joblib"
+    feat_json = stem.with_suffix(".features.json")
+
+    split_ok = xgb_json.exists() and scaler_jl.exists() and feat_json.exists()
+
+    if not split_ok:
         needs_train = True
-        logger.info("Model not found. Training...")
+        logger.info("Model split artifacts not found. Training...")
     else:
-        age_days = (Path(__file__).parent.joinpath(MODEL_PATH).stat().st_mtime - MODEL_PATH.stat().st_mtime) / 86400
-        age_days = (pd.Timestamp.now(tz="UTC").timestamp() - MODEL_PATH.stat().st_mtime) / 86400
+        age_days = (pd.Timestamp.now(tz="UTC").timestamp() - xgb_json.stat().st_mtime) / 86400
         if age_days > getattr(FEAT_CFG, "retrain_every_n_days", 30):
             needs_train = True
             logger.info(f"Model stale ({age_days:.1f} days). Retraining...")
@@ -57,7 +63,7 @@ def ensure_model(
         logger.info("Top features:\n" + top_features.to_string(index=False))
     else:
         model_wrapper.load()
-        logger.info(f"Loaded model from {MODEL_PATH}")
+        logger.info(f"Loaded model from {xgb_json}")
 
     strat_engine.model = model_wrapper.model
     strat_engine.features = model_wrapper.feature_names

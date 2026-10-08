@@ -1,6 +1,40 @@
 # config_bot.py — v6.8 | Centralized Strategy & Bot Configuration + FULL VALIDATION
 # Credentials stay in config_oanda.py; legacy fallbacks in config.py
 
+import json as _json
+import os as _os
+
+
+def _load_forex_pairs():
+    _path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "forex_pairs.json")
+    with open(_path, "r", encoding="utf-8") as _f:
+        return _json.load(_f)
+
+
+def _with_suffix(pair):
+    return pair if pair.endswith("=X") else f"{pair}=X"
+
+
+def _yahoo_to_oanda(pair):
+    _s = pair[:-2] if pair.endswith("=X") else pair
+    return f"{_s[:-3]}_{_s[-3:]}"
+
+
+_forex_data = _load_forex_pairs()
+
+DEFAULT_PAIRS = [_with_suffix(p) for p in _forex_data["DEFAULT_PAIRS"]]
+YAHOO_TO_OANDA = {p: _yahoo_to_oanda(p) for p in DEFAULT_PAIRS}
+
+_WHITELIST_JSON = {
+    k: [_with_suffix(p) for p in v]
+    for k, v in _forex_data["WHITELIST"].items()
+}
+
+_PROFILE_WHITELIST_KEY = {
+    2: "1",
+    3: "2",
+}
+
 
 # ─── Feature & ATR Settings ───
 USE_ATR = True
@@ -58,27 +92,10 @@ DAILY_FORECAST = 5
 
 # ─── Risk & Trade Execution ───
 DEFAULT_LOT_SIZE = 10000
-MAX_SIMULTANEOUS_TRADES = 4
-DEFAULT_PAIRS = [
-    "EURUSD=X",
-    "GBPUSD=X",
-    "EURJPY=X",
-    "GBPJPY=X",
-    "AUDUSD=X",
-    "USDJPY=X",
-    "USDCHF=X",
-    "AUDJPY=X",
-]
-YAHOO_TO_OANDA = {
-    "EURUSD=X": "EUR_USD",
-    "GBPUSD=X": "GBP_USD",
-    "EURJPY=X": "EUR_JPY",
-    "GBPJPY=X": "GBP_JPY",
-    "AUDUSD=X": "AUD_USD",
-    "USDJPY=X": "USD_JPY",
-    "USDCHF=X": "USD_CHF",
-    "AUDJPY=X": "AUD_JPY",
-}
+# MAX_SIMULTANEOUS_TRADES removed here — canonical value is MAX_OPEN below,
+# and profile-driven overrides happen in build_profile_cfg(). This avoids drift
+# between the two risk caps (validator used to warn when they diverged).
+
 
 
 MIN_SL_PIPS = 25
@@ -112,6 +129,8 @@ USE_TOP_PAIRS_ONLY = False
 TOP_PAIRS_COUNT = 5
 TOP_PAIRS_MIN_GAP = 1.5
 MIN_STRENGTH_GAP = 0.25  # ↓ from 0.35
+# Runtime effective value comes from PROFILES[pid]["MIN_CONVICTION"] (= 45.0).
+# This 30 is only used when NO profile is active (fallback / non-profile run).
 MIN_CONVICTION_SCORE = 30  # ↓ from 35
 
 # ─────────────────────────────────────────────
@@ -145,7 +164,8 @@ WEIGHT_MC = 0.08  # ✅ ↑ from 0.05
 
 #THRESHOLD_SCORE = 35.0
 THRESHOLD_SCORE = 25.0
-MAX_OPEN = 4  # Aligned with MAX_SIMULTANEOUS_TRADES
+MAX_OPEN = 4
+MAX_SIMULTANEOUS_TRADES = MAX_OPEN
 
 # ─────────────────────────────────────────────
 # ✅ DATA SOURCE — YAHOO FINANCE PRIMARY
@@ -207,7 +227,7 @@ PROFILES = {
     2: {
         "NAME": "Profile2",
         "WEIGHTS": {"S": 0.40, "R": 0.15, "A": 0.15, "X": 0.20, "M": 0.10},
-        "WHITELIST": ["AUDJPY=X", "EURJPY=X", "GBPJPY=X", "USDJPY=X"],
+        "WHITELIST": _WHITELIST_JSON[_PROFILE_WHITELIST_KEY[2]],
         "MAX_OPEN": 3,
         "MAX_ENTRIES_THIS_RUN": 3,
         "MIN_CONVICTION": 45.0,
@@ -220,9 +240,7 @@ PROFILES = {
     3: {
         "NAME": "Profile3",
         "WEIGHTS": {"S": 0.40, "R": 0.15, "A": 0.15, "X": 0.20, "M": 0.10},
-        # P3 keeps its disjoint majors bucket. P2 owns the 4 JPY crosses; the two
-        # whitelists must never overlap (startup safety lock enforces this).
-        "WHITELIST": ["AUDUSD=X", "EURUSD=X", "GBPUSD=X", "USDCHF=X"],
+        "WHITELIST": _WHITELIST_JSON[_PROFILE_WHITELIST_KEY[3]],
         "MAX_OPEN": 3,
         "MAX_ENTRIES_THIS_RUN": 3,
         "MIN_CONVICTION": 45.0,
@@ -460,16 +478,10 @@ def validate_config():
         warns.append(f"MC_MAX_AGE_HOURS = {MC_MAX_AGE_HOURS} — unusual (suggest 12–48)")
 
     # ── Check Risk & Trade Settings ──
-    if MAX_SIMULTANEOUS_TRADES < 1 or MAX_SIMULTANEOUS_TRADES > 20:
-        warns.append(
-            f"MAX_SIMULTANEOUS_TRADES = {MAX_SIMULTANEOUS_TRADES} — unusual (suggest 1–8)"
-        )
+    # MAX_SIMULTANEOUS_TRADES = MAX_OPEN by design (line ~151), so we only
+    # validate the canonical MAX_OPEN value here.
     if MAX_OPEN < 1 or MAX_OPEN > 20:
         warns.append(f"MAX_OPEN = {MAX_OPEN} — unusual (suggest 1–8)")
-    if MAX_SIMULTANEOUS_TRADES != MAX_OPEN:
-        warns.append(
-            f"MAX_SIMULTANEOUS_TRADES={MAX_SIMULTANEOUS_TRADES} ≠ MAX_OPEN={MAX_OPEN} — consider aligning"
-        )
     if DEFAULT_LOT_SIZE < 100 or DEFAULT_LOT_SIZE > 100000:
         warns.append(f"DEFAULT_LOT_SIZE = {DEFAULT_LOT_SIZE} — verify lot size")
 

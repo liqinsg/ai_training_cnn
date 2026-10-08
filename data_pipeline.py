@@ -467,7 +467,7 @@ class ModelWrapper:
             json.dump(self.feature_names, f, indent=2)
         with open(self._cfg_json, "w") as f:
             json.dump(self.cfg.__dict__ if hasattr(self.cfg, "__dict__") else self.cfg, f, indent=2)
-        logger.info(f"Model saved → {self._xgb_json.parent}")
+        logger.info(f"Model saved → {self._xgb_json}")
 
     def load(self):
         import joblib
