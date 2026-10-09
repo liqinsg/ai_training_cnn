@@ -83,7 +83,8 @@ def plot_score_box():
         [0.01, 0.07, 0.14, 0.20, 0.30],   # PF-C
         [0.08, 0.16, 0.23, 0.31, 0.44],   # PF-D
     ]
-    bp = ax.boxplot(data, labels=["PF-A", "PF-B", "PF-C", "PF-D"], patch_artist=True)
+    # bp = ax.boxplot(data, labels=["PF-A", "PF-B", "PF-C", "PF-D"], patch_artist=True)
+    bp = ax.boxplot(data, tick_labels=["PF-A", "PF-B", "PF-C", "PF-D"], patch_artist=True)
     colors = ["#27ae60", "#3498db", "#9b59b6", "#e67e22"]
     for box, c in zip(bp["boxes"], colors):
         box.set(facecolor=c, alpha=0.7)
