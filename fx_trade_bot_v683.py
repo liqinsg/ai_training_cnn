@@ -49,8 +49,8 @@ parser.add_argument("--lots", type=int, default=None,
                     help="Override lot size / units per trade (overrides DEFAULT_LOT_SIZE from config)")
 args = parser.parse_args()
 
-# ─── PROFILE SELECTION ────────────────────────────────────────────────────────
-# Resolution order: -p N  >  --profile2 / --profile3  >  default = 2
+# ── Profile Selection ──────────────────────────────────
+# Resolution order: -p N  >  --profile2 / --profile3  >  default = 1
 if args.profile is not None:
     profile_id = args.profile
 elif args.profile3:
@@ -58,18 +58,39 @@ elif args.profile3:
 elif args.profile2:
     profile_id = 2
 else:
-    profile_id = 2
+    profile_id = 1
 
-if profile_id == 3:
-    PROFILE_LABEL = "PROFILE3"
-    PROFILE_NAME = "profile3"
-    COOLDOWN_FILE = BASE_DIR / "cooldown_profile3.json"
-    RESULTS_DIR = BASE_DIR / "daily_results_profile3"
-else:
+if profile_id == 1:
+    PROFILE_LABEL = "PROFILE1"
+    PROFILE_NAME = "profile1"
+    COOLDOWN_FILE = BASE_DIR / "cooldown_profile1.json"
+    RESULTS_DIR = BASE_DIR / "daily_results_profile1"
+    print("✅ PROFILE1 loaded (PF-A Trend-Focused)")
+elif profile_id == 2:
     PROFILE_LABEL = "PROFILE2"
     PROFILE_NAME = "profile2"
     COOLDOWN_FILE = BASE_DIR / "cooldown_profile2.json"
     RESULTS_DIR = BASE_DIR / "daily_results_profile2"
+    print("✅ PROFILE2 loaded (PF-B Balanced)")
+elif profile_id == 3:
+    PROFILE_LABEL = "PROFILE3"
+    PROFILE_NAME = "profile3"
+    COOLDOWN_FILE = BASE_DIR / "cooldown_profile3.json"
+    RESULTS_DIR = BASE_DIR / "daily_results_profile3"
+    print("✅ PROFILE3 loaded (PF-C Conservative)")
+elif profile_id == 4:
+    PROFILE_LABEL = "PROFILE4"
+    PROFILE_NAME = "profile4"
+    COOLDOWN_FILE = BASE_DIR / "cooldown_profile4.json"
+    RESULTS_DIR = BASE_DIR / "daily_results_profile4"
+    print("✅ PROFILE4 loaded (PF-D Structure/D-Gate)")
+else:
+    print(f"⚠️ Invalid profile {profile_id}, defaulting to PROFILE1")
+    profile_id = 1
+    PROFILE_LABEL = "PROFILE1"
+    PROFILE_NAME = "profile1"
+    COOLDOWN_FILE = BASE_DIR / "cooldown_profile1.json"
+    RESULTS_DIR = BASE_DIR / "daily_results_profile1"
 
 # ─── NOW import config (delayed so --help works first) ───────────────────────
 import numpy as np
