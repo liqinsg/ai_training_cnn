@@ -1,16 +1,13 @@
-version: "3.8"
-
 services:
-  fx-bot:
-    build:
-      context: .
-      dockerfile: fx_trade_bot.Dockerfile
-    container_name: fx-trade-bot
+  nginx:
+    image: nginx:stable-alpine
+    container_name: nginx-proxy
+    network_mode: host
     restart: unless-stopped
     volumes:
-      - ./daily_results:/app/daily_results
-      - ./logs:/app/logs
-    env_file:
-      - .env
-    # If running cron inside container:
-    # command: ["cron", "-f"]
+      - ./conf.d:/etc/nginx/conf.d:ro
+      - ./auth:/etc/nginx/auth:ro
+      - ./www:/var/www/certbot:ro
+      - ./certbot/conf:/etc/letsencrypt:ro
+      - ./attribution_v2/dashboard:/usr/share/nginx/dashboard:ro
+      - ./attribution_v2/reports:/usr/share/nginx/reports:ro

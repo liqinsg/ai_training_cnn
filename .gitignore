@@ -232,3 +232,6 @@ __pycache__/
 .env
 attribution_v2/reports/
 start_dashboard.sh
+certbot/
+auth/
+conf.d/
