@@ -241,5 +241,3 @@ www/
 *.bak*
 *.broken
 .env
-run.env
-*.env
