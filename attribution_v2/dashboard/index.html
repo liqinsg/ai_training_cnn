@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Attribution V2 — 4-Profile Dashboard</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; font-family: -apple-system, Segoe UI, Roboto, sans-serif; }
+    body { background: #f5f6f7; padding: 20px; max-width: 1400px; margin: 0 auto; }
+    h1 { color: #2c3e50; text-align: center; margin-bottom: 5px; font-size: 1.8em; }
+    .timestamp { text-align: center; color: #7f8c8d; margin-bottom: 25px; font-size: 0.9em; }
+    .refresh { color: #3498db; text-decoration: none; margin-left: 12px; }
+    .refresh:hover { text-decoration: underline; }
+    .loading { color: #95a5a6; font-style: italic; }
+
+    /* Summary Cards */
+    .summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-bottom: 30px; }
+    .stat { color: white; padding: 20px 15px; border-radius: 12px; text-align: center; box-shadow: 0 3px 6px rgba(0,0,0,0.1); }
+    .stat:nth-child(1) { background: linear-gradient(135deg, #2ecc71, #27ae60); }
+    .stat:nth-child(2) { background: linear-gradient(135deg, #3498db, #2980b9); }
+    .stat:nth-child(3) { background: linear-gradient(135deg, #f39c12, #e67e22); }
+    .stat:nth-child(4) { background: linear-gradient(135deg, #9b59b6, #8e44ad); }
+    .stat .num { font-size: 2em; font-weight: bold; margin-bottom: 5px; }
+    .stat .label { font-size: 0.9em; opacity: 0.9; }
+
+    /* Charts Grid */
+    .grid { display: grid; gap: 25px; }
+    .card { background: white; border-radius: 12px; padding: 22px; box-shadow: 0 2px 10px rgba(0,0,0,0.06); }
+    .card h2 { color: #2c3e50; margin-bottom: 18px; font-size: 1.2em; border-bottom: 2px solid #3498db; padding-bottom: 8px; }
+    img { width: 100%; height: auto; border-radius: 6px; transition: opacity 0.3s; }
+
+    /* Links Footer */
+    .links { text-align: center; margin-top: 30px; padding-top: 20px; border-top: 1px solid #e0e0e0; }
+    .links a { color: #3498db; margin: 0 12px; text-decoration: none; }
+    .links a:hover { text-decoration: underline; }
+
+    /* Responsive */
+    @media (max-width: 768px) {
+      body { padding: 12px; }
+      .summary { grid-template-columns: 1fr 1fr; }
+    }
+  </style>
+</head>
+<body>
+
+  <h1>📊 Attribution V2 — 4-Profile 实时仪表盘</h1>
+  <p class="timestamp">
+    最后更新：<span id="ts" class="loading">读取中...</span>
+    <a class="refresh" href="javascript:location.reload()">🔄 立即刷新</a>
+  </p>
+
+  <!-- Summary Cards — Auto-Populated from JSON -->
+  <div class="summary">
+    <div class="stat">
+      <div class="num" id="pf-a-pass">--</div>
+      <div class="label">PF-A 趋势 · PASS</div>
+    </div>
+    <div class="stat">
+      <div class="num" id="pf-d-pass">--</div>
+      <div class="label">PF-D 结构 · PASS</div>
+    </div>
+    <div class="stat">
+      <div class="num" id="valid-pct">--</div>
+      <div class="label">有效信号占比</div>
+    </div>
+    <div class="stat">
+      <div class="num" id="total-cand">--</div>
+      <div class="label">候选信号总数</div>
+    </div>
+  </div>
+
+  <!-- Charts -->
+  <div class="grid">
+    <div class="card">
+      <h2>📈 各方案决策分布 (PASS/WATCH/REJECT)</h2>
+      <img id="img-rates" src="../reports/profile_pass_rates.png" alt="Pass Rates" loading="lazy">
+    </div>
+    <div class="card">
+      <h2>📊 分数分布箱线图</h2>
+      <img id="img-box" src="../reports/score_boxplot.png" alt="Score Distribution" loading="lazy">
+    </div>
+    <div class="card">
+      <h2>🥧 信号质量诊断</h2>
+      <img id="img-quality" src="../reports/signal_quality.png" alt="Signal Quality" loading="lazy">
+    </div>
+  </div>
+
+  <!-- Footer Links -->
+  <div class="links">
+    <a href="../reports/latest.html">📄 完整 HTML 报告</a>
+    <a href="../reports/report_latest.json" target="_blank">📋 JSON 原始数据</a>
+    <a href="../../logs/attribution_cron.log" target="_blank">📝 Cron 运行日志</a>
+  </div>
+
+<script>
+const JSON_PATH = '../reports/report_latest.json';
+
+// ─── Load & Inject Data ────────────────────────────────────────
+async function loadDashboardData() {
+  try {
+    const res = await fetch(JSON_PATH + '?t=' + Date.now());
+    if (!res.ok) throw new Error('Not found');
+    const data = await res.json();
+
+    // Timestamp
+    document.getElementById('ts').textContent =
+      data.generated_local || new Date(data.generated_at).toLocaleString('zh-CN');
+
+    // Summary Cards
+    document.getElementById('pf-a-pass').textContent = data.profiles['PF-A'].pass_pct + '%';
+    document.getElementById('pf-d-pass').textContent = data.profiles['PF-D'].pass_pct + '%';
+    document.getElementById('valid-pct').textContent = data.valid_pct + '%';
+    document.getElementById('total-cand').textContent = data.total_candidates;
+
+    console.log('✅ Dashboard updated from', JSON_PATH);
+
+  } catch (err) {
+    console.warn('⚠️ Could not load JSON — using fallback values', err);
+    document.getElementById('ts').textContent = new Date().toLocaleString('zh-CN') + ' (静态)';
+  }
+}
+
+// ─── Cache-bust images on refresh ───────────────────────────────
+function bustImageCache() {
+  const t = Date.now();
+  ['img-rates', 'img-box', 'img-quality'].forEach(id => {
+    const el = document.getElementById(id);
+    el.src = el.src.split('?')[0] + '?t=' + t;
+  });
+}
+
+// ─── Init ───────────────────────────────────────────────────────
+document.addEventListener('DOMContentLoaded', () => {
+  loadDashboardData();
+  bustImageCache();
+});
+
+// Auto-refresh every 10 minutes
+setInterval(() => location.reload(), 600000);
+</script>
+
+</body>
+</html>
