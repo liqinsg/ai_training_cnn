@@ -235,3 +235,11 @@ start_dashboard.sh
 certbot/
 auth/
 conf.d/
+certbot/
+auth/
+www/
+*.bak*
+*.broken
+.env
+run.env
+*.env
