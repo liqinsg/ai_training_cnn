@@ -104,8 +104,10 @@ async function loadDashboardData() {
 
     // Timestamp
     document.getElementById('ts').textContent =
-      data.generated_local || new Date(data.generated_at).toLocaleString('zh-CN');
-
+      data.generated_local || new Date(data.generated_at).toLocaleString('zh-CN', {
+        timeZone: 'Asia/Singapore',
+        hour12: false
+      });
     // Summary Cards
     document.getElementById('pf-a-pass').textContent = data.profiles['PF-A'].pass_pct + '%';
     document.getElementById('pf-d-pass').textContent = data.profiles['PF-D'].pass_pct + '%';

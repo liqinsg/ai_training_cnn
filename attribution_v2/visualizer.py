@@ -195,23 +195,19 @@ def export_json_summary():
     total = RESULTS["total_candidates"]
     degraded = RESULTS["degraded_count"]
     valid_pct = round((total - degraded) / total * 100, 1) if total > 0 else 0.0
-
     summary = {
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "generated_local": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "generated_local": datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S"),  # ✅ 修复
         "total_candidates": total,
         "degraded_count": degraded,
         "valid_pct": valid_pct,
         "profiles": RESULTS["profiles"],
     }
-
     out_path = REPORT_DIR / "report_latest.json"
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(summary, f, indent=2, ensure_ascii=False)
-
     print(f"✅ JSON summary: {out_path}")
     return out_path
-
 
 # ─── Generate HTML Report ──────────────────────────────────────
 def generate_html_report():
