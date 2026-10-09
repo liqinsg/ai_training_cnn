@@ -2,6 +2,7 @@
 """
 Attribution V2 — Visualizer + Dashboard JSON Exporter
 Generates PNG charts, HTML report, AND machine-readable JSON summary.
+SOLE SOURCE OF TRUTH: batch_backtest.SUMMARY
 """
 from datetime import datetime, timezone
 from pathlib import Path
@@ -11,14 +12,15 @@ import sys
 # ─── Paths ──────────────────────────────────────────────────────
 BASE_DIR = Path(__file__).resolve().parent
 REPORT_DIR = BASE_DIR / "reports"
-LOG_DIR = BASE_DIR / "logs"
 REPORT_DIR.mkdir(parents=True, exist_ok=True)
 
 # ─── Matplotlib ─────────────────────────────────────────────────
 try:
     import matplotlib
+
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
+
     HAS_MPL = True
 except ImportError:
     HAS_MPL = False
@@ -26,46 +28,47 @@ except ImportError:
 
 
 # ================================================================
-# DATA — injected / shared from batch_backtest
-# If run standalone, values will be auto-populated from console output
+# LOAD LIVE DATA — single source of truth from batch_backtest
 # ================================================================
-# Default values — these get replaced with real data during full run
-RESULTS = {
-    "total_candidates": 270,
-    "degraded_count": 13,
-    "profiles": {
-        "PF-A": {"pass_pct": 36.7, "watch_pct": 25.9, "reject_pct": 37.4, "avg_score": 0.2323},
-        "PF-B": {"pass_pct": 11.8, "watch_pct": 24.8, "reject_pct": 63.3, "avg_score": 0.1872},
-        "PF-C": {"pass_pct":  5.9, "watch_pct":  7.8, "reject_pct": 86.3, "avg_score": 0.1421},
-        "PF-D": {"pass_pct": 14.8, "watch_pct": 47.8, "reject_pct": 37.4, "avg_score": 0.2323},
-    },
-    "score_data": [
-        [0.05, 0.15, 0.23, 0.32, 0.45],   # PF-A
-        [0.02, 0.10, 0.19, 0.25, 0.38],   # PF-B
-        [0.01, 0.07, 0.14, 0.20, 0.30],   # PF-C
-        [0.08, 0.16, 0.23, 0.31, 0.44],   # PF-D
-    ]
-}
-
-
-# ─── Helper: load real data if available ────────────────────────
 def load_results_from_backtest():
-    """Try to import live results from batch_backtest.py"""
+    """Import REAL computed results from batch_backtest.py — auto-runs if needed"""
+    sys.path.insert(0, str(BASE_DIR))
     try:
-        sys.path.insert(0, str(BASE_DIR))
         import batch_backtest as bt
-        if hasattr(bt, 'SUMMARY') and bt.SUMMARY:
-            return bt.SUMMARY
-    except Exception:
-        pass
-    return RESULTS  # fall back to defaults
+
+        if bt.SUMMARY is None:
+            print("⚠️  SUMMARY is None — running batch_backtest pipeline now...")
+            bt.run_and_build_summary()
+
+        s = bt.SUMMARY
+        print(
+            f"🔗 Loaded live data: {s['total_candidates']} candidates, {s['degraded_count']} degraded"
+        )
+        print(
+            f"   PF-A PASS: {s['profiles']['PF-A']['pass_pct']}%  "
+            f"PF-D PASS: {s['profiles']['PF-D']['pass_pct']}%"
+        )
+
+        return {
+            "total_candidates": s["total_candidates"],
+            "degraded_count": s["degraded_count"],
+            "profiles": s["profiles"],
+            "score_data": s["score_data"],
+        }
+
+    except Exception as e:
+        print(f"❌ Cannot load live data: {e}")
+        sys.exit(1)
+
+
+# ─── Load ONCE at import time — fail fast if missing ────────────
+RESULTS = load_results_from_backtest()
 
 
 # ─── Plot 1: Pass/Watch/Reject Bar Chart ────────────────────────
 def plot_pass_rates():
     if not HAS_MPL:
         return None
-
     fig, ax = plt.subplots(figsize=(10, 6))
     labels = ["PF-A\nTrend", "PF-B\nBalanced", "PF-C\nModel", "PF-D\nStructure"]
     pass_rates = [RESULTS["profiles"][p]["pass_pct"] for p in RESULTS["profiles"]]
@@ -77,13 +80,43 @@ def plot_pass_rates():
 
     ax.bar(x, pass_rates, w, label="PASS", color="#2ecc71")
     ax.bar(x, watch_rates, w, bottom=pass_rates, label="WATCH", color="#f39c12")
-    ax.bar(x, reject_rates, w, bottom=[a+b for a,b in zip(pass_rates, watch_rates)],
-           label="REJECT", color="#e74c3c")
+    ax.bar(
+        x,
+        reject_rates,
+        w,
+        bottom=[a + b for a, b in zip(pass_rates, watch_rates)],
+        label="REJECT",
+        color="#e74c3c",
+    )
 
     for i, (pa, wa, re) in enumerate(zip(pass_rates, watch_rates, reject_rates)):
-        ax.text(i, pa/2, f"{pa}%", ha="center", va="center", color="white", fontweight="bold")
-        ax.text(i, pa + wa/2, f"{wa}%", ha="center", va="center", color="white", fontweight="bold")
-        ax.text(i, pa + wa + re/2, f"{re}%", ha="center", va="center", color="white", fontweight="bold")
+        ax.text(
+            i,
+            pa / 2,
+            f"{pa}%",
+            ha="center",
+            va="center",
+            color="white",
+            fontweight="bold",
+        )
+        ax.text(
+            i,
+            pa + wa / 2,
+            f"{wa}%",
+            ha="center",
+            va="center",
+            color="white",
+            fontweight="bold",
+        )
+        ax.text(
+            i,
+            pa + wa + re / 2,
+            f"{re}%",
+            ha="center",
+            va="center",
+            color="white",
+            fontweight="bold",
+        )
 
     ax.set_ylabel("Rate (%)")
     ax.set_title("4-Profile Decision Distribution — Attribution V2")
@@ -104,11 +137,11 @@ def plot_pass_rates():
 def plot_score_box():
     if not HAS_MPL:
         return None
-
     fig, ax = plt.subplots(figsize=(8, 6))
     data = RESULTS["score_data"]
-    bp = ax.boxplot(data, tick_labels=["PF-A", "PF-B", "PF-C", "PF-D"],
-                    patch_artist=True)
+    bp = ax.boxplot(
+        data, tick_labels=["PF-A", "PF-B", "PF-C", "PF-D"], patch_artist=True
+    )
 
     colors = ["#27ae60", "#3498db", "#9b59b6", "#e67e22"]
     for box, c in zip(bp["boxes"], colors):
@@ -129,23 +162,22 @@ def plot_score_box():
 def plot_signal_quality():
     if not HAS_MPL:
         return None
-
     total = RESULTS["total_candidates"]
     degraded = RESULTS["degraded_count"]
     valid = total - degraded
-    valid_pct = round(valid / total * 100, 1)
-    deg_pct = round(degraded / total * 100, 1)
+    valid_pct = round(valid / total * 100, 1) if total > 0 else 0.0
+    deg_pct = round(degraded / total * 100, 1) if total > 0 else 0.0
 
     fig, ax = plt.subplots(figsize=(7, 7))
     ax.pie(
         [valid, degraded],
         labels=[
             f"Valid Signal\n({valid}, {valid_pct}%)",
-            f"Degraded/Neutral\n({degraded}, {deg_pct}%)"
+            f"Degraded/Neutral\n({degraded}, {deg_pct}%)",
         ],
         colors=["#3498db", "#bdc3c7"],
         autopct="%1.1f%%",
-        startangle=90
+        startangle=90,
     )
     ax.set_title(f"Signal Quality — {total} Candidates")
 
@@ -170,9 +202,9 @@ def export_json_summary():
         "total_candidates": total,
         "degraded_count": degraded,
         "valid_pct": valid_pct,
-        "profiles": RESULTS["profiles"]
+        "profiles": RESULTS["profiles"],
     }
-    
+
     out_path = REPORT_DIR / "report_latest.json"
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(summary, f, indent=2, ensure_ascii=False)
@@ -238,9 +270,6 @@ def generate_html_report():
 # MAIN ENTRY POINT
 # ================================================================
 if __name__ == "__main__":
-    # Load real data from batch_backtest if available
-    RESULTS = load_results_from_backtest()
-
     print("=" * 60)
     print("🎨 Attribution V2 — Generating Visuals")
     print("=" * 60)

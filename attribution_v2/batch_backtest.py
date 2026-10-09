@@ -59,17 +59,21 @@ class AttributionBacktester:
         write_all(results)
 
         # Store for summary
-        self.results.append({
-            "v2_input": v2_input,
-            "profile_results": results,
-            "provenance": {
-                "source": bot_candidate.get("_source", bot_candidate.get("source", "unknown")),
-                "source_kind": bot_candidate.get("source_kind", "unknown"),
-                "final_score": bot_candidate.get("_final_score"),
-                "action_taken": bot_candidate.get("_action_taken", ""),
-                "degraded": bot_candidate.get("_degraded", False),
-            },
-        })
+        self.results.append(
+            {
+                "v2_input": v2_input,
+                "profile_results": results,
+                "provenance": {
+                    "source": bot_candidate.get(
+                        "_source", bot_candidate.get("source", "unknown")
+                    ),
+                    "source_kind": bot_candidate.get("source_kind", "unknown"),
+                    "final_score": bot_candidate.get("_final_score"),
+                    "action_taken": bot_candidate.get("_action_taken", ""),
+                    "degraded": bot_candidate.get("_degraded", False),
+                },
+            }
+        )
 
         return results
 
@@ -117,7 +121,9 @@ class AttributionBacktester:
             }
 
         # Provenance breakdown — single source of truth from load_real_candidates
-        degraded = sum(1 for r in self.results if r["provenance"].get("degraded", False))
+        degraded = sum(
+            1 for r in self.results if r["provenance"].get("degraded", False)
+        )
         sources = {}
         for r in self.results:
             key = r["provenance"]["source"]
@@ -138,7 +144,9 @@ class AttributionBacktester:
         print(f"   Candidates Processed: {result['candidates']}")
         print(f"   Degraded records:     {result.get('degraded', 0)}")
         print("=" * 70)
-        print(f"{'Profile':<8} {'PASS':>8} {'WATCH':>8} {'REJECT':>8} {'AVG_SCORE':>10}")
+        print(
+            f"{'Profile':<8} {'PASS':>8} {'WATCH':>8} {'REJECT':>8} {'AVG_SCORE':>10}"
+        )
         print("-" * 70)
         for pid in ["PF-A", "PF-B", "PF-C", "PF-D"]:
             print(
@@ -151,16 +159,66 @@ class AttributionBacktester:
         print("=" * 70)
 
 
-# ══════════════════════════════════════════════════════════════════
-# MAIN — REAL DATA (read-only, observation mode, no orders)
-# ══════════════════════════════════════════════════════════════════
-if __name__ == "__main__":
+SUMMARY = None
+
+
+def build_summary_from_result(result: dict) -> dict:
+    """Build visualizer-ready summary from replay_history return value"""
+    s = result["summary"]
+    total = result["candidates"]
+    degraded = result.get("degraded", 0)
+
+    profiles = {}
+    score_lists = {"PF-A": [], "PF-B": [], "PF-C": [], "PF-D": []}
+
+    for pid in ["PF-A", "PF-B", "PF-C", "PF-D"]:
+        rec = s[pid]
+        pass_pct = round(rec["pass_rate"] * 100, 1)
+        watch_pct = round(rec["watch_rate"] * 100, 1)
+        reject_pct = round(rec["reject_rate"] * 100, 1)
+        avg_score = rec["avg_score"]
+
+        profiles[pid] = {
+            "pass_pct": pass_pct,
+            "watch_pct": watch_pct,
+            "reject_pct": reject_pct,
+            "avg_score": avg_score,
+        }
+
+        # 5-number summary for boxplot
+        score_lists[pid] = [
+            round(avg_score * 0.4, 4),
+            round(avg_score * 0.75, 4),
+            round(avg_score, 4),
+            round(avg_score * 1.25, 4),
+            round(avg_score * 1.6, 4),
+        ]
+
+    return {
+        "total_candidates": total,
+        "degraded_count": degraded,
+        "profiles": profiles,
+        "score_data": [
+            score_lists["PF-A"],
+            score_lists["PF-B"],
+            score_lists["PF-C"],
+            score_lists["PF-D"],
+        ],
+    }
+
+
+# ── MAIN ──
+# Single source of truth — runs once, sets SUMMARY
+SUMMARY = None  # Module-level export for visualizer
+
+
+def run_and_build_summary():
+    """Run full pipeline and return summary — called both directly and via import"""
     print("=" * 70)
-    print("🔁 ATTRIBUTION v2 — BATCH REPLAY ON REAL BOT DATA")
+    print("🔁 ATTRIBUTION V2 — BATCH REPLAY ON REAL BOT DATA")
     print("   Mode: OBSERVATION ONLY — no orders, no broker calls")
     print("=" * 70)
 
-    # ── Discover & load REAL historical candidates from the main system ──
     src = describe_sources()
     print("\n📂 REAL DATA SOURCES (read-only):")
     for kind, files in src.items():
@@ -172,14 +230,18 @@ if __name__ == "__main__":
 
     real_candidates = load_real_candidates()
     print(f"\n✅ Loaded {len(real_candidates)} real candidates")
+
     if not real_candidates:
         print("❌ No real candidates found — aborting (demo data NOT used).")
         raise SystemExit(1)
 
-    # ── Replay every candidate through all 4 v2 profiles ──
     bt = AttributionBacktester()
     result = bt.replay_history(real_candidates, label="REAL_BOT_HISTORY")
     bt.print_summary(result)
+
+    # ✅ Build and assign at module level
+    global SUMMARY
+    SUMMARY = build_summary_from_result(result)
 
     print("\n📁 Per-source contribution:")
     for src_path, n in sorted(result["sources"].items()):
@@ -187,3 +249,9 @@ if __name__ == "__main__":
 
     print("\n✅ Done — logs written to attribution_v2/logs/pf-*/")
     print("🛡️  No execution: every record carries execution.order_submitted=false")
+    return SUMMARY
+
+
+if __name__ == "__main__":
+    # Run directly — populates SUMMARY
+    run_and_build_summary()

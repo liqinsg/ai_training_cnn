@@ -230,3 +230,5 @@ logs/
 attribution_v2/logs/
 __pycache__/
 .env
+attribution_v2/reports/
+start_dashboard.sh
