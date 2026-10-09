@@ -1,22 +1,20 @@
 #!/bin/bash
-cd "$HOME/projects/ai_training_cnn"
+cd /home/qili/projects/ai_training_cnn
+set -a; [ -f .env ] && . .env; set +a
 
-# 加载环境变量
-set -a
-. .env
-set +a
+echo "===== $(date '+%Y-%m-%d %H:%M:%S') — Attribution V2 Cron ====="
 
-echo "===== $(date) — Attribution V2 Cron Start ====="
+# 1. 拉最新代码（测试服务器）
+git pull origin v2026
 
-# 循环跑 4 个账号，每个独立日志
-for prof in profile1 profile2 profile3 profile4; do
-    echo "--- Running $prof ---"
-    python -c "
-import os
-os.environ['ACTIVE_PROFILE'] = '$prof'
-from attribution_v2.batch_backtest import main
-main()
-" >> logs/attribution_${prof}.log 2>&1
-done
+# 2. 补历史数据（新文件自动处理）
+python apply_patch_to_history.py
 
-echo "===== Attribution V2 Cron Done ====="
+# 3. 跑4套完整回测
+python attribution_v2/batch_backtest.py
+
+# 4. 生成图表 + HTML报告
+python attribution_v2/visualizer.py
+
+echo "===== Done ====="
+echo "📊 Open: attribution_v2/reports/latest.html"
