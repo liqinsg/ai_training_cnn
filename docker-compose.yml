@@ -1,16 +1,26 @@
-version: "3.8"
-
 services:
-  fx-bot:
+  # 静态文件服务 — 仅容器内网访问
+  dashboard:
     build:
       context: .
-      dockerfile: fx_trade_bot.Dockerfile
-    container_name: fx-trade-bot
-    restart: unless-stopped
+      dockerfile: Dockerfile.dashboard
+    restart: always
     volumes:
-      - ./daily_results:/app/daily_results
-      - ./logs:/app/logs
-    env_file:
-      - .env
-    # If running cron inside container:
-    # command: ["cron", "-f"]
+      - .:/app:ro
+    expose:
+      - "8088"
+    working_dir: /app
+    command: python3 -m http.server 8088 --bind 127.0.0.1
+
+  # Nginx 反向代理 + HTTPS — 唯一对外入口
+  nginx:
+    build: ./nginx
+    restart: always
+    ports:
+      - "443:443"
+    depends_on:
+      - dashboard
+    volumes:
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+    environment:
+      - TZ=Asia/Singapre
