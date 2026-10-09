@@ -1,5 +1,5 @@
 #!/bin/bash
-cd /home/qili/projects/ai_training_cnn
+cd $HOME/projects/ai_training_cnn
 set -a; [ -f .env ] && . .env; set +a
 
 echo "===== $(date '+%Y-%m-%d %H:%M:%S') — Attribution V2 Cron ====="
