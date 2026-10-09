@@ -221,3 +221,12 @@ logs/
 .vscode*
 utils/trading_core_OLD*.py
 tmp/
+
+# Attribution V2 — data & backups
+daily_results*/
+live_signal_log.csv
+*.bak_*
+logs/
+attribution_v2/logs/
+__pycache__/
+.env
