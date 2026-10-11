@@ -22,7 +22,12 @@ PAIR = "EURUSD=X"
 PERIOD = "5y"
 INTERVAL = "1d"
 FORECAST_HORIZON = 3
-JSON_FILE = Path.home() / "ai_training_cnn" / "daily_results" / f"fx_daily_{datetime.utcnow().strftime('%Y%m%d')}.json"
+JSON_FILE = (
+    Path.home()
+    / "ai_training_cnn"
+    / "daily_results"
+    / f"fx_daily_{datetime.utcnow().strftime('%Y%m%d')}.json"
+)
 
 # --------------------------
 # 1. Load Monte Carlo data from saved JSON
@@ -86,7 +91,11 @@ if mc_features:
 df = df.dropna()
 print(f"✅ Valid samples: {len(df)}")
 
-features = [c for c in df.columns if c not in ["Open","High","Low","Close","Volume","target"]]
+features = [
+    c
+    for c in df.columns
+    if c not in ["Open", "High", "Low", "Close", "Volume", "target"]
+]
 print(f"🔧 Total features: {len(features)} ({' + '.join(features)})")
 
 # --------------------------
@@ -95,9 +104,7 @@ print(f"🔧 Total features: {len(features)} ({' + '.join(features)})")
 X = df[features]
 y = df["target"].astype(int)
 
-X_train, X_test, y_train, y_test = train_test_split(
-    X, y, test_size=0.2, shuffle=False
-)
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, shuffle=False)
 
 model = LGBMClassifier(
     n_estimators=200,
@@ -107,7 +114,7 @@ model = LGBMClassifier(
     colsample_bytree=0.8,
     objective="binary",
     random_state=42,
-    verbose=-1
+    verbose=-1,
 )
 model.fit(X_train, y_train)
 
@@ -131,4 +138,6 @@ p_down = 1 - p_up
 print(f"\n🚀 {PAIR} | {FORECAST_HORIZON}d outlook:")
 print(f"   Prob UP:   {p_up:.1%}")
 print(f"   Prob DOWN: {p_down:.1%}")
-print(f"   Signal:    {'🟢 BIAS UP' if p_up > 0.6 else '🔴 BIAS DOWN' if p_down > 0.6 else '⚪ NEUTRAL'}")
+print(
+    f"   Signal:    {'🟢 BIAS UP' if p_up > 0.6 else '🔴 BIAS DOWN' if p_down > 0.6 else '⚪ NEUTRAL'}"
+)

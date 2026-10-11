@@ -32,17 +32,32 @@ api = oandapyV20.API(access_token=OANDA_API_TOKEN, environment=OANDA_ENV)
 # ⚙️ ARG PARSE + TIMEFRAME CONFIG
 # ==========================================
 parser = argparse.ArgumentParser(description="FX Monte Carlo — Daily or H4")
-parser.add_argument("--timeframe", choices=["D", "H4"], default="H4", help="Timeframe: D (Daily) / H4 (4‑Hour)")
+parser.add_argument(
+    "--timeframe",
+    choices=["D", "H4"],
+    default="H4",
+    help="Timeframe: D (Daily) / H4 (4‑Hour)",
+)
 args = parser.parse_args()
 TF = args.timeframe
+
 
 def cfg(name, default):
     return getattr(config, name, default)
 
-PAIRS = cfg("DEFAULT_PAIRS", [
-    "EURUSD=X", "GBPUSD=X", "EURJPY=X", "GBPJPY=X",
-    "AUDUSD=X", "USDJPY=X", "USDCHF=X"
-])
+
+PAIRS = cfg(
+    "DEFAULT_PAIRS",
+    [
+        "EURUSD=X",
+        "GBPUSD=X",
+        "EURJPY=X",
+        "GBPJPY=X",
+        "AUDUSD=X",
+        "USDJPY=X",
+        "USDCHF=X",
+    ],
+)
 SIMULATIONS = cfg("MC_SIMULATIONS", 5000)
 CONFIDENCE = cfg("MC_CONFIDENCE", 0.90)
 RESULTS_DIR = BASE_DIR / "daily_results"
@@ -55,8 +70,8 @@ if TF == "H4":
     YF_PERIOD_RESAMPLE = "60d"
     LOOKBACK = cfg("H4_LOOKBACK", 90)
     FORECAST = cfg("H4_FORECAST", 8)
-    PERIODS_YEAR = 252 * 6   # ~6× daily bars
-    DT_SCALE = 6             # H4 = 6 per day
+    PERIODS_YEAR = 252 * 6  # ~6× daily bars
+    DT_SCALE = 6  # H4 = 6 per day
     OANDA_GRANULARITY = "H4"
     REPORT_TITLE = "FX H4 MONTE CARLO UPDATE"
 else:  # DAILY
@@ -70,18 +85,24 @@ else:  # DAILY
     OANDA_GRANULARITY = "D"
     REPORT_TITLE = "FX DAILY MONTE CARLO UPDATE"
 
+
 # ==========================================
 # 🛡️ MARKET STATUS CHECK (PER TIMEFRAME)
 # ==========================================
 def forex_market_closed():
     try:
         from oandapyV20.endpoints.instruments import InstrumentsCandles
-        resp = api.request(InstrumentsCandles(
-            instrument="EUR_USD", params={"count": 1, "granularity": OANDA_GRANULARITY}
-        ))
+
+        resp = api.request(
+            InstrumentsCandles(
+                instrument="EUR_USD",
+                params={"count": 1, "granularity": OANDA_GRANULARITY},
+            )
+        )
         return not bool(resp.get("candles"))
     except Exception:
         return False
+
 
 if forex_market_closed():
     msg = f"⏸️ FX {TF} MC: Market closed — skipped"
@@ -89,29 +110,38 @@ if forex_market_closed():
     send_telegram_message(msg)
     raise SystemExit(0)
 
+
 # ==========================================
 # 📥 DATA FETCH — AUTO‑RESAMPLE FALLBACK
 # ==========================================
 def fetch_data(pair: str) -> pd.DataFrame:
     """Fetch desired interval; fall back to lower TF → resample if needed."""
     try:
-        df = yf.download(pair, period=YF_PERIOD_FULL, interval=YF_INTERVAL, progress=False)
+        df = yf.download(
+            pair, period=YF_PERIOD_FULL, interval=YF_INTERVAL, progress=False
+        )
         if len(df) >= LOOKBACK:
-            return df[["Open","High","Low","Close"]].dropna()
+            return df[["Open", "High", "Low", "Close"]].dropna()
     except Exception:
         pass
     # Fallback: fetch finer data then resample
     try:
         fallback_interval = "1h" if TF == "H4" else "4h"
-        df = yf.download(pair, period=YF_PERIOD_RESAMPLE, interval=fallback_interval, progress=False)
+        df = yf.download(
+            pair, period=YF_PERIOD_RESAMPLE, interval=fallback_interval, progress=False
+        )
         if df.empty:
             return pd.DataFrame()
-        return df[["Open","High","Low","Close"]].resample(YF_INTERVAL).agg({
-            "Open":"first", "High":"max", "Low":"min", "Close":"last"
-        }).dropna()
+        return (
+            df[["Open", "High", "Low", "Close"]]
+            .resample(YF_INTERVAL)
+            .agg({"Open": "first", "High": "max", "Low": "min", "Close": "last"})
+            .dropna()
+        )
     except Exception as e:
         print(f"❌ Data failed {pair}: {e}")
         return pd.DataFrame()
+
 
 # ==========================================
 # 🧠 UNIFIED PROBABILITY ENGINE
@@ -134,13 +164,14 @@ def run_mc(pair: str):
     paths[:, 0] = current
     for t in range(1, FORECAST + 1):
         z = np.random.normal(0, 1, SIMULATIONS)
-        paths[:, t] = paths[:, t-1] * np.exp(
-            (drift/PERIODS_YEAR - 0.5 * (vol**2)/PERIODS_YEAR) + (vol * np.sqrt(dt)) * z
+        paths[:, t] = paths[:, t - 1] * np.exp(
+            (drift / PERIODS_YEAR - 0.5 * (vol**2) / PERIODS_YEAR)
+            + (vol * np.sqrt(dt)) * z
         )
 
     final = paths[:, -1]
-    lower = float(np.percentile(final, (1 - CONFIDENCE)/2 * 100))
-    upper = float(np.percentile(final, (1 + CONFIDENCE)/2 * 100))
+    lower = float(np.percentile(final, (1 - CONFIDENCE) / 2 * 100))
+    upper = float(np.percentile(final, (1 + CONFIDENCE) / 2 * 100))
 
     percentile = round((np.sum(final <= current) / SIMULATIONS) * 100, 1)
     p_up = round((np.sum(final > current) / SIMULATIONS) * 100, 1)
@@ -179,8 +210,9 @@ def run_mc(pair: str):
         "lookback": LOOKBACK,
         "forecast": FORECAST,
         "simulations": SIMULATIONS,
-        "generated_utc": datetime.now(timezone.utc).isoformat()
+        "generated_utc": datetime.now(timezone.utc).isoformat(),
     }, True
+
 
 # ==========================================
 # 📤 TELEGRAM REPORT — AUTO‑ADAPT TO TF
@@ -190,21 +222,26 @@ def build_telegram(results: list) -> str:
     lines = [
         f"📊 **{REPORT_TITLE}**",
         f"📅 Generated: {now}",
-        f"🔹 Timeframe: {TF} | Lookback: {LOOKBACK} | Forecast: {FORECAST} | Sims: {SIMULATIONS}", ""
+        f"🔹 Timeframe: {TF} | Lookback: {LOOKBACK} | Forecast: {FORECAST} | Sims: {SIMULATIONS}",
+        "",
     ]
     for r in results:
         dec = 3 if "JPY" in r["pair"] else 5
         lo, hi = r["range_90"]
-        lines.extend([
-            f"🔹 **{r['pair']}**",
-            f"   💵 Last Close: `{r['current_price']}`",
-            f"   📊 Percentile: `{r['percentile_rank']}%`",
-            f"   🎯 UP: `{r['p_up_pct']}%` | DOWN: `{r['p_down_pct']}%`",
-            f"   📏 90% Band: `{lo}` – `{hi}`",
-            f"   🔍 Touch: Low `{r['touch_lower_pct']}%` | High `{r['touch_upper_pct']}%`",
-            f"   {r['regime']}", ""
-        ])
+        lines.extend(
+            [
+                f"🔹 **{r['pair']}**",
+                f"   💵 Last Close: `{r['current_price']}`",
+                f"   📊 Percentile: `{r['percentile_rank']}%`",
+                f"   🎯 UP: `{r['p_up_pct']}%` | DOWN: `{r['p_down_pct']}%`",
+                f"   📏 90% Band: `{lo}` – `{hi}`",
+                f"   🔍 Touch: Low `{r['touch_lower_pct']}%` | High `{r['touch_upper_pct']}%`",
+                f"   {r['regime']}",
+                "",
+            ]
+        )
     return "\n".join(lines)
+
 
 # ==========================================
 # 🚀 MAIN RUN
@@ -220,7 +257,7 @@ def main():
             print(f"⚠️ Skipped {pair}")
             continue
         all_results.append(data)
-        safe = pair.replace("=X","").replace("=","_")
+        safe = pair.replace("=X", "").replace("=", "_")
         tag = "daily" if TF == "D" else "h4"
         with open(RESULTS_DIR / f"{tag}_mc_{safe}_{now_str}.json", "w") as f:
             json.dump(data, f, indent=2)
@@ -229,6 +266,7 @@ def main():
         send_telegram_message(build_telegram(all_results))
         print("✅ Telegram report sent")
     print("✅ Run complete")
+
 
 if __name__ == "__main__":
     try:

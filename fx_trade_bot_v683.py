@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-    fx_trade_bot_v6.8.3.3.py — v6.8.3.3 + Top-N Strength Filter
-    Multi-Profile: Profile2/Account002 · Profile3/Account003
-    ✅ RSI-FIXED | Consensus | ADX Boost | Monte Carlo | SL Zone Hierarchy
-    ✅ TREND FILTER: H1 EMA10 Slope + Weekly EMA100 Counter-Trend Block
-    ✅ SMART TP: Profile2=×1.0/×2.0 @75%MC  |  Profile3=Fixed ×1.2
-    ✅ TOP-N STRENGTH: strongest 3 × weakest 3 → candidate pairs only
+fx_trade_bot_v6.8.3.3.py — v6.8.3.3 + Top-N Strength Filter
+Multi-Profile: Profile2/Account002 · Profile3/Account003
+✅ RSI-FIXED | Consensus | ADX Boost | Monte Carlo | SL Zone Hierarchy
+✅ TREND FILTER: H1 EMA10 Slope + Weekly EMA100 Counter-Trend Block
+✅ SMART TP: Profile2=×1.0/×2.0 @75%MC  |  Profile3=Fixed ×1.2
+✅ TOP-N STRENGTH: strongest 3 × weakest 3 → candidate pairs only
 """
 import contextlib
 import sys
@@ -28,40 +28,80 @@ import logging as _logging
 logging.getLogger("oandapyV20.oandapyV20").setLevel(_logging.WARNING)
 
 # ─── FULL ARGPARSE FIRST (so --help exits before any config import) ──────────
-parser = argparse.ArgumentParser(
-    description="FX Trading Bot v6.8.3.3 | TREND+TP+TOP-N"
+parser = argparse.ArgumentParser(description="FX Trading Bot v6.8.3.3 | TREND+TP+TOP-N")
+parser.add_argument(
+    "-p",
+    "--profile",
+    type=int,
+    default=None,
+    help="Profile number (2 or 3); compatible with --profile2 / --profile3",
 )
-parser.add_argument("-p", "--profile", type=int, default=None,
-                    help="Profile number (2 or 3); compatible with --profile2 / --profile3")
-parser.add_argument("--profile2", action="store_true",
-                    help="Force Profile2 (shorthand for -p 2)")
-parser.add_argument("--profile3", action="store_true",
-                    help="Force Profile3 (shorthand for -p 3)")
-parser.add_argument("-a", "--account", type=str, default=None,
-                    help="Account number override (numeric index, e.g. '2' / '3' / '4')")
-parser.add_argument("-m", "--max-entries", type=int, default=None,
-                    help="Max signals to enter per cycle; overrides PROFILE's MAX_ENTRIES_THIS_RUN")
+parser.add_argument(
+    "--profile2", action="store_true", help="Force Profile2 (shorthand for -p 2)"
+)
+parser.add_argument(
+    "--profile3", action="store_true", help="Force Profile3 (shorthand for -p 3)"
+)
+parser.add_argument(
+    "-a",
+    "--account",
+    type=str,
+    default=None,
+    help="Account number override (numeric index, e.g. '2' / '3' / '4')",
+)
+parser.add_argument(
+    "-m",
+    "--max-entries",
+    type=int,
+    default=None,
+    help="Max signals to enter per cycle; overrides PROFILE's MAX_ENTRIES_THIS_RUN",
+)
 parser.add_argument("--timeframe", type=str, default="15m", choices=["15m", "1H", "H4"])
 parser.add_argument("--confluence", action="store_true", default=None)
 parser.add_argument("--no-confluence", action="store_false", dest="confluence")
 parser.add_argument("--skip-mc", action="store_true")
 parser.add_argument("--mc-only", action="store_true")
-parser.add_argument("--live", action="store_true",
-                    help="Connect the LIVE real-money environment")
-parser.add_argument("--demo", "--dry-run", action="store_true", dest="dry_run", default=None,
-                    help="Force DRY-RUN — no mutating OANDA calls, orders are logged only")
-parser.add_argument("--no-dry-run", "--no-demo", action="store_false", dest="dry_run", default=None,
-                    help="Force EXECUTION — send orders to OANDA (overrides run.env DRY_RUN)")
-parser.add_argument("--lots", type=int, default=None,
-                    help="Override lot size / units per trade (overrides DEFAULT_LOT_SIZE from config)")
+parser.add_argument(
+    "--live", action="store_true", help="Connect the LIVE real-money environment"
+)
+parser.add_argument(
+    "--demo",
+    "--dry-run",
+    action="store_true",
+    dest="dry_run",
+    default=None,
+    help="Force DRY-RUN — no mutating OANDA calls, orders are logged only",
+)
+parser.add_argument(
+    "--no-dry-run",
+    "--no-demo",
+    action="store_false",
+    dest="dry_run",
+    default=None,
+    help="Force EXECUTION — send orders to OANDA (overrides run.env DRY_RUN)",
+)
+parser.add_argument(
+    "--lots",
+    type=int,
+    default=None,
+    help="Override lot size / units per trade (overrides DEFAULT_LOT_SIZE from config)",
+)
 # // FIX-2026-10-10: debug/dev escape hatch — run the full pipeline even when
 # the weekend/holiday guard says the market is closed.
-parser.add_argument("--ignore-market-closed", action="store_true",
-                    help="Skip the weekend/holiday guard and run the full pipeline (debug)")
+parser.add_argument(
+    "--ignore-market-closed",
+    action="store_true",
+    help="Skip the weekend/holiday guard and run the full pipeline (debug)",
+)
 # // FIX-2026-10-10: bare positional profile number, e.g. `python fx_trade_bot_v683.py 2`.
 # Without this, argparse rejected the positional with "unrecognized arguments: 2".
-parser.add_argument("profile_pos", nargs="?", type=int, default=None,
-                    help="Profile number as a bare positional (e.g. 2)")
+parser.add_argument(
+    "profile_pos",
+    nargs="?",
+    type=int,
+    default=None,
+    help="Profile number as a bare positional (e.g. 2)",
+)
 args = parser.parse_args()
 
 # ── Profile Selection ──────────────────────────────────
@@ -103,42 +143,46 @@ RESULTS_DIR = BASE_DIR / f"daily_results_{PROFILE_NAME}"
 
 P = config_bot.get_profile(profile_id)
 
-WEIGHTS = P['WEIGHTS']
-ALLOWED_PAIRS = P['WHITELIST']
-MAX_OPEN = P['MAX_OPEN']
-MAX_ENTRIES_THIS_RUN = P['MAX_ENTRIES_THIS_RUN']
-MIN_CONVICTION = P['MIN_CONVICTION']
-MIN_GAP = P['MIN_GAP']
+WEIGHTS = P["WEIGHTS"]
+ALLOWED_PAIRS = P["WHITELIST"]
+MAX_OPEN = P["MAX_OPEN"]
+MAX_ENTRIES_THIS_RUN = P["MAX_ENTRIES_THIS_RUN"]
+MIN_CONVICTION = P["MIN_CONVICTION"]
+MIN_GAP = P["MIN_GAP"]
 # // FIX-2026-10-10: expose the profile's declared slope threshold so the
 # TREND_TP_CONFIG override below can honour config_profile.json (v684 parity).
-MIN_SLOPE = P['MIN_SLOPE']
+MIN_SLOPE = P["MIN_SLOPE"]
 
 # // FIX-2026-10-10: startup confirmation banner, identical in shape to v684, so
 # both versions print the same effective (JSON-backed) values. Previously v683
 # printed hardcoded PROFILE1..4 labels and no weight/threshold summary.
 print("=" * 50)
 print(f"🚀 FX Bot v{_cfg_bundle['VERSION']} | {PROFILE_NAME}")
-print(f"⚖️  权重: S={P['W_S']:.2f} R={P['W_R']:.2f} A={P['W_A']:.2f} "
-      f"X={P['W_X']:.2f} M={P['W_M']:.2f}")
-print(f"🔧 D-Gate={P['D_GATE_ENABLED']} | 最低置信={MIN_CONVICTION} | "
-      f"斜率门槛={MIN_SLOPE}")
+print(
+    f"⚖️  权重: S={P['W_S']:.2f} R={P['W_R']:.2f} A={P['W_A']:.2f} "
+    f"X={P['W_X']:.2f} M={P['W_M']:.2f}"
+)
+print(
+    f"🔧 D-Gate={P['D_GATE_ENABLED']} | 最低置信={MIN_CONVICTION} | "
+    f"斜率门槛={MIN_SLOPE}"
+)
 print(f"✅ 配置来源: config_profile.json — Profile{profile_id}")
 print("=" * 50)
-D_GATE_ENABLED = P['D_GATE_ENABLED']
-D_GATE_BUFFER_PCT = P['D_GATE_BUFFER_PCT']
-D_GATE_SHADOW = P['D_GATE_SHADOW']
-D_GATE_CONFIRM = P['D_GATE_CONFIRM']
+D_GATE_ENABLED = P["D_GATE_ENABLED"]
+D_GATE_BUFFER_PCT = P["D_GATE_BUFFER_PCT"]
+D_GATE_SHADOW = P["D_GATE_SHADOW"]
+D_GATE_CONFIRM = P["D_GATE_CONFIRM"]
 
 # ─── STRATEGY WEIGHTS (from unified PROFILE) ─────────────────────────────────
 # The bot scores with cfg_bot("WEIGHT_XGB", ...) — the canonical key. The unified
 # PROFILE dicts carry short keys (S/R/A/X/M); expose them under the canonical
 # WEIGHT_* names so the resolution chain picks the PROFILE values, not the
 # legacy config_bot.py defaults.
-WEIGHT_STRENGTH = WEIGHTS['S']
-WEIGHT_RSI = WEIGHTS['R']
-WEIGHT_ADX = WEIGHTS['A']
-WEIGHT_XGB = WEIGHTS['X']
-WEIGHT_MC = WEIGHTS['M']
+WEIGHT_STRENGTH = WEIGHTS["S"]
+WEIGHT_RSI = WEIGHTS["R"]
+WEIGHT_ADX = WEIGHTS["A"]
+WEIGHT_XGB = WEIGHTS["X"]
+WEIGHT_MC = WEIGHTS["M"]
 
 # ─── TOP-N / RANKING (from unified PROFILE) ──────────────────────────────────
 # Same values as the former config_bot_profile{2,3}.py modules: top-pairs mode
@@ -161,7 +205,7 @@ TREND_FILTER_ENABLED = False
 WEEK_EMA100_FILTER_ENABLED = False
 
 # ─── RISK OVERRIDES (former profile2 GBPJPY SL floor) ────────────────────────
-SL_PAIR_FLOOR_OVERRIDES = {'GBPJPY=X': 50}
+SL_PAIR_FLOOR_OVERRIDES = {"GBPJPY=X": 50}
 
 # ─── SLOPE_DIAG (former profile3 evidence-collection switch) ─────────────────
 SLOPE_DIAG = True
@@ -307,6 +351,7 @@ def resolve_min_slope(profile_cfg, profile_name):
         return MIN_SLOPE_LADDER[-1]
     return rung
 
+
 # Tightening-ladder baseline: the original, strictest min_slope value.
 # SLOPE_DIAG uses it to decide whether a candidate's outcome changed because of
 # the relaxation:
@@ -388,9 +433,7 @@ def d_gate_compute_direction(
     n = len(daily_closes)
     min_bars = max(ema_slow_period + confirm_bars + 2, 42)
     if n < min_bars:
-        logger.info(
-            f"🧭 D-GATE: BOTH (insufficient bars: {n} < min={min_bars})"
-        )
+        logger.info(f"🧭 D-GATE: BOTH (insufficient bars: {n} < min={min_bars})")
         return D_GATE_BOTH
 
     ema_fast = calculate_ema(daily_closes, ema_fast_period)
@@ -435,9 +478,7 @@ def d_gate_fetch_h1(fetcher, pair: str, oanda: str, count: int = 500):
             return None
         closes = raw["Close"].dropna()
         if len(closes) < 100:
-            logger.info(
-                f"ℹ️  D-Gate H1 fetch too few bars ({len(closes)}<100): {pair}"
-            )
+            logger.info(f"ℹ️  D-Gate H1 fetch too few bars ({len(closes)}<100): {pair}")
             return None
         return closes.reset_index(drop=True)
     except TypeError as te:
@@ -582,7 +623,9 @@ def evaluate_trend_and_tp(
             if not (price_ok and slope_ok):
                 failed = []
                 if not price_ok:
-                    failed.append(f"price {current_price:.5f} below EMA10 {ema_level:.5f}")
+                    failed.append(
+                        f"price {current_price:.5f} below EMA10 {ema_level:.5f}"
+                    )
                 if not slope_ok:
                     failed.append(f"slope {slope:.6f} < min_slope {min_slope:.6f}")
                 reason = f"{timeframe} TREND MISALIGNED — " + " AND ".join(failed)
@@ -595,7 +638,9 @@ def evaluate_trend_and_tp(
             if not (price_ok and slope_ok):
                 failed = []
                 if not price_ok:
-                    failed.append(f"price {current_price:.5f} above EMA10 {ema_level:.5f}")
+                    failed.append(
+                        f"price {current_price:.5f} above EMA10 {ema_level:.5f}"
+                    )
                 if not slope_ok:
                     failed.append(f"slope {slope:.6f} > -min_slope {-min_slope:.6f}")
                 reason = f"{timeframe} TREND MISALIGNED — " + " AND ".join(failed)
@@ -755,21 +800,29 @@ logger.info(
 # would silently become this bot's default.
 # Profile-derived values are authoritative: read them from the module-level
 # names set by the unified loader, falling back to config_bot/config/default.
-USE_TOP_PAIRS_ONLY = USE_TOP_PAIRS_ONLY if USE_TOP_PAIRS_ONLY is not None else cfg_bot(
-    "USE_TOP_PAIRS_ONLY", STRATEGY_USE_TOP_PAIRS_ONLY
+USE_TOP_PAIRS_ONLY = (
+    USE_TOP_PAIRS_ONLY
+    if USE_TOP_PAIRS_ONLY is not None
+    else cfg_bot("USE_TOP_PAIRS_ONLY", STRATEGY_USE_TOP_PAIRS_ONLY)
 )
-TOP_N_CURRENCIES = TOP_N_CURRENCIES if TOP_N_CURRENCIES is not None else cfg_bot(
-    "TOP_N_CURRENCIES", STRATEGY_TOP_N_CURRENCIES
+TOP_N_CURRENCIES = (
+    TOP_N_CURRENCIES
+    if TOP_N_CURRENCIES is not None
+    else cfg_bot("TOP_N_CURRENCIES", STRATEGY_TOP_N_CURRENCIES)
 )
 # Legacy alias kept for this file's own log lines/history.
 TOP_PAIRS_COUNT = TOP_N_CURRENCIES
 # MIN_GAP comes from the unified PROFILE (config_bot.PROFILES); TOP_PAIRS_MIN_GAP
 # remains the top-pairs ranking gap from strategy_config.
-TOP_PAIRS_MIN_GAP = TOP_PAIRS_MIN_GAP if TOP_PAIRS_MIN_GAP is not None else cfg_bot(
-    "TOP_PAIRS_MIN_GAP", STRATEGY_TOP_PAIRS_MIN_GAP
+TOP_PAIRS_MIN_GAP = (
+    TOP_PAIRS_MIN_GAP
+    if TOP_PAIRS_MIN_GAP is not None
+    else cfg_bot("TOP_PAIRS_MIN_GAP", STRATEGY_TOP_PAIRS_MIN_GAP)
 )
-MIN_STRENGTH_GAP = MIN_GAP if MIN_GAP is not None else cfg_bot(
-    "MIN_STRENGTH_GAP", STRATEGY_MIN_STRENGTH_GAP
+MIN_STRENGTH_GAP = (
+    MIN_GAP
+    if MIN_GAP is not None
+    else cfg_bot("MIN_STRENGTH_GAP", STRATEGY_MIN_STRENGTH_GAP)
 )
 # ===========================================================
 DEBUG_MODE = cfg_bot("DEBUG_MODE", False)
@@ -867,12 +920,17 @@ else:
     _prof = get_oanda_profile("practice")
     api = _prof["oanda_client"]
     OANDA_ACCOUNT_ID = (
-        OANDA_ACCOUNT_ID_DEMO_3 if PROFILE_NAME == "profile3"
+        OANDA_ACCOUNT_ID_DEMO_3
+        if PROFILE_NAME == "profile3"
         else OANDA_ACCOUNT_ID_DEMO_2
     )
-    logger.info(f"🧪 PRACTICE/DEMO ENVIRONMENT (no --live) | Account: {OANDA_ACCOUNT_ID}")
+    logger.info(
+        f"🧪 PRACTICE/DEMO ENVIRONMENT (no --live) | Account: {OANDA_ACCOUNT_ID}"
+    )
 
-_ACCT_SUFFIX = OANDA_ACCOUNT_ID.split("-")[-1] if "-" in OANDA_ACCOUNT_ID else OANDA_ACCOUNT_ID
+_ACCT_SUFFIX = (
+    OANDA_ACCOUNT_ID.split("-")[-1] if "-" in OANDA_ACCOUNT_ID else OANDA_ACCOUNT_ID
+)
 _ENV_LABEL = "LIVE" if LIVE_MODE else "DEMO"
 ACCOUNT_NAME = f"{_ENV_LABEL} Account {_ACCT_SUFFIX}"
 
@@ -894,10 +952,10 @@ logger.info(
 _DRY_RUN_ENV_RAW = os.getenv("DRY_RUN", "true").strip()
 _DRY_RUN_ENV = _DRY_RUN_ENV_RAW.lower() in ("1", "true", "yes", "on")
 if args.dry_run is None:
-    DRY_RUN_MODE = _DRY_RUN_ENV                      # no CLI flag → run.env DRY_RUN (default: true)
+    DRY_RUN_MODE = _DRY_RUN_ENV  # no CLI flag → run.env DRY_RUN (default: true)
     _dry_run_source = f"env DRY_RUN={_DRY_RUN_ENV_RAW or '<unset→true>'}"
 else:
-    DRY_RUN_MODE = bool(args.dry_run)                # CLI wins in BOTH directions
+    DRY_RUN_MODE = bool(args.dry_run)  # CLI wins in BOTH directions
     _dry_run_source = "CLI --dry-run" if args.dry_run else "CLI --no-dry-run"
 logger.info(
     f"🚦 EXECUTION GATE: DRY_RUN={DRY_RUN_MODE} (source: {_dry_run_source}) | "
@@ -968,7 +1026,9 @@ logger.info(f"✅ Pair mappings loaded: {len(YAHOO_TO_OANDA)} entries")
 # Whitelist (Ownership Tag) comes from the unified PROFILE dict. Profiles now
 # share pairs (P3 includes P2's JPY bucket), so the whitelist is a universe
 # filter only — it is no longer treated as an error if two profiles overlap.
-ALLOWED_PAIRS = ALLOWED_PAIRS if ALLOWED_PAIRS is not None else cfg_bot("ALLOWED_PAIRS", None)
+ALLOWED_PAIRS = (
+    ALLOWED_PAIRS if ALLOWED_PAIRS is not None else cfg_bot("ALLOWED_PAIRS", None)
+)
 if ALLOWED_PAIRS is not None:
     _known = set(YAHOO_TO_OANDA.keys())
     _invalid = [p for p in ALLOWED_PAIRS if p not in _known]
@@ -983,7 +1043,9 @@ if ALLOWED_PAIRS is not None:
         f"ALLOWED: {ALLOWED_PAIRS}"
     )
 else:
-    logger.info("ℹ️  No ALLOWED_PAIRS set — full 8-pair pool enabled (no whitelist filter)")
+    logger.info(
+        "ℹ️  No ALLOWED_PAIRS set — full 8-pair pool enabled (no whitelist filter)"
+    )
 
 MC_MAX_AGE_HOURS = cfg_bot("MC_MAX_AGE_HOURS", 24)
 SIMULATIONS = cfg_bot("MC_SIMULATIONS", 5000)
@@ -1142,12 +1204,16 @@ def calc_weighted_score(
     if REQUIRE_DIRECTION_CONSENSUS:
         if buy_votes >= CONSENSUS_THRESHOLD:
             direction = "BUY"
-            votes_unanimous = (buy_votes == 3)
-            logger.info(f"✅ {pair}: BUY consensus ({buy_votes}/3, unanimous={votes_unanimous})")
+            votes_unanimous = buy_votes == 3
+            logger.info(
+                f"✅ {pair}: BUY consensus ({buy_votes}/3, unanimous={votes_unanimous})"
+            )
         elif sell_votes >= CONSENSUS_THRESHOLD:
             direction = "SELL"
-            votes_unanimous = (sell_votes == 3)
-            logger.info(f"✅ {pair}: SELL consensus ({sell_votes}/3, unanimous={votes_unanimous})")
+            votes_unanimous = sell_votes == 3
+            logger.info(
+                f"✅ {pair}: SELL consensus ({sell_votes}/3, unanimous={votes_unanimous})"
+            )
         else:
             logger.info(f"⏭️  {pair}: NO CONSENSUS → SKIP")
             return None, None
@@ -1264,10 +1330,7 @@ def main():
                 f"(= {reopen.strftime('%Y-%m-%d %H:%M')} UTC Sunday-open). "
                 f"Use --ignore-market-closed to run the pipeline anyway."
             )
-            
-            
-            
-            
+
             return
 
     model_wrapper, strat_engine = ensure_model(
@@ -1692,6 +1755,7 @@ def main():
     # quote currency but have opposite directions (e.g. short AUDUSD + long
     # EURUSD → both quote USD), ALL candidates in that quote group are skipped.
     from collections import defaultdict
+
     quote_dirs = defaultdict(list)
     for i, (_, score, pair, oanda, direction, *_rest) in enumerate(all_candidates):
         base, quote = pair_parts[pair]
@@ -1712,7 +1776,9 @@ def main():
 
     if conflict_idx:
         before = len(all_candidates)
-        all_candidates = [c for i, c in enumerate(all_candidates) if i not in conflict_idx]
+        all_candidates = [
+            c for i, c in enumerate(all_candidates) if i not in conflict_idx
+        ]
         logger.info(
             f"⚔️  After conflict resolution: {len(all_candidates)}/{before} remain "
             f"({before - len(all_candidates)} skipped)"

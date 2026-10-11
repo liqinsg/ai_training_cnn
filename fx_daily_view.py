@@ -2,6 +2,7 @@
 FX Daily Monte Carlo Calculator
 Runs simulation for a single forex pair, outputs summary or clean JSON.
 """
+
 import argparse
 import json
 import numpy as np
@@ -20,15 +21,21 @@ if not is_forex_market_open():
 parser = argparse.ArgumentParser()
 parser.add_argument("pair", help="e.g. EURUSD=X")
 parser.add_argument("--period", default="60d", help="Lookback period")
-parser.add_argument("--account-risk", type=float, default=0.01, help="Max risk per trade")
+parser.add_argument(
+    "--account-risk", type=float, default=0.01, help="Max risk per trade"
+)
 parser.add_argument("--sim", type=int, default=5000, help="Number of simulations")
 parser.add_argument("--json-out", action="store_true", help="Output only JSON data")
 args = parser.parse_args()
 
 YAHOO_TO_OANDA = {
-    "EURUSD=X": "EUR_USD", "GBPUSD=X": "GBP_USD", "EURJPY=X": "EUR_JPY",
-    "GBPJPY=X": "GBP_JPY", "AUDUSD=X": "AUD_USD", "USDJPY=X": "USD_JPY",
-    "USDCHF=X": "USD_CHF"
+    "EURUSD=X": "EUR_USD",
+    "GBPUSD=X": "GBP_USD",
+    "EURJPY=X": "EUR_JPY",
+    "GBPJPY=X": "GBP_JPY",
+    "AUDUSD=X": "AUD_USD",
+    "USDJPY=X": "USD_JPY",
+    "USDCHF=X": "USD_CHF",
 }
 oanda_sym = YAHOO_TO_OANDA.get(args.pair, args.pair.replace("=X", ""))
 
@@ -71,11 +78,15 @@ range_low = np.percentile(simulations, 5)
 range_high = np.percentile(simulations, 95)
 
 if args.json_out:
-    print(json.dumps({
-        "ann_drift": round(ann_drift, 2),
-        "ann_vol": round(ann_vol, 2),
-        "range_90": [round(range_low, 5), round(range_high, 5)]
-    }))
+    print(
+        json.dumps(
+            {
+                "ann_drift": round(ann_drift, 2),
+                "ann_vol": round(ann_vol, 2),
+                "range_90": [round(range_low, 5), round(range_high, 5)],
+            }
+        )
+    )
     raise SystemExit(0)
 
 msg = f"""📊 FX DAILY — {args.pair}

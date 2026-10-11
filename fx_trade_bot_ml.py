@@ -32,7 +32,9 @@ def ensure_model(
         needs_train = True
         logger.info("Model split artifacts not found. Training...")
     else:
-        age_days = (pd.Timestamp.now(tz="UTC").timestamp() - xgb_json.stat().st_mtime) / 86400
+        age_days = (
+            pd.Timestamp.now(tz="UTC").timestamp() - xgb_json.stat().st_mtime
+        ) / 86400
         if age_days > getattr(FEAT_CFG, "retrain_every_n_days", 30):
             needs_train = True
             logger.info(f"Model stale ({age_days:.1f} days). Retraining...")

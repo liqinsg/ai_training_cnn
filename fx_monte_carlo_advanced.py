@@ -8,6 +8,7 @@ Advanced FX Monte Carlo Simulator
 ✅ Clean Telegram Output
 ✅ JSON Export for Trading Bot
 """
+
 import argparse
 import json
 import numpy as np
@@ -66,18 +67,32 @@ def simulate_paths(last_price: float, returns: pd.Series, sims: int, horizon: in
 def detect_regime(percentile: float, drift: float, vol: float):
     """Auto market condition label"""
     if percentile >= 80:
-        return "⚠️ OVERBOUGHT | Strong Uptrend — Mean‑Reversion Risk High" if drift > 0 else "⚠️ OVERBOUGHT | Weak Trend — Reversal Likely"
+        return (
+            "⚠️ OVERBOUGHT | Strong Uptrend — Mean‑Reversion Risk High"
+            if drift > 0
+            else "⚠️ OVERBOUGHT | Weak Trend — Reversal Likely"
+        )
     elif percentile <= 20:
-        return "🔻 OVERSOLD | Strong Downtrend — Mean‑Reversion Risk High" if drift < 0 else "🔻 OVERSOLD | Weak Trend — Bounce Likely"
+        return (
+            "🔻 OVERSOLD | Strong Downtrend — Mean‑Reversion Risk High"
+            if drift < 0
+            else "🔻 OVERSOLD | Weak Trend — Bounce Likely"
+        )
     elif abs(drift) > 10 and vol < 8:
-        return "📈 STRONG UPTREND | Low Vol — Trend Continuation" if drift > 0 else "📉 STRONG DOWNTREND | Low Vol — Trend Continuation"
+        return (
+            "📈 STRONG UPTREND | Low Vol — Trend Continuation"
+            if drift > 0
+            else "📉 STRONG DOWNTREND | Low Vol — Trend Continuation"
+        )
     elif abs(drift) < 5 and vol > 12:
         return "↔️ RANGE‑BOUND | High Vol — Mean‑Revert Trade"
     else:
         return "⚖️ NEUTRAL | Balanced Risk — Await Breakout"
 
 
-def run_monte_carlo(symbol: str, period: str = DEFAULT_PERIOD, sims: int = DEFAULT_SIMS):
+def run_monte_carlo(
+    symbol: str, period: str = DEFAULT_PERIOD, sims: int = DEFAULT_SIMS
+):
     """Full MC simulation — returns all statistics"""
     print(f"📊 Fetching data: {symbol} | Period: {period}")
     close = fetch_price_data(symbol, period)
@@ -96,26 +111,22 @@ def run_monte_carlo(symbol: str, period: str = DEFAULT_PERIOD, sims: int = DEFAU
 
     # percentile_rank = float((pos / len(sorted_prices)) * 100)
 
-
     current_price = float(latest_close)
     range_90_low = float(range_90[0])
     range_90_high = float(range_90[1])
 
     percentile_rank = round(
-        ((current_price - range_90_low) / (range_90_high - range_90_low)) * 100,
-        1
+        ((current_price - range_90_low) / (range_90_high - range_90_low)) * 100, 1
     )
     # Hard guarantee — never goes outside 0–100%
     percentile_rank = max(0.0, min(100.0, percentile_rank))
 
     # ✅ CORRECT — always outputs 0.0–100.0%
     percentile_rank = round(
-        ((current_price - range_90_low) / (range_90_high - range_90_low)) * 100,
-        1
+        ((current_price - range_90_low) / (range_90_high - range_90_low)) * 100, 1
     )
     # Safety clamp — guarantees no out‑of‑range values ever
     percentile_rank = max(0.0, min(100.0, percentile_rank))
-
 
     p_up = float(np.mean(final_prices > last_price) * 100)
     p_down = float(np.mean(final_prices < last_price) * 100)
@@ -139,7 +150,7 @@ def run_monte_carlo(symbol: str, period: str = DEFAULT_PERIOD, sims: int = DEFAU
         "regime": regime,
         "period": period,
         "simulations": sims,
-        "risk": DEFAULT_RISK
+        "risk": DEFAULT_RISK,
     }
 
 
@@ -172,7 +183,19 @@ def build_telegram_report(results: list) -> str:
 # ==========================================
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("pairs", nargs="*", default=["EURUSD=X", "GBPUSD=X", "EURJPY=X", "GBPJPY=X", "AUDUSD=X", "USDJPY=X", "USDCHF=X"])
+    parser.add_argument(
+        "pairs",
+        nargs="*",
+        default=[
+            "EURUSD=X",
+            "GBPUSD=X",
+            "EURJPY=X",
+            "GBPJPY=X",
+            "AUDUSD=X",
+            "USDJPY=X",
+            "USDCHF=X",
+        ],
+    )
     parser.add_argument("--json-out", action="store_true")
     args = parser.parse_args()
 
@@ -182,7 +205,11 @@ if __name__ == "__main__":
             res = run_monte_carlo(pair)
             all_results.append(res)
             # Save per‑pair JSON for trading bot
-            out_path = Path(__file__).parent / "daily_results" / f"fx_mc_{pair.replace('=X', '')}_{datetime.now().strftime('%Y%m%d')}.json"
+            out_path = (
+                Path(__file__).parent
+                / "daily_results"
+                / f"fx_mc_{pair.replace('=X', '')}_{datetime.now().strftime('%Y%m%d')}.json"
+            )
             out_path.parent.mkdir(exist_ok=True)
             with open(out_path, "w") as f:
                 json.dump(res, f, indent=2)

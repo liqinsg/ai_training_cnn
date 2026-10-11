@@ -24,16 +24,26 @@ import oandapyV20
 
 api = oandapyV20.API(access_token=OANDA_API_TOKEN, environment=OANDA_ENV)
 
+
 # ==========================================
 # ⚙️ CONFIG
 # ==========================================
 def cfg(name, default):
     return getattr(config, name, default)
 
-PAIRS = cfg("DEFAULT_PAIRS", [
-    "EURUSD=X", "GBPUSD=X", "EURJPY=X", "GBPJPY=X",
-    "AUDUSD=X", "USDJPY=X", "USDCHF=X"
-])
+
+PAIRS = cfg(
+    "DEFAULT_PAIRS",
+    [
+        "EURUSD=X",
+        "GBPUSD=X",
+        "EURJPY=X",
+        "GBPJPY=X",
+        "AUDUSD=X",
+        "USDJPY=X",
+        "USDCHF=X",
+    ],
+)
 LOOKBACK_H4 = cfg("H4_LOOKBACK", 90)
 FORECAST_H4 = cfg("H4_FORECAST", 8)
 SIMULATIONS = cfg("MC_SIMULATIONS", 5000)
@@ -42,23 +52,30 @@ OANDA_GRANULARITY = "H4"
 RESULTS_DIR = BASE_DIR / "daily_results"
 RESULTS_DIR.mkdir(exist_ok=True)
 
+
 # ==========================================
 # 🛡️ MARKET STATUS CHECK
 # ==========================================
 def forex_market_closed():
     try:
         from oandapyV20.endpoints.instruments import InstrumentsCandles
-        resp = api.request(InstrumentsCandles(
-            instrument="EUR_USD", params={"count": 1, "granularity": OANDA_GRANULARITY}
-        ))
+
+        resp = api.request(
+            InstrumentsCandles(
+                instrument="EUR_USD",
+                params={"count": 1, "granularity": OANDA_GRANULARITY},
+            )
+        )
         return not bool(resp.get("candles"))
     except Exception:
         return False
+
 
 if forex_market_closed():
     print("⏸️ Market closed — skipping H4 MC run")
     send_telegram_message("⏸️ FX H4 MC: Market closed — skipped")
     raise SystemExit(0)
+
 
 # ==========================================
 # 📥 DATA FETCH — H4 / AUTO‑RESAMPLE
@@ -67,19 +84,23 @@ def fetch_h4_data(pair: str) -> pd.DataFrame:
     try:
         df = yf.download(pair, period="30d", interval="4h", progress=False)
         if len(df) >= LOOKBACK_H4:
-            return df[["Open","High","Low","Close"]].dropna()
+            return df[["Open", "High", "Low", "Close"]].dropna()
     except Exception:
         pass
     try:
         df = yf.download(pair, period="60d", interval="1h", progress=False)
         if df.empty:
             return pd.DataFrame()
-        return df[["Open","High","Low","Close"]].resample("4h").agg({
-            "Open":"first", "High":"max", "Low":"min", "Close":"last"
-        }).dropna()
+        return (
+            df[["Open", "High", "Low", "Close"]]
+            .resample("4h")
+            .agg({"Open": "first", "High": "max", "Low": "min", "Close": "last"})
+            .dropna()
+        )
     except Exception as e:
         print(f"❌ Data failed {pair}: {e}")
         return pd.DataFrame()
+
 
 # ==========================================
 # 🧠 H4 PROBABILITY ENGINE
@@ -103,13 +124,14 @@ def run_h4_mc(pair: str):
     paths[:, 0] = current
     for t in range(1, FORECAST_H4 + 1):
         z = np.random.normal(0, 1, SIMULATIONS)
-        paths[:, t] = paths[:, t-1] * np.exp(
-            (drift/periods_year - 0.5 * (vol**2)/periods_year) + (vol * np.sqrt(dt)) * z
+        paths[:, t] = paths[:, t - 1] * np.exp(
+            (drift / periods_year - 0.5 * (vol**2) / periods_year)
+            + (vol * np.sqrt(dt)) * z
         )
 
     final = paths[:, -1]
-    lower = float(np.percentile(final, (1 - CONFIDENCE)/2 * 100))
-    upper = float(np.percentile(final, (1 + CONFIDENCE)/2 * 100))
+    lower = float(np.percentile(final, (1 - CONFIDENCE) / 2 * 100))
+    upper = float(np.percentile(final, (1 + CONFIDENCE) / 2 * 100))
 
     percentile = round((np.sum(final <= current) / SIMULATIONS) * 100, 1)
     p_up = round((np.sum(final > current) / SIMULATIONS) * 100, 1)
@@ -144,8 +166,9 @@ def run_h4_mc(pair: str):
         "lookback_h4": LOOKBACK_H4,
         "forecast_h4": FORECAST_H4,
         "simulations": SIMULATIONS,
-        "generated_utc": datetime.now(timezone.utc).isoformat()
+        "generated_utc": datetime.now(timezone.utc).isoformat(),
     }, True
+
 
 # ==========================================
 # 📤 TELEGRAM REPORT
@@ -155,21 +178,26 @@ def build_h4_telegram(results: list) -> str:
     lines = [
         f"📊 **FX H4 MONTE CARLO UPDATE**",
         f"📅 Generated: {now}",
-        f"🔹 Lookback: {LOOKBACK_H4} H4 | Forecast: {FORECAST_H4} H4 | Sims: {SIMULATIONS}", ""
+        f"🔹 Lookback: {LOOKBACK_H4} H4 | Forecast: {FORECAST_H4} H4 | Sims: {SIMULATIONS}",
+        "",
     ]
     for r in results:
         dec = 3 if "JPY" in r["pair"] else 5
         lo, hi = r["range_90"]
-        lines.extend([
-            f"🔹 **{r['pair']}**",
-            f"   💵 Last H4 Close: `{r['current_price']}`",
-            f"   📊 Percentile: `{r['percentile_rank']}%`",
-            f"   🎯 UP: `{r['p_up_pct']}%` | DOWN: `{r['p_down_pct']}%`",
-            f"   📏 90% Band: `{lo}` – `{hi}`",
-            f"   🔍 Touch: Low `{r['touch_lower_pct']}%` | High `{r['touch_upper_pct']}%`",
-            f"   {r['regime']}", ""
-        ])
+        lines.extend(
+            [
+                f"🔹 **{r['pair']}**",
+                f"   💵 Last H4 Close: `{r['current_price']}`",
+                f"   📊 Percentile: `{r['percentile_rank']}%`",
+                f"   🎯 UP: `{r['p_up_pct']}%` | DOWN: `{r['p_down_pct']}%`",
+                f"   📏 90% Band: `{lo}` – `{hi}`",
+                f"   🔍 Touch: Low `{r['touch_lower_pct']}%` | High `{r['touch_upper_pct']}%`",
+                f"   {r['regime']}",
+                "",
+            ]
+        )
     return "\n".join(lines)
+
 
 # ==========================================
 # 🚀 MAIN RUN
@@ -185,7 +213,7 @@ def main():
             print(f"⚠️ Skipped {pair}")
             continue
         all_results.append(data)
-        safe = pair.replace("=X","").replace("=","_")
+        safe = pair.replace("=X", "").replace("=", "_")
         with open(RESULTS_DIR / f"h4_mc_{safe}_{now_str}.json", "w") as f:
             json.dump(data, f, indent=2)
         print(f"✅ Saved → h4_mc_{safe}_{now_str}.json")
@@ -194,8 +222,10 @@ def main():
         print("✅ Telegram report sent")
     print("✅ Run complete")
 
+
 if __name__ == "__main__":
-    try: main()
+    try:
+        main()
     except Exception as e:
         err = f"❌ H4 MC Error: {e}"
         print(err)

@@ -31,37 +31,79 @@ logging.getLogger("oandapyV20.oandapyV20").setLevel(_logging.WARNING)
 parser = argparse.ArgumentParser(
     description="FX Trading Bot v6.8.4 | PF-B Balanced (unified profile config)"
 )
-parser.add_argument("-p", "--profile", type=int, default=None,
-                    help="Profile number (1/2/3/4); compatible with --profile2 / --profile3")
-parser.add_argument("--profile2", action="store_true",
-                    help="Force Profile2 (shorthand for -p 2)")
-parser.add_argument("--profile3", action="store_true",
-                    help="Force Profile3 (shorthand for -p 3)")
-parser.add_argument("-a", "--account", type=str, default=None,
-                    help="Account number override (numeric index, e.g. '2' / '3' / '4')")
-parser.add_argument("-m", "--max-entries", type=int, default=None,
-                    help="Max signals to enter per cycle; overrides PROFILE's MAX_ENTRIES_THIS_RUN")
+parser.add_argument(
+    "-p",
+    "--profile",
+    type=int,
+    default=None,
+    help="Profile number (1/2/3/4); compatible with --profile2 / --profile3",
+)
+parser.add_argument(
+    "--profile2", action="store_true", help="Force Profile2 (shorthand for -p 2)"
+)
+parser.add_argument(
+    "--profile3", action="store_true", help="Force Profile3 (shorthand for -p 3)"
+)
+parser.add_argument(
+    "-a",
+    "--account",
+    type=str,
+    default=None,
+    help="Account number override (numeric index, e.g. '2' / '3' / '4')",
+)
+parser.add_argument(
+    "-m",
+    "--max-entries",
+    type=int,
+    default=None,
+    help="Max signals to enter per cycle; overrides PROFILE's MAX_ENTRIES_THIS_RUN",
+)
 parser.add_argument("--timeframe", type=str, default="15m", choices=["15m", "1H", "H4"])
 parser.add_argument("--confluence", action="store_true", default=None)
 parser.add_argument("--no-confluence", action="store_false", dest="confluence")
 parser.add_argument("--skip-mc", action="store_true")
 parser.add_argument("--mc-only", action="store_true")
-parser.add_argument("--live", action="store_true",
-                    help="Connect the LIVE real-money environment")
-parser.add_argument("--demo", "--dry-run", action="store_true", dest="dry_run", default=None,
-                    help="Force DRY-RUN — no mutating OANDA calls, orders are logged only")
-parser.add_argument("--no-dry-run", "--no-demo", action="store_false", dest="dry_run", default=None,
-                    help="Force EXECUTION — send orders to OANDA (overrides run.env DRY_RUN)")
-parser.add_argument("--lots", type=int, default=None,
-                    help="Override lot size / units per trade (overrides DEFAULT_LOT_SIZE from config)")
+parser.add_argument(
+    "--live", action="store_true", help="Connect the LIVE real-money environment"
+)
+parser.add_argument(
+    "--demo",
+    "--dry-run",
+    action="store_true",
+    dest="dry_run",
+    default=None,
+    help="Force DRY-RUN — no mutating OANDA calls, orders are logged only",
+)
+parser.add_argument(
+    "--no-dry-run",
+    "--no-demo",
+    action="store_false",
+    dest="dry_run",
+    default=None,
+    help="Force EXECUTION — send orders to OANDA (overrides run.env DRY_RUN)",
+)
+parser.add_argument(
+    "--lots",
+    type=int,
+    default=None,
+    help="Override lot size / units per trade (overrides DEFAULT_LOT_SIZE from config)",
+)
 # // FIX-2026-10-10: debug/dev escape hatch — run the full pipeline even when
 # the weekend/holiday guard says the market is closed.
-parser.add_argument("--ignore-market-closed", action="store_true",
-                    help="Skip the weekend/holiday guard and run the full pipeline (debug)")
+parser.add_argument(
+    "--ignore-market-closed",
+    action="store_true",
+    help="Skip the weekend/holiday guard and run the full pipeline (debug)",
+)
 # Optional bare positional profile number: `python fx_trade_bot_v684.py 2`.
 # nargs="?" keeps it optional so `python fx_trade_bot_v684.py` still works.
-parser.add_argument("profile_pos", nargs="?", type=int, default=None,
-                    help="Profile number as a bare positional (e.g. 2)")
+parser.add_argument(
+    "profile_pos",
+    nargs="?",
+    type=int,
+    default=None,
+    help="Profile number as a bare positional (e.g. 2)",
+)
 args = parser.parse_args()
 
 # ===== 1. 选择运行的配置方案 =====
@@ -510,11 +552,11 @@ def market_reopen_hint(now_utc=None):
 
     now = now_utc or datetime.now(timezone.utc)
     wd = now.weekday()
-    if wd == 4 and now.hour >= 21:            # Friday after 21:00 UTC
+    if wd == 4 and now.hour >= 21:  # Friday after 21:00 UTC
         days_ahead, why = 2, "weekend close (Friday)"
-    elif wd == 5:                              # Saturday
+    elif wd == 5:  # Saturday
         days_ahead, why = 1, "weekend (Saturday)"
-    elif wd == 6:                              # Sunday before open
+    elif wd == 6:  # Sunday before open
         days_ahead, why = 0, "weekend (Sunday, before open)"
     else:
         days_ahead, why = 0, "holiday / market closed"
