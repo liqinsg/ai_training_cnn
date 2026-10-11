@@ -1,0 +1,206 @@
+{
+  "version": "6.8.4",
+  "meta": {
+    "note": "Consolidated config: global defaults + profile overrides",
+    "source": "profiles_config.json + config_bot.py shared constants"
+  },
+  "global": {
+    "feature_settings": {
+      "USE_ATR": true,
+      "ATR_SL_MULT": 2.0,
+      "ATR_TP_MULT": 3.0,
+      "ATR_PERIOD": 14,
+      "USE_MACD": true,
+      "USE_RSI": true,
+      "USE_ADX": true,
+      "PREFER_YAHOO_DATA": true
+    },
+    "ml_settings": {
+      "MODEL_TYPE": "xgboost",
+      "TARGET_HORIZON": 6,
+      "TRAIN_LOOKBACK_BARS": 1500,
+      "XGB_BULLISH_THRESHOLD": 0.55
+    },
+    "timeframe": {
+      "MODE": "LEVEL10",
+      "YF_INTERVAL": "4h",
+      "YF_PERIOD_FULL": "30d",
+      "YF_PERIOD_RESAMPLE": "60d",
+      "YF_INTERVAL_D": "1d",
+      "YF_PERIOD_FULL_D": "120d",
+      "YF_PERIOD_RESAMPLE_D": "180d",
+      "PERIODS_YEAR_D": 252
+    },
+    "monte_carlo": {
+      "MC_REPORT_TITLE": "FX H4 MONTE CARLO",
+      "MC_REPORT_TITLE_D": "FX DAILY MONTE CARLO",
+      "MC_MAX_AGE_HOURS": 24,
+      "MC_SIMULATIONS": 5000,
+      "MC_CONFIDENCE": 0.90,
+      "SKIP_MC": false,
+      "H4_LOOKBACK": 90,
+      "H4_FORECAST": 8,
+      "DAILY_LOOKBACK": 90,
+      "DAILY_FORECAST": 5,
+      "MC_BAND_PCT": 90,
+      "MC_SIGNIFICANT_PCT": 60,
+      "MC_MOMENTUM_BAND": 0.001
+    },
+    "risk_trade": {
+      "DEFAULT_LOT_SIZE": 10000,
+      "SL_MIN_PIPS": 25,
+      "SL_MIN_PIPS_JPY": 35,
+      "SL_BUFFER_PIPS": 25,
+      "SL_MIN_DISTANCE_PIPS": 20,
+      "SL_FALLBACK_FIXED_PIPS": 35,
+      "SL_USE_ZONE_HIERARCHY": true,
+      "SL_H4_LOOKBACK_BARS": 6,
+      "SL_H8_LOOKBACK_BARS": 4,
+      "SL_DAILY_LOOKBACK_BARS": 2,
+      "SL_PAIR_FLOOR_OVERRIDES__NO_DGATE": {
+        "GBPJPY=X": 50
+      },
+      "SL_PAIR_FLOOR_OVERRIDES__DGATE": {}
+    },
+    "tp_trailing": {
+      "DYNAMIC_TP": false,
+      "TRAILING_TP": true,
+      "TP_RAISE_THRESHOLD_PIPS": 15,
+      "BE_TRIGGER_ATR_MULT": 1.5,
+      "TRAIL_TRIGGER_ATR_MULT": 2.5,
+      "TRAIL_ATR_MULT": 1.5,
+      "MAX_HOLD_BARS": 12
+    },
+    "confluence_filter": {
+      "MULTI_TF_CONFLUENCE": false,
+      "CONFLUENCE_REQUIRED_TFS": 2,
+      "STRENGTH_SIGNAL_BLOCK_THRESHOLD": 0.80,
+      "REQUIRE_DIRECTION_CONSENSUS": true,
+      "CONSENSUS_THRESHOLD": 2,
+      "ENFORCE_LONGS_SHORTS": true,
+      "MIN_PER_SIDE": 1,
+      "MAX_RATIO": 0.75,
+      "PREFER_BALANCED": true,
+      "TREND_FILTER_ENABLED": false,
+      "WEEK_EMA100_FILTER_ENABLED": false,
+      "RSI_DIRECTION_AWARE": true,
+      "SLOPE_DIAG": false
+    },
+    "adx_logic": {
+      "ADX_SCALE_FACTOR": 2.0,
+      "ADX_FLOOR_ENABLED": true,
+      "ADX_MIN_SCORE": 20.0,
+      "ADX_BOOST_ENABLED": true,
+      "ADX_BOOST_THRESHOLD": 30.0,
+      "ADX_BOOST_VALUE": 10.0
+    },
+    "d_gate_base": {
+      "D_GATE_BUFFER_PCT": 0.15,
+      "D_GATE_SHADOW": false,
+      "D_GATE_CONFIRM": "2H1",
+      "D_GATE_EMA_FAST": 20,
+      "D_GATE_EMA_SLOW": 50
+    },
+    "ranking_cooldown": {
+      "REMOVE_COOLDOWN": false,
+      "DEBUG_MODE": false,
+      "USE_TOP_PAIRS_ONLY": false,
+      "TOP_PAIRS_COUNT": 5,
+      "TOP_PAIRS_MIN_GAP": 1.5,
+      "MIN_SCORE_GAP": 0.50,
+      "TOP_N_CURRENCIES": 3,
+      "BASE_MIN_EDGE": 0.50,
+      "BASE_MIN_EDGE_ALT": 0.51,
+      "MIN_CONVICTION_SCORE_FALLBACK": 30.0,
+      "MIN_CONVICTION_SCORE_ALT": 45.0
+    },
+    "validation": {
+      "CONFIG_VALIDATION_ENABLED": true,
+      "CONFIG_TOLERANCE": 0.005
+    }
+  },
+  "profile_defaults": {
+    "MIN_GAP": 0.25,
+    "D_GATE_BUFFER_PCT": 0.15,
+    "D_GATE_CONFIRM": "2H1",
+    "MAX_ENTRIES_THIS_RUN": 3,
+    "TRAIL_ATR_MULT": 2.0,
+    "MAX_HOLD_BARS": 48,
+    "USE_TOP_PAIRS_ONLY": true
+  },
+  "profiles": {
+    "1": {
+      "NAME": "PF-A Trend-Focused",
+      "WEIGHTS": {
+        "S": 0.60,
+        "R": 0.10,
+        "A": 0.10,
+        "X": 0.12,
+        "M": 0.08
+      },
+      "MIN_CONVICTION": 50.0,
+      "MIN_GAP": 0.25,
+      "MIN_SLOPE": 0.0010,
+      "D_GATE_ENABLED": false,
+      "MAX_OPEN": 3,
+      "TOP_N": 3,
+      "ACCOUNT_SUFFIX": "002"
+    },
+    "2": {
+      "NAME": "PF-B Balanced",
+      "WEIGHTS": {
+        "S": 0.50,
+        "R": 0.15,
+        "A": 0.15,
+        "X": 0.12,
+        "M": 0.08
+      },
+      "MIN_CONVICTION": 45.0,
+      "MIN_GAP": 0.25,
+      "MIN_SLOPE": 0.0007,
+      "D_GATE_ENABLED": false,
+      "MAX_OPEN": 3,
+      "TOP_N": 3,
+      "ACCOUNT_SUFFIX": "002"
+    },
+    "3": {
+      "NAME": "PF-C Conservative",
+      "WEIGHTS": {
+        "S": 0.40,
+        "R": 0.20,
+        "A": 0.20,
+        "X": 0.12,
+        "M": 0.08
+      },
+      "MIN_CONVICTION": 55.0,
+      "MIN_GAP": 0.25,
+      "MIN_SLOPE": 0.0003,
+      "D_GATE_ENABLED": true,
+      "D_GATE_BUFFER_PCT": 0.15,
+      "D_GATE_CONFIRM": "2H1",
+      "MAX_OPEN": 2,
+      "TOP_N": 2,
+      "ACCOUNT_SUFFIX": "003"
+    },
+    "4": {
+      "NAME": "PF-D Structure/D-Gate",
+      "WEIGHTS": {
+        "S": 0.45,
+        "R": 0.10,
+        "A": 0.15,
+        "X": 0.20,
+        "M": 0.10
+      },
+      "MIN_CONVICTION": 42.0,
+      "MIN_GAP": 0.25,
+      "MIN_SLOPE": 0.0003,
+      "D_GATE_ENABLED": true,
+      "D_GATE_BUFFER_PCT": 0.15,
+      "D_GATE_CONFIRM": "2H1",
+      "MAX_OPEN": 3,
+      "TOP_N": 3,
+      "ACCOUNT_SUFFIX": "002",
+      "TP_MULTIPLIER": 1.0
+    }
+  }
+}

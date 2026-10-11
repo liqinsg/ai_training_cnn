@@ -19,6 +19,13 @@ from datetime import datetime, timezone
 # ─── BASE SETUP ──────────────────────────────────────────────────────────────
 BASE_DIR = Path(__file__).resolve().parent
 sys.path.extend([str(BASE_DIR), str(BASE_DIR / "utils")])
+# // FIX-2026-10-10: same treatment as v684 — oandapyV20 logs one
+# "setting up API-client for environment <env>" line per client constructed
+# (6x at import time, always "practice"). Silence it here and print ONE
+# consolidated line later, once the real environment is known.
+import logging as _logging
+
+logging.getLogger("oandapyV20.oandapyV20").setLevel(_logging.WARNING)
 
 # ─── FULL ARGPARSE FIRST (so --help exits before any config import) ──────────
 parser = argparse.ArgumentParser(
@@ -47,50 +54,35 @@ parser.add_argument("--no-dry-run", "--no-demo", action="store_false", dest="dry
                     help="Force EXECUTION — send orders to OANDA (overrides run.env DRY_RUN)")
 parser.add_argument("--lots", type=int, default=None,
                     help="Override lot size / units per trade (overrides DEFAULT_LOT_SIZE from config)")
+# // FIX-2026-10-10: debug/dev escape hatch — run the full pipeline even when
+# the weekend/holiday guard says the market is closed.
+parser.add_argument("--ignore-market-closed", action="store_true",
+                    help="Skip the weekend/holiday guard and run the full pipeline (debug)")
+# // FIX-2026-10-10: bare positional profile number, e.g. `python fx_trade_bot_v683.py 2`.
+# Without this, argparse rejected the positional with "unrecognized arguments: 2".
+parser.add_argument("profile_pos", nargs="?", type=int, default=None,
+                    help="Profile number as a bare positional (e.g. 2)")
 args = parser.parse_args()
 
 # ── Profile Selection ──────────────────────────────────
-# Resolution order: -p N  >  --profile2 / --profile3  >  default = 1
+# // FIX-2026-10-10: aligned with v684. The former if/elif hardcoded
+# PROFILE_LABEL/PROFILE_NAME and ignored config_profile.json entirely, so the
+# banner and the runtime values could disagree. Resolution order is now:
+#   -p N  >  --profile3 / --profile2  >  bare positional N  >  default 1
+# (Default stays 1 here, matching v683's historical behaviour; v684 defaults 2.)
 if args.profile is not None:
     profile_id = args.profile
 elif args.profile3:
     profile_id = 3
 elif args.profile2:
     profile_id = 2
+elif getattr(args, "profile_pos", None) is not None:
+    profile_id = args.profile_pos
 else:
     profile_id = 1
 
-if profile_id == 1:
-    PROFILE_LABEL = "PROFILE1"
-    PROFILE_NAME = "profile1"
-    COOLDOWN_FILE = BASE_DIR / "cooldown_profile1.json"
-    RESULTS_DIR = BASE_DIR / "daily_results_profile1"
-    print("✅ PROFILE1 loaded (PF-A Trend-Focused)")
-elif profile_id == 2:
-    PROFILE_LABEL = "PROFILE2"
-    PROFILE_NAME = "profile2"
-    COOLDOWN_FILE = BASE_DIR / "cooldown_profile2.json"
-    RESULTS_DIR = BASE_DIR / "daily_results_profile2"
-    print("✅ PROFILE2 loaded (PF-B Balanced)")
-elif profile_id == 3:
-    PROFILE_LABEL = "PROFILE3"
-    PROFILE_NAME = "profile3"
-    COOLDOWN_FILE = BASE_DIR / "cooldown_profile3.json"
-    RESULTS_DIR = BASE_DIR / "daily_results_profile3"
-    print("✅ PROFILE3 loaded (PF-C Conservative)")
-elif profile_id == 4:
-    PROFILE_LABEL = "PROFILE4"
-    PROFILE_NAME = "profile4"
-    COOLDOWN_FILE = BASE_DIR / "cooldown_profile4.json"
-    RESULTS_DIR = BASE_DIR / "daily_results_profile4"
-    print("✅ PROFILE4 loaded (PF-D Structure/D-Gate)")
-else:
-    print(f"⚠️ Invalid profile {profile_id}, defaulting to PROFILE1")
-    profile_id = 1
-    PROFILE_LABEL = "PROFILE1"
-    PROFILE_NAME = "profile1"
-    COOLDOWN_FILE = BASE_DIR / "cooldown_profile1.json"
-    RESULTS_DIR = BASE_DIR / "daily_results_profile1"
+# PROFILE_ID mirrors profile_id for parity with v684 / config_bot API.
+PROFILE_ID = profile_id
 
 # ─── NOW import config (delayed so --help works first) ───────────────────────
 import numpy as np
@@ -98,7 +90,17 @@ import pandas as pd
 import config_bot
 import config
 
-# ─── UNIFIED PROFILE LOADER ───────────────────────────────────────────────────
+# ─── PROFILE_BUNDLE + UNIFIED PROFILE LOADER ────────────────────────────────
+# // FIX-2026-10-10: PROFILE_NAME (safe internal key "profile3") and
+# PROFILE_LABEL (display name from config_profile.json, e.g. "PF-C Conservative")
+# are now sourced from the unified config instead of being hardcoded, matching
+# v684. TREND_TP_CONFIG / log filenames rely on the two staying distinct.
+_cfg_bundle = config_bot.get_profile(profile_id)
+PROFILE_LABEL = _cfg_bundle["PROFILE_LABEL"]
+PROFILE_NAME = f"profile{profile_id}"
+COOLDOWN_FILE = BASE_DIR / f"cooldown_{PROFILE_NAME}.json"
+RESULTS_DIR = BASE_DIR / f"daily_results_{PROFILE_NAME}"
+
 P = config_bot.get_profile(profile_id)
 
 WEIGHTS = P['WEIGHTS']
@@ -107,6 +109,21 @@ MAX_OPEN = P['MAX_OPEN']
 MAX_ENTRIES_THIS_RUN = P['MAX_ENTRIES_THIS_RUN']
 MIN_CONVICTION = P['MIN_CONVICTION']
 MIN_GAP = P['MIN_GAP']
+# // FIX-2026-10-10: expose the profile's declared slope threshold so the
+# TREND_TP_CONFIG override below can honour config_profile.json (v684 parity).
+MIN_SLOPE = P['MIN_SLOPE']
+
+# // FIX-2026-10-10: startup confirmation banner, identical in shape to v684, so
+# both versions print the same effective (JSON-backed) values. Previously v683
+# printed hardcoded PROFILE1..4 labels and no weight/threshold summary.
+print("=" * 50)
+print(f"🚀 FX Bot v{_cfg_bundle['VERSION']} | {PROFILE_NAME}")
+print(f"⚖️  权重: S={P['W_S']:.2f} R={P['W_R']:.2f} A={P['W_A']:.2f} "
+      f"X={P['W_X']:.2f} M={P['W_M']:.2f}")
+print(f"🔧 D-Gate={P['D_GATE_ENABLED']} | 最低置信={MIN_CONVICTION} | "
+      f"斜率门槛={MIN_SLOPE}")
+print(f"✅ 配置来源: config_profile.json — Profile{profile_id}")
+print("=" * 50)
 D_GATE_ENABLED = P['D_GATE_ENABLED']
 D_GATE_BUFFER_PCT = P['D_GATE_BUFFER_PCT']
 D_GATE_SHADOW = P['D_GATE_SHADOW']
@@ -217,7 +234,16 @@ _TREND_TP_CONFIG = {
     "mc_strong_threshold": 0.625,  # ⚠️ 🔒 LOCKED: mc_pct_up ≥ 62.5% triggers STRONG ×2 TP (NOT 75%)
     "weekly_ema_period": 100,
     "ema100_buffer_pips": 30,
+    "profile1": {
+        # Family = non-DGATE (same as profile2): strict slope filter, D-GATE OFF.
+        "tp_normal_mult": 1.0,
+        "tp_strong_mult": 2.0,
+        "ema_period": 10,
+        "slope_lookback": 5,
+        "min_slope": 0.001,
+    },
     "profile2": {
+        # Family = non-DGATE: strict slope filter, D-GATE OFF.
         "tp_normal_mult": 1.0,
         "tp_strong_mult": 2.0,
         "ema_period": 10,
@@ -225,6 +251,8 @@ _TREND_TP_CONFIG = {
         "min_slope": 0.001,
     },
     "profile3": {
+        # Family = DGATE-enabled (same as profile4): widened slope rung because
+        # D-GATE already filters direction; slope filter must not double-block.
         # Same MC-adaptive TP as profile2 (Strategy = identical).
         "tp_normal_mult": 1.0,
         "tp_strong_mult": 2.0,
@@ -241,6 +269,16 @@ _TREND_TP_CONFIG = {
         # accumulated (target >= 20) AND those signals' outcomes are known.
         # Never advance on elapsed time alone: with would_flip rows near zero
         # there is no statistical basis for the change either way.
+        "min_slope_rung": 0.0003,
+    },
+    "profile4": {
+        # Family = DGATE-enabled (same as profile3): widened slope rung mirrors
+        # profile3's rationale — D-GATE already filters direction, so slope
+        # filter must not double-block.
+        "tp_normal_mult": 1.0,
+        "tp_strong_mult": 2.0,
+        "ema_period": 10,
+        "slope_lookback": 5,
         "min_slope_rung": 0.0003,
     },
 }
@@ -434,6 +472,35 @@ def d_gate_allows(pair_direction: str, trade_direction: str) -> bool:
     return True
 
 
+# // FIX-2026-10-10: report WHY we exit and WHEN trading resumes. This helper
+# does NOT change the closed/open rule (utils.trading_core.forex_market_closed);
+# it only renders the reason and the next-open instant.
+def market_reopen_hint(now_utc=None):
+    """Return (reason, reopen_datetime, weekday_label) for the next FX open.
+
+    FX reopens Sunday 21:00 UTC (22:00 London). Sunday 21:00 UTC is also the
+    Monday-session open, hence the "Mon 06:00 UTC" style label.
+    """
+    from datetime import timedelta
+
+    now = now_utc or datetime.now(timezone.utc)
+    wd = now.weekday()
+    if wd == 4 and now.hour >= 21:
+        days_ahead, why = 2, "weekend close (Friday)"
+    elif wd == 5:
+        days_ahead, why = 1, "weekend (Saturday)"
+    elif wd == 6:
+        days_ahead, why = 0, "weekend (Sunday, before open)"
+    else:
+        days_ahead, why = 0, "holiday / market closed"
+
+    reopen = (now + timedelta(days=days_ahead)).replace(
+        hour=21, minute=0, second=0, microsecond=0
+    )
+    day = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"][reopen.weekday()]
+    return why, reopen, day
+
+
 def resolve_weekly_ema100(cached_ema, filter_enabled):
     """Return the Weekly EMA100 level to filter on, or None to skip that filter.
 
@@ -599,7 +666,10 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
     handlers=[
-        logging.FileHandler(BASE_DIR / f"bot_{PROFILE_LABEL.lower()}.log"),
+        # // FIX-2026-10-10: use PROFILE_NAME ("profile3"), not PROFILE_LABEL:
+        # display labels such as "PF-D Structure/D-Gate" contain "/" and would
+        # be treated as a path separator, causing FileNotFoundError.
+        logging.FileHandler(BASE_DIR / f"bot_{PROFILE_NAME}.log"),
         logging.StreamHandler(sys.stdout),
     ],
 )
@@ -607,7 +677,13 @@ logger = logging.getLogger(__name__)
 
 # ─── CONSOLIDATED STRATEGY CONSTANTS ─────────────────────────────────────────
 TREND_TP_CONFIG = cfg("TREND_TP_CONFIG", _TREND_TP_CONFIG)
-ACTIVE_MIN_SLOPE = resolve_min_slope(TREND_TP_CONFIG.get(PROFILE_NAME, {}), PROFILE_NAME)
+# // FIX-2026-10-10: config_profile.json is the single source of truth for
+# MIN_SLOPE. Overwrite the active profile's slope knob with the declared value
+# (e.g. Profile3 = 0.0003) so the hardcoded 0.001 fallback cannot silently win.
+_profile_slope_cfg = TREND_TP_CONFIG.setdefault(PROFILE_NAME, {})
+_profile_slope_cfg.pop("min_slope_rung", None)
+_profile_slope_cfg["min_slope"] = MIN_SLOPE
+ACTIVE_MIN_SLOPE = resolve_min_slope(_profile_slope_cfg, PROFILE_NAME)
 logger.info(
     f"🪜 MIN_SLOPE LADDER: active rung={ACTIVE_MIN_SLOPE} "
     f"(ladder {MIN_SLOPE_LADDER}, widest first; last entry = original strictest)"
@@ -647,6 +723,8 @@ ADX_BOOST_ENABLED = cfg_bot("ADX_BOOST_ENABLED", True)
 ADX_BOOST_THRESHOLD = cfg_bot("ADX_BOOST_THRESHOLD", 30.0)
 ADX_BOOST_VALUE = cfg_bot("ADX_BOOST_VALUE", 10.0)
 
+# // FIX-2026-10-10: seed WEIGHT_* from the active profile so the scoring path
+# uses the JSON weights instead of the legacy 0.40/0.20 fallbacks (v684 parity).
 W_S = cfg_bot("WEIGHT_STRENGTH", 0.40)
 W_R = cfg_bot("WEIGHT_RSI", 0.15)
 W_A = cfg_bot("WEIGHT_ADX", 0.15)
@@ -797,6 +875,13 @@ else:
 _ACCT_SUFFIX = OANDA_ACCOUNT_ID.split("-")[-1] if "-" in OANDA_ACCOUNT_ID else OANDA_ACCOUNT_ID
 _ENV_LABEL = "LIVE" if LIVE_MODE else "DEMO"
 ACCOUNT_NAME = f"{_ENV_LABEL} Account {_ACCT_SUFFIX}"
+
+# // FIX-2026-10-10: single consolidated replacement for the 6 chatter lines the
+# third-party logger used to emit (and which always claimed "practice").
+logger.info(
+    f"🌐 OANDA API client: environment={_prof['env']} | "
+    f"account={OANDA_ACCOUNT_ID} | ({_ENV_LABEL})"
+)
 
 # ── 2) Execution gate: CLI (--dry-run / --no-dry-run) > run.env DRY_RUN > default(true)
 # Requirement #2: "--dry-run和账号没有关系。跑完全程只是不操作OANDA的
@@ -1164,8 +1249,26 @@ def main():
     )
     logger.info(f"🔑 OANDA Account ID: {OANDA_ACCOUNT_ID}")
 
+    # // FIX-2026-10-10: report the reason + next open instead of a silent return.
     if forex_market_closed():
-        return
+        if args.ignore_market_closed:
+            logger.warning(
+                "📅 Market is CLOSED (weekend/holiday) but --ignore-market-closed "
+                "was given → continuing full pipeline (debug mode)."
+            )
+        else:
+            why, reopen, day = market_reopen_hint()
+            logger.info(
+                f"📅 Market closed ({why}) → exiting early. "
+                f"Forex reopens: {day} 06:00 UTC "
+                f"(= {reopen.strftime('%Y-%m-%d %H:%M')} UTC Sunday-open). "
+                f"Use --ignore-market-closed to run the pipeline anyway."
+            )
+            
+            
+            
+            
+            return
 
     model_wrapper, strat_engine = ensure_model(
         MODEL_PATH,
