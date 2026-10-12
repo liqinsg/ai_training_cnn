@@ -263,6 +263,16 @@ from fx_trade_bot_utils import (
     DynamicPositionManager,
     load_mc_legacy,
     PositionStatus,
+    REASON_TAKE_PROFIT,
+    REASON_TRAIL_STOP,
+    REASON_TIME_EXPIRY,
+    REASON_DIRECTION_FLIP,
+    REASON_SCORE_DROP,
+    REASON_MC_SHIFT,
+    REASON_MAX_DRAWDOWN,
+    REASON_REBALANCE,
+    REASON_USER_MANUAL,
+    REASON_OTHER,
 )
 from fx_trade_bot_mc import MCGenerator, MCConfig
 from fx_trade_bot_ml import ensure_model
@@ -275,8 +285,10 @@ from config_oanda import (
     OANDA_ACCOUNT_ID_2_LIVE,
     OANDA_ACCOUNT_ID_3_LIVE,
     OANDA_ACCOUNT_ID_4_LIVE,
+    OANDA_ACCOUNT_ID_DEMO_1,
     OANDA_ACCOUNT_ID_DEMO_2,
     OANDA_ACCOUNT_ID_DEMO_3,
+    OANDA_ACCOUNT_ID_DEMO_4,
 )
 
 # ─── TREND FILTER + SMART TP CONFIGURATION ──────────────────────────────────
@@ -908,64 +920,51 @@ MODE = cfg_bot("MODE", "LEVEL10")
 TIMEFRAME = args.timeframe
 
 # ── 1) Broker account selection driven SOLELY by --live (never by --dry-run)
-# Requirement #1: "没有--live永远是demo账号"
-# Rules:
-#   Demo (no --live): keep legacy — profile2→DEMO_2, profile3→DEMO_3.
-#   --live:
-#       -a N explicitly given (N ∈ {1,2,3,4}) → use LIVE_ACCOUNTS[N],
-#         OVERRIDING the account bound to the selected profile.
-#       no -a → fall back to the profile's own live account.
 LIVE_ACCOUNTS = {
     1: OANDA_ACCOUNT_ID_1_LIVE,
     2: OANDA_ACCOUNT_ID_2_LIVE,
     3: OANDA_ACCOUNT_ID_3_LIVE,
     4: OANDA_ACCOUNT_ID_4_LIVE,
 }
-PROFILE_DEFAULT_LIVE = {
-    2: OANDA_ACCOUNT_ID_2_LIVE,
-    3: OANDA_ACCOUNT_ID_3_LIVE,
+DEMO_ACCOUNTS = {
+    1: OANDA_ACCOUNT_ID_DEMO_1,
+    2: OANDA_ACCOUNT_ID_DEMO_2,
+    3: OANDA_ACCOUNT_ID_DEMO_3,
+    4: OANDA_ACCOUNT_ID_DEMO_4,
 }
 LIVE_MODE = bool(args.live)  # False = Practice/Demo; True = LIVE
-if LIVE_MODE:
-    _prof = get_oanda_profile("live")
-    api = _prof["oanda_client"]
-    _override = None
-    if args.account is not None:
-        try:
-            _cli_idx = int(args.account)
-            if _cli_idx in LIVE_ACCOUNTS:
-                _override = LIVE_ACCOUNTS[_cli_idx]
-        except ValueError:
-            pass
-    if _override is not None:
-        OANDA_ACCOUNT_ID = _override
-        logger.info(
-            f"🔴 LIVE: -a {args.account} EXPLICIT override → "
-            f"{OANDA_ACCOUNT_ID} (profile={PROFILE_NAME}, "
-            f"default would be {PROFILE_DEFAULT_LIVE.get(profile_id, '?')})"
+if args.account is not None:
+    try:
+        _account_index = int(args.account)
+    except ValueError:
+        parser.error(
+            f"-a/--account must be an account number from 1 to 4; got {args.account!r}"
         )
-    else:
-        OANDA_ACCOUNT_ID = PROFILE_DEFAULT_LIVE[profile_id]
-        logger.info(
-            f"🔴 LIVE: no explicit -a → profile{profile_id} default → "
-            f"{OANDA_ACCOUNT_ID}"
-        )
+    _account_map = LIVE_ACCOUNTS if LIVE_MODE else DEMO_ACCOUNTS
+    _account_override = _account_index
 else:
-    _prof = get_oanda_profile("practice")
-    api = _prof["oanda_client"]
-    OANDA_ACCOUNT_ID = (
-        OANDA_ACCOUNT_ID_DEMO_3
-        if PROFILE_NAME == "profile3"
-        else OANDA_ACCOUNT_ID_DEMO_2
+    _account_map = None
+    _account_override = None
+try:
+    OANDA_ACCOUNT_ID, _account_source = C.resolve_account_id(
+        PROFILE_ID,
+        LIVE_MODE,
+        account_override=_account_override,
+        indexed_accounts=_account_map,
     )
-    logger.info(
-        f"🧪 PRACTICE/DEMO ENVIRONMENT (no --live) | Account: {OANDA_ACCOUNT_ID}"
-    )
+except ValueError as exc:
+    parser.error(str(exc))
+
+_ENV_LABEL = "LIVE" if LIVE_MODE else "DEMO"
+logger.info(f"⚙️ Profile: {PROFILE_ID}")
+logger.info(f"🔑 Account: {_account_source} → {OANDA_ACCOUNT_ID} [{_ENV_LABEL}]")
+
+_prof = get_oanda_profile("live" if LIVE_MODE else "practice")
+api = _prof["oanda_client"]
 
 _ACCT_SUFFIX = (
     OANDA_ACCOUNT_ID.split("-")[-1] if "-" in OANDA_ACCOUNT_ID else OANDA_ACCOUNT_ID
 )
-_ENV_LABEL = "LIVE" if LIVE_MODE else "DEMO"
 ACCOUNT_NAME = f"{_ENV_LABEL} Account {_ACCT_SUFFIX}"
 
 # // FIX-2026-10-10: single consolidated replacement for the 6 chatter lines the
@@ -1555,9 +1554,10 @@ def main():
     # Step 5 — Dynamic Exit Manager
     logger.info("[STEP 5] Dynamic Exit Manager...")
 
-    def close_wrap(instr):
+    def close_wrap(instr, reason_code=None, detail_msg=""):
         return close_position(
-            api, OANDA_ACCOUNT_ID, instr, send_telegram_message, dry_run=DRY_RUN_MODE
+            api, OANDA_ACCOUNT_ID, instr, send_telegram_message, dry_run=DRY_RUN_MODE,
+            reason_code=reason_code, detail_msg=detail_msg,
         )
 
     dyn_mgr = DynamicPositionManager(
@@ -1609,10 +1609,11 @@ def main():
     min_sl_pips_jpy, min_sl_pips_std = cfg_bot("MIN_SL_PIPS_JPY", 35), cfg_bot(
         "MIN_SL_PIPS", 25
     )
-    trade_lines, pip_cache, pair_parts = (
+    trade_lines, pip_cache, pair_parts, _open_reasons = (
         {},
         {p: pip_size(p) for p in selected_pairs},
         {p: (p[:3], p[3:].replace("=X", "")) for p in selected_pairs},
+        {},
     )
     all_candidates = []
 
@@ -1769,6 +1770,22 @@ def main():
             else round(current - smart_tp_pips * pip_cache[pair], dec)
         )
 
+        d_gate_label = (
+            D_GATE_DIRECTIONS.get(pair, D_GATE_BOTH)
+            if D_GATE_ENABLED else "N/A"
+        )
+        xgb_score = (
+            getattr(sig, "probability", None)
+            or getattr(sig, "model_prob", None)
+            or getattr(sig, "prob", None)
+            or 0.0
+        )
+        _open_reasons[pair] = (
+            f"STRENGTH_GAP={abs(gap):.2f} | XGB_SCORE={xgb_score:.2f} | "
+            f"MC_P_UP={mc_pct_up:.0f}% | D-GATE={d_gate_label} | "
+            f"FINAL={w['FINAL']:.2f}"
+        )
+
         all_candidates.append(
             (
                 -w["FINAL"],
@@ -1861,12 +1878,21 @@ def main():
             continue
 
         if DRY_RUN_MODE:
+            _r = _open_reasons.get(pair, "UNKNOWN")
+            logger.info(
+                f"✅ OPEN {pair} {direction} lots={DEFAULT_LOT_SIZE} → {_r}"
+            )
             logger.info(
                 f"🧪 [DRY-RUN] SIGNAL {pair} {direction} | "
                 f"SL={sl_price} | TP={tp_price} | Score={FINAL:.1f} — NO ORDER SENT"
             )
             trade_lines[pair] = (
-                f"🧪 [DRY-RUN] {pair} {direction} Score={FINAL:.1f} | SL={sl_price} TP={tp_price}"
+                f"✅ {pair} {direction} Score={FINAL:.1f} | SL={sl_price} TP={tp_price}\n"
+                f"└─ {_r}\n🧪 DRY-RUN"
+            )
+            send_telegram_message(
+                f"✅ OPEN {pair} {direction} lots={DEFAULT_LOT_SIZE}\n"
+                f"└─ {_r}\n🧪 DRY-RUN (no real order)"
             )
             entries_this_run += 1
             open_pos_count += 1
@@ -1886,23 +1912,38 @@ def main():
             )
             status = resp.get("status", "UNKNOWN")
             tid = resp.get("trade_id", "") or "?"
+            _r = _open_reasons.get(pair, "UNKNOWN")
 
             if status == "OK":
                 logger.info(
                     f"✅ EXECUTED {pair} {direction} | SL={sl_price} | TP={tp_price} | TradeID={tid}"
                 )
+                logger.info(f"✅ OPEN {pair} {direction} lots={DEFAULT_LOT_SIZE} → {_r}")
                 trade_lines[pair] = (
-                    f"✅ {pair} {direction} Score={FINAL:.1f} | SL={sl_price} TP={tp_price}"
+                    f"✅ {pair} {direction} Score={FINAL:.1f} | SL={sl_price} TP={tp_price}\n"
+                    f"└─ {_r}"
+                )
+                send_telegram_message(
+                    f"✅ OPEN {pair} {direction} lots={DEFAULT_LOT_SIZE} | TradeID={tid}\n"
+                    f"└─ {_r}"
                 )
                 entries_this_run += 1
                 open_pos_count += 1
                 executed_in_this_run.add(oanda)
             elif status == "DRY_RUN":
                 logger.info(
+                    f"✅ OPEN {pair} {direction} lots={DEFAULT_LOT_SIZE} → {_r}"
+                )
+                logger.info(
                     f"🧪 DRY_RUN {pair} {direction} | SL={sl_price} | TP={tp_price} — validated, no API call"
                 )
                 trade_lines[pair] = (
-                    f"🧪 [DRY_RUN] {pair} {direction} Score={FINAL:.1f} | SL={sl_price} TP={tp_price}"
+                    f"✅ {pair} {direction} Score={FINAL:.1f} | SL={sl_price} TP={tp_price}\n"
+                    f"└─ {_r}\n🧪 DRY-RUN"
+                )
+                send_telegram_message(
+                    f"✅ OPEN {pair} {direction} lots={DEFAULT_LOT_SIZE}\n"
+                    f"└─ {_r}\n🧪 DRY-RUN (no real order)"
                 )
                 entries_this_run += 1
                 open_pos_count += 1

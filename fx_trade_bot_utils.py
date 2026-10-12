@@ -22,6 +22,25 @@ from oandapyV20.endpoints.transactions import TransactionsSinceID
 logger = logging.getLogger(__name__)
 
 
+REASON_TAKE_PROFIT = "TAKE_PROFIT"
+REASON_TRAIL_STOP = "TRAIL_STOP"
+REASON_TIME_EXPIRY = "TIME_EXPIRY"
+REASON_DIRECTION_FLIP = "DIRECTION_FLIP"
+REASON_SCORE_DROP = "SCORE_DROP"
+REASON_MC_SHIFT = "MC_SHIFT"
+REASON_MAX_DRAWDOWN = "MAX_DRAWDOWN"
+REASON_REBALANCE = "REBALANCE"
+REASON_USER_MANUAL = "USER_MANUAL"
+REASON_OTHER = "OTHER"
+
+_VALID_REASON_CODES = {
+    REASON_TAKE_PROFIT, REASON_TRAIL_STOP, REASON_TIME_EXPIRY,
+    REASON_DIRECTION_FLIP, REASON_SCORE_DROP, REASON_MC_SHIFT,
+    REASON_MAX_DRAWDOWN, REASON_REBALANCE, REASON_USER_MANUAL,
+    REASON_OTHER,
+}
+
+
 # ============================================================================
 # CONSTANTS & HELPERS
 # ============================================================================
@@ -199,9 +218,13 @@ def close_position(
     instrument: str,
     telegram_send=None,
     dry_run: bool = False,
+    reason_code: str | None = None,
+    detail_msg: str = "",
 ):
-    """Close position — with MARKET_HALTED SKIP."""
-    # ── NEW: Skip if market halted ──
+    reason_code = reason_code if reason_code in _VALID_REASON_CODES else REASON_OTHER
+    reason_header = f"📤 {reason_code}"
+    reason_body = f" | {detail_msg}" if detail_msg else ""
+
     if not can_trade(api, oanda_account_id, instrument):
         logger.info(f"⏭️ [SKIP CLOSE] {instrument}: MARKET_HALTED / not tradeable")
         return True
@@ -218,6 +241,13 @@ def close_position(
                 f"🧪 DRY_RUN CLOSE {instrument}: {units} units @ would close "
                 f"(dry_run=True, no OANDA OrderCreate write call issued)"
             )
+            logger.info(f"📤 CLOSE {instrument} → {reason_code}{reason_body}")
+            if telegram_send:
+                telegram_send(
+                    f"📤 CLOSED: {instrument}\n└─ Reason: {reason_code}"
+                    + (f" — {detail_msg}" if detail_msg else "")
+                    + "\n🧪 DRY-RUN (no real order)"
+                )
             return True
         resp = api.request(
             OrderCreate(
@@ -233,16 +263,22 @@ def close_position(
             )
         )
         if "orderCancelTransaction" in resp:
-            reason = resp["orderCancelTransaction"].get("reason", "UNKNOWN")
-            logger.error(f"❌ Close CANCELLED {instrument}: {reason}")
-            _detect_and_cache_halt(instrument, {"reason": reason})
+            cancel_reason = resp["orderCancelTransaction"].get("reason", "UNKNOWN")
+            logger.error(f"❌ Close CANCELLED {instrument}: {cancel_reason}")
+            _detect_and_cache_halt(instrument, {"reason": cancel_reason})
             return False
         if "orderFillTransaction" in resp:
+            fill_price = resp["orderFillTransaction"].get("price", "?")
             logger.info(
-                f"✅ Closed {instrument} @ {resp['orderFillTransaction'].get('price', '?')}"
+                f"✅ Closed {instrument} @ {fill_price}"
             )
+            logger.info(f"📤 CLOSE {instrument} → {reason_code}{reason_body}")
             if telegram_send:
-                telegram_send(f"🔄 CLOSED: {instrument}")
+                telegram_send(
+                    f"📤 CLOSED: {instrument}\n└─ Reason: {reason_code}"
+                    + (f" — {detail_msg}" if detail_msg else "")
+                    + f"\n💵 Fill @ {fill_price}"
+                )
             return True
         else:
             logger.warning(f"⚠️ Close response unexpected keys: {list(resp.keys())}")
@@ -576,15 +612,19 @@ def update_order_tp(
     new_tp_price,
     send_telegram=None,
     dry_run: bool = False,
+    old_tp_price=None,
+    update_reason: str = "DYNAMIC_TP",
 ):
     """Update TP — SKIP if market halted."""
-    # ── NEW: Skip if market halted ──
     if not can_trade(api, account_id, instrument):
         logger.info(f"⏭️ [SKIP TP-UPDATE] {instrument}: MARKET_HALTED")
         return {"ok": False, "status": "SKIPPED", "reason": "MARKET_HALTED"}
 
     dec = price_decimals(instrument)
     new_tp_str = f"{float(new_tp_price):.{dec}f}"
+    old_tp_str = (
+        f"{float(old_tp_price):.{dec}f}" if old_tp_price is not None else "None"
+    )
     data = {"takeProfit": {"price": new_tp_str, "timeInForce": "GTC"}}
 
     if dry_run:
@@ -592,8 +632,15 @@ def update_order_tp(
             f"🧪 DRY_RUN TP UPDATE {instrument}: would set takeProfit → {new_tp_str} "
             f"(no TradeCRCDO write sent)"
         )
+        logger.info(
+            f"🔄 UPDATE {instrument} → TP_REVISED: {old_tp_str} → {new_tp_str} | {update_reason}"
+        )
         if send_telegram:
-            send_telegram(f"🧪 DRY-RUN would TP UPDATED {instrument} → {new_tp_str}")
+            send_telegram(
+                f"🔄 UPDATE TP: {instrument}\n"
+                f"└─ {old_tp_str} → {new_tp_str} | {update_reason}\n"
+                f"🧪 DRY-RUN (no real order)"
+            )
         return {"ok": True, "status": "DRY_RUN", "new_tp": new_tp_price, "txid": ""}
 
     try:
@@ -602,10 +649,14 @@ def update_order_tp(
         )
         if "takeProfitOrderTransaction" in resp:
             txid = resp["takeProfitOrderTransaction"]["id"]
-            msg = f"✅ TP UPDATED {instrument} → {new_tp_str}"
-            logger.info(msg)
+            logger.info(
+                f"🔄 UPDATE {instrument} → TP_REVISED: {old_tp_str} → {new_tp_str} | {update_reason}"
+            )
             if send_telegram:
-                send_telegram(msg)
+                send_telegram(
+                    f"🔄 UPDATE TP: {instrument}\n"
+                    f"└─ {old_tp_str} → {new_tp_str} | {update_reason}"
+                )
             return {
                 "ok": True,
                 "status": "UPDATED",
@@ -722,12 +773,27 @@ class DynamicPositionManager:
             logger.warning(f"  ⚠️ Price fetch failed {instrument}: {e}")
             return None
 
-    def _update_trade_sl(self, trade_id: str, new_sl: float, decimals: int) -> bool:
+    def _update_trade_sl(self, trade_id: str, new_sl: float, decimals: int,
+                         old_sl: float | None = None, pair: str = "",
+                         sl_action: str = "TRAIL_SL") -> bool:
+        old_sl_str = (
+            f"{old_sl:.{decimals}f}" if old_sl is not None else "None"
+        )
+        new_sl_str = f"{new_sl:.{decimals}f}"
         if self.dry_run:
             logger.info(
-                f"   🧪 DRY_RUN SL #{trade_id}: would set stopLoss → "
-                f"{new_sl:.{decimals}f} (no TradeCRCDO write sent)"
+                f"   🧪 DRY_RUN SL #{trade_id}: would set stopLoss → {new_sl_str} "
+                f"(no TradeCRCDO write sent)"
             )
+            logger.info(
+                f"🔄 UPDATE {pair} → {sl_action}: {old_sl_str} → {new_sl_str}"
+            )
+            if self.telegram:
+                self.telegram(
+                    f"🔄 UPDATE SL: {pair} #{trade_id}\n"
+                    f"└─ {old_sl_str} → {new_sl_str} | {sl_action}\n"
+                    f"🧪 DRY-RUN (no real order)"
+                )
             return True
         try:
             self.api.request(
@@ -736,13 +802,20 @@ class DynamicPositionManager:
                     tradeID=trade_id,
                     data={
                         "stopLoss": {
-                            "price": f"{new_sl:.{decimals}f}",
+                            "price": f"{new_sl_str}",
                             "timeInForce": "GTC",
                         }
                     },
                 )
             )
-            logger.info(f"   🔄 SL updated → {new_sl:.{decimals}f}")
+            logger.info(
+                f"🔄 UPDATE {pair} → {sl_action}: {old_sl_str} → {new_sl_str}"
+            )
+            if self.telegram:
+                self.telegram(
+                    f"🔄 UPDATE SL: {pair} #{trade_id}\n"
+                    f"└─ {old_sl_str} → {new_sl_str} | {sl_action}"
+                )
             return True
         except Exception as e:
             logger.error(f"   ❌ SL update failed: {e}")
@@ -797,11 +870,19 @@ class DynamicPositionManager:
                     (utcnow_safe() - open_time).total_seconds() / 3600 / bar_hours
                 )
                 if bars_held >= self.max_hold:
+                    detail = f"held {bars_held:.1f} bars >= max_hold={self.max_hold}"
                     logger.info(
-                        f"⏰ TIME EXIT {pair} #{tid}: held {bars_held:.1f} bars"
+                        f"⏰ TIME EXIT {pair} #{tid}: {detail}"
                     )
                     if close_position_fn:
-                        close_position_fn(instrument)
+                        try:
+                            close_position_fn(
+                                instrument,
+                                reason_code=REASON_TIME_EXPIRY,
+                                detail_msg=detail,
+                            )
+                        except TypeError:
+                            close_position_fn(instrument)
                     continue
                 if self.dynamic_tp:
                     atr_mult_tp = 3.0
@@ -818,6 +899,8 @@ class DynamicPositionManager:
                                 new_tp,
                                 send_telegram=self.telegram,
                                 dry_run=self.dry_run,
+                                old_tp_price=current_tp,
+                                update_reason=f"DYNAMIC_TP LONG (profit={profit_pips:.1f}p)",
                             )
                     else:
                         new_tp = current_price - (atr_mult_tp * atr_val)
@@ -832,6 +915,8 @@ class DynamicPositionManager:
                                 new_tp,
                                 send_telegram=self.telegram,
                                 dry_run=self.dry_run,
+                                old_tp_price=current_tp,
+                                update_reason=f"DYNAMIC_TP SHORT (profit={profit_pips:.1f}p)",
                             )
                 be_pips = self.be_trigger * atr_val / pip
                 trail_pips = self.trail_trigger * atr_val / pip
@@ -853,23 +938,18 @@ class DynamicPositionManager:
                         (side == "long" and trail_sl > current_sl)
                         or (side == "short" and trail_sl < current_sl)
                     ):
-                        new_sl, action = trail_sl, "TRAIL"
+                        new_sl, action = trail_sl, "TRAIL_STOP"
                 if new_sl and action:
                     if current_sl and (
                         (side == "long" and new_sl < current_sl)
                         or (side == "short" and new_sl > current_sl)
                     ):
                         continue
-                    if self._update_trade_sl(tid, new_sl, decimals) and self.telegram:
-                        _action_txt = (
-                            f"🧪 DRY-RUN would {action}"
-                            if self.dry_run
-                            else f"🎯 {action}"
-                        )
-                        self.telegram(
-                            f"{_action_txt} {pair} #{tid} | Profit: {profit_pips:.1f}p "
-                            f"→ SL: {new_sl:.{decimals}f}"
-                        )
+                    self._update_trade_sl(
+                        tid, new_sl, decimals,
+                        old_sl=current_sl, pair=pair,
+                        sl_action=f"{action} (profit={profit_pips:.1f}p)",
+                    )
 
 
 # ============================================================================

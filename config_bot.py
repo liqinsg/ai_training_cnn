@@ -121,6 +121,8 @@ def build_profile_cfg(profile_id: int) -> Dict:
         "WHITELIST": list(WHITELIST.get(pid, DEFAULT_PAIRS)),
         "ALL_PAIRS": list(WHITELIST.get(pid, DEFAULT_PAIRS)),
         "ACCOUNT_SUFFIX": p["ACCOUNT_SUFFIX"],
+        "account_id_demo": p.get("account_id_demo"),
+        "account_id_live": p.get("account_id_live"),
         "TP_MULTIPLIER": p.get("TP_MULTIPLIER", 1.0),
         "MAX_HOLD_BARS": p.get("MAX_HOLD_BARS", d["MAX_HOLD_BARS"]),
         # feature_settings
@@ -162,6 +164,35 @@ def build_profile_cfg(profile_id: int) -> Dict:
 def get_profile(profile_id: int) -> Dict:
     """Public API — return merged config for given profile ID"""
     return build_profile_cfg(profile_id)
+
+
+def resolve_account_id(
+    profile_id: int,
+    live: bool,
+    account_override: Optional[int] = None,
+    indexed_accounts: Optional[Dict[int, str]] = None,
+) -> tuple[str, str]:
+    """Resolve an explicit account override or the selected profile's account."""
+    if account_override is not None:
+        account_id = (indexed_accounts or {}).get(account_override)
+        source = f"-a {account_override}"
+        if not isinstance(account_id, str) or not account_id.strip():
+            environment = "LIVE" if live else "DEMO"
+            raise ValueError(
+                f"No {environment} account configured for -a {account_override}"
+            )
+        return account_id.strip(), source
+
+    profile = PROFILES.get(str(profile_id))
+    account_key = "account_id_live" if live else "account_id_demo"
+    account_id = profile.get(account_key) if profile else None
+    if not isinstance(account_id, str) or not account_id.strip():
+        raise ValueError(
+            f"Profile {profile_id} is missing a valid {account_key} "
+            "in config_profile.json"
+        )
+    return account_id.strip(), "Profile内置"
+
 
 # ─── Validation ───
 def validate_weights(weights: Dict, label: str, tol: float = 0.005) -> bool:
