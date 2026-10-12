@@ -43,6 +43,7 @@ from fx_trade_bot_utils import (
     pip_size,
     load_cooldown,
     get_open_position,
+    has_open_trade_with_tags,
     close_position,
     fetch_candles,
     open_oanda_order_simple as open_oanda_order,
@@ -192,6 +193,8 @@ cfg = C.get_profile(PROFILE_ID)
 # ===== 3. 常用变量直接映射（复制/对照用）=====
 APP_VERSION = "684"
 VERSION = cfg["VERSION"]
+OWNER_TAGS = ["fx_bot", f"v{APP_VERSION}", PROFILE_NAME]
+OWNER_COMMENT = f"fx_bot_v{APP_VERSION}_{PROFILE_NAME}_entry"
 # NOTE: two distinct names on purpose —
 #   PROFILE_NAME  : internal key used by _TREND_TP_CONFIG / TREND_TP_CONFIG lookups
 #                   ("profile1".."profile4"), so it MUST stay the lowercase
@@ -1565,22 +1568,38 @@ def main():
     )
     dyn_mgr.update_all(pair_data, close_wrap)
 
-    # Step 6 — Scan Open Positions
+    # Step 6 — Scan Open Positions (OWNERSHIP-AWARE via OANDA tags)
     open_pos_by_oanda, open_pos_count = {}, 0
-    logger.info("🔍 Checking open positions...")
+    logger.info(
+        f"🔍 Checking open positions (owner_tags={OWNER_TAGS}, comment={OWNER_COMMENT})..."
+    )
     for pair in selected_pairs:
         oanda_inst = YAHOO_TO_OANDA.get(pair)
         if not oanda_inst:
             continue
-        status, pos = get_open_position(api, OANDA_ACCOUNT_ID, oanda_inst)
-
-        is_open = status == PositionStatus.OPEN
-        open_pos_by_oanda[oanda_inst] = is_open
-        if is_open:
+        # ── PRIMARY: tag-aware check — only blocks if *this profile* owns a trade
+        found, trade = has_open_trade_with_tags(
+            api, OANDA_ACCOUNT_ID, oanda_inst, OWNER_TAGS
+        )
+        open_pos_by_oanda[oanda_inst] = found
+        if found:
             open_pos_count += 1
             logger.info(
-                f"📌 OPEN POSITION: {pair} → {oanda_inst} | {pos['side'].upper()} | units={pos['units']}"
+                f"📌 OWNED POSITION: {pair} → {oanda_inst} | {trade['direction'].upper()} | "
+                f"units={trade['units']} | tradeID={trade['trade_id']} | "
+                f"tags={trade['tags']}"
             )
+        else:
+            # ── BACKUP: coarse aggregate check — log but DON'T block
+            #    (allows other-profile trades on same instrument, which is legal,
+            #    but warn the operator)
+            status, pos = get_open_position(api, OANDA_ACCOUNT_ID, oanda_inst)
+            if status == PositionStatus.OPEN:
+                logger.warning(
+                    f"⚠️  {pair}: INSTRUMENT has aggregate position but NO owned trade — "
+                    f"likely opened by another profile/process. "
+                    f"Will allow fresh entry (aggregate units={pos['units']}, side={pos['side']})."
+                )
     open_list = [o.replace("_", "/") for o, s in open_pos_by_oanda.items() if s]
     ready_list = [
         p.replace("=X", "")
@@ -1893,6 +1912,8 @@ def main():
                 sl_price,
                 tp_price,
                 dry_run=DRY_RUN_MODE,  # defence-in-depth (entry gate above already blocks)
+                tags=OWNER_TAGS,
+                comment=OWNER_COMMENT,
             )
             status = resp.get("status", "UNKNOWN")
             tid = resp.get("trade_id", "") or "?"
