@@ -115,7 +115,9 @@ def get_oanda_profile(env_override: str = None) -> dict:
 
     # 匹配对应环境下的 Account ID 变量
     var_regex = (
-        r"^OANDA_ACCOUNT_ID_\d+_LIVE$" if is_live else r"^OANDA_ACCOUNT_ID_(DEMO_)?\d+$"
+        r"^OANDA_ACCOUNT_ID_\d+_LIVE$"
+        if is_live
+        else r"^OANDA_ACCOUNT_ID_DEMO_\d+$"
     )
 
     account_ids = []
