@@ -219,6 +219,53 @@ def get_open_position(api, oanda_account_id: str, instrument: str):
         oanda_logger.setLevel(original_level)
 
 
+def has_open_trade_with_tags(
+    api,
+    oanda_account_id: str,
+    instrument: str,
+    required_tags: list[str],
+) -> tuple[bool, dict | None]:
+    """
+    Check if ANY open trade on `instrument` carries ALL of `required_tags`.
+
+    Returns: (found: bool, trade_or_None)
+
+    Why this beats get_open_position (PositionDetails):
+      PositionDetails returns the AGGREGATE long/short net for the whole
+      account — it has no per-trade ownership metadata. So when two
+      profiles run on the same account (or a profile switch happens),
+      Profile B sees Profile A's position as "already open" and silently
+      skips it. WORSE: when both run concurrently, TOCTOU races produce
+      duplicate orders.
+
+      OpenTrades gives per-trade objects with `.tags[]` + `.comment` —
+      fields OANDA v20 automatically copies from the originating order.
+      We tag every open order with ["fx_bot", "<ver>", "p<profile>"],
+      so we can precisely answer: "does *MY* profile already own a
+      trade on this instrument?"
+    """
+    try:
+        resp = api.request(OpenTrades(accountID=oanda_account_id))
+    except Exception as e:
+        logger.error(f"❌ OpenTrades fetch FAILED: {e}")
+        return False, None
+
+    for trade in resp.get("trades", []):
+        if trade.get("instrument") != instrument:
+            continue
+        trade_tags = set(trade.get("tags") or [])
+        if set(required_tags).issubset(trade_tags):
+            direction = "long" if float(trade.get("currentUnits", 0)) > 0 else "short"
+            return True, {
+                "trade_id": trade.get("id", ""),
+                "direction": direction,
+                "units": trade.get("currentUnits", "0"),
+                "price": trade.get("price", ""),
+                "tags": list(trade_tags),
+            }
+    return False, None
+
+
 def close_position(
     api,
     oanda_account_id: str,
@@ -380,6 +427,8 @@ def open_oanda_order_simple(
     tp_price: float | None,
     dry_run: bool = False,
     max_sl_pips: int | None = None,
+    tags: list[str] | None = None,
+    comment: str | None = None,
 ) -> dict:
     """Submit order — SKIP immediately if market halted."""
     # ── NEW: SKIP if halted BEFORE any API call ──
@@ -448,6 +497,10 @@ def open_oanda_order_simple(
             "positionFill": "DEFAULT",
         }
     }
+    if tags:
+        order_payload["order"]["tags"] = tags
+    if comment:
+        order_payload["order"]["comment"] = comment
     if sl_price:
         order_payload["order"]["stopLossOnFill"] = {
             "price": str(round(float(sl_price), dec)),
