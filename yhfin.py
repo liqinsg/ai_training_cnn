@@ -7,6 +7,7 @@ import yfinance as yf
 
 np.random.seed(42)  # Reproducible results
 
+
 # --------------------------
 # Exact sanitize logic from your yhfin.py
 # --------------------------
@@ -27,6 +28,7 @@ def _sanitize(obj):
         return obj.isoformat()
     return obj
 
+
 # --------------------------
 # Command line arguments
 # --------------------------
@@ -35,14 +37,19 @@ def parse_args() -> argparse.Namespace:
         description="FX Monte Carlo simulation using real yfinance market data"
     )
     parser.add_argument(
-        "symbols", nargs="+", default=["EURUSD=X"],
-        help="One or more FX tickers (e.g. EURUSD=X USDJPY=X GBPUSD=X)"
+        "symbols",
+        nargs="+",
+        default=["EURUSD=X"],
+        help="One or more FX tickers (e.g. EURUSD=X USDJPY=X GBPUSD=X)",
     )
     parser.add_argument("--period", default="60d", help="History lookback period")
     parser.add_argument("--interval", default="1d", help="Data interval")
     parser.add_argument("--sim", type=int, default=10000, help="Number of simulations")
-    parser.add_argument("--horizon", type=int, default=22, help="Forecast horizon (trading days)")
+    parser.add_argument(
+        "--horizon", type=int, default=22, help="Forecast horizon (trading days)"
+    )
     return parser.parse_args()
+
 
 # --------------------------
 # Core logic
@@ -64,9 +71,9 @@ def run_montecarlo(ticker: str, period: str, interval: str, n_sim: int, t_days: 
 
     # Define scenarios
     scenarios = {
-        "Base Case":     {"vol_mult": 1.0, "drift_add": 0.00},
+        "Base Case": {"vol_mult": 1.0, "drift_add": 0.00},
         "High Volatility": {"vol_mult": 1.5, "drift_add": 0.00},
-        "Strong USD":    {"vol_mult": 1.0, "drift_add": -0.02},
+        "Strong USD": {"vol_mult": 1.0, "drift_add": -0.02},
     }
 
     scenario_results = []
@@ -84,15 +91,17 @@ def run_montecarlo(ticker: str, period: str, interval: str, n_sim: int, t_days: 
         prob_down = float(np.mean(S_T < S0 * 0.98))
         prob_up = float(np.mean(S_T > S0 * 1.02))
 
-        scenario_results.append({
-            "scenario": name,
-            "mean": round(float(np.mean(S_T)), 5),
-            "median": round(float(np.median(S_T)), 5),
-            "p5_percentile": round(float(np.percentile(S_T, 5)), 5),
-            "p95_percentile": round(float(np.percentile(S_T, 95)), 5),
-            "prob_below_-2pct": f"{prob_down:.1%}",
-            "prob_above_+2pct": f"{prob_up:.1%}",
-        })
+        scenario_results.append(
+            {
+                "scenario": name,
+                "mean": round(float(np.mean(S_T)), 5),
+                "median": round(float(np.median(S_T)), 5),
+                "p5_percentile": round(float(np.percentile(S_T, 5)), 5),
+                "p95_percentile": round(float(np.percentile(S_T, 95)), 5),
+                "prob_below_-2pct": f"{prob_down:.1%}",
+                "prob_above_+2pct": f"{prob_up:.1%}",
+            }
+        )
 
     return {
         "symbol": ticker,
@@ -104,8 +113,9 @@ def run_montecarlo(ticker: str, period: str, interval: str, n_sim: int, t_days: 
         },
         "forecast_horizon_days": t_days,
         "simulations": n_sim,
-        "scenario_results": scenario_results
+        "scenario_results": scenario_results,
     }
+
 
 # --------------------------
 # Entry point
@@ -117,15 +127,11 @@ if __name__ == "__main__":
     for sym in args.symbols:
         try:
             res = run_montecarlo(
-                sym, args.period, args.interval,
-                args.sim, args.horizon
+                sym, args.period, args.interval, args.sim, args.horizon
             )
             all_output.append(res)
         except Exception as e:
-            all_output.append({
-                "symbol": sym,
-                "error": str(e)
-            })
+            all_output.append({"symbol": sym, "error": str(e)})
 
     # Clean and print final JSON
     clean_output = _sanitize(all_output if len(all_output) > 1 else all_output[0])

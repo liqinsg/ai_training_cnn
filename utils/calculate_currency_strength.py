@@ -18,8 +18,8 @@ def calculate_atr(candles, period=14):
     for i in range(1, len(candles)):
         tr[i] = max(
             highs[i] - lows[i],
-            abs(highs[i] - closes[i-1]),
-            abs(lows[i] - closes[i-1])
+            abs(highs[i] - closes[i - 1]),
+            abs(lows[i] - closes[i - 1]),
         )
 
     atr = np.mean(tr[-period:])
@@ -27,10 +27,7 @@ def calculate_atr(candles, period=14):
 
 
 def calculate_currency_strength(
-    pairs,
-    timeframes=["H1", "H4", "D"],
-    weights=[1, 3, 6],
-    lookback=20
+    pairs, timeframes=["H1", "H4", "D"], weights=[1, 3, 6], lookback=20
 ):
     """
     Professional-grade Relative Currency Strength

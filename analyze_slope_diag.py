@@ -257,15 +257,20 @@ def report(rows: Sequence[DiagRow], target: int, files: Sequence[str]) -> int:
     print("-" * 78)
     print("LADDER GATE")
     print("-" * 78)
-    print(f"  would_flip=True : {len(flips):3d} / {target}   "
-          f"({fmt_pct(len(flips), target)} of target)")
+    print(
+        f"  would_flip=True : {len(flips):3d} / {target}   "
+        f"({fmt_pct(len(flips), target)} of target)"
+    )
     if len(flips) >= target:
-        print("  -> target met: eligible to consider the next rung "
-              "(0.0003 -> 0.0005).")
+        print(
+            "  -> target met: eligible to consider the next rung " "(0.0003 -> 0.0005)."
+        )
         print("     Confirm the outcomes below look acceptable before advancing.")
     else:
-        print(f"  -> {target - len(flips)} more would_flip rows needed; "
-              "do NOT advance on elapsed time alone.")
+        print(
+            f"  -> {target - len(flips)} more would_flip rows needed; "
+            "do NOT advance on elapsed time alone."
+        )
     if len(flips) == 0:
         print("  note: zero flips means the relaxation has not changed any")
         print("        decision yet — the slope threshold is not the binding")
@@ -275,8 +280,10 @@ def report(rows: Sequence[DiagRow], target: int, files: Sequence[str]) -> int:
     print("-" * 78)
     print("COUNTS BY PROFILE / TF / DIRECTION")
     print("-" * 78)
-    header = (f"  {'profile':10} {'tf':5} {'dir':5} {'n':>4} "
-              f"{'price_ok':>9} {'loose':>7} {'sensitive':>10} {'would_flip':>11}")
+    header = (
+        f"  {'profile':10} {'tf':5} {'dir':5} {'n':>4} "
+        f"{'price_ok':>9} {'loose':>7} {'sensitive':>10} {'would_flip':>11}"
+    )
     print(header)
     print("  " + "-" * (len(header) - 2))
     for (profile, tf, direction), g in sorted(grouping(rows).items()):
@@ -295,9 +302,11 @@ def report(rows: Sequence[DiagRow], target: int, files: Sequence[str]) -> int:
     mags = sorted(r.abs_slope for r in rows)
     min_slope = rows[-1].min_slope
     strict_baseline = rows[-1].strict_threshold
-    print(f"  n={len(mags)}  min={mags[0]:.6f}  p25={pctile(mags, .25):.6f}  "
-          f"median={pctile(mags, .5):.6f}  p75={pctile(mags, .75):.6f}  "
-          f"max={mags[-1]:.6f}")
+    print(
+        f"  n={len(mags)}  min={mags[0]:.6f}  p25={pctile(mags, .25):.6f}  "
+        f"median={pctile(mags, .5):.6f}  p75={pctile(mags, .75):.6f}  "
+        f"max={mags[-1]:.6f}"
+    )
     print(f"  active min_slope (widest rung) : {min_slope:.6f}")
     print(f"  strict baseline (from log)     : {strict_baseline:.6f}")
     bands = [
@@ -316,21 +325,27 @@ def report(rows: Sequence[DiagRow], target: int, files: Sequence[str]) -> int:
     if not flips:
         print("  (none)")
     else:
-        print(f"  {'file:line':34} {'profile':10} {'dir':5} {'slope':>11} "
-              f"{'min_slope':>10} {'outcome':>15}")
+        print(
+            f"  {'file:line':34} {'profile':10} {'dir':5} {'slope':>11} "
+            f"{'min_slope':>10} {'outcome':>15}"
+        )
         for r in flips[:40]:
             loc = _display_loc(r.file, r.lineno)
-            print(f"  {loc:34} {r.profile:10} {r.direction:5} "
-                  f"{r.slope:11.6f} {r.min_slope:10.6f} "
-                  f"{(r.outcome or 'unknown'):>15}")
+            print(
+                f"  {loc:34} {r.profile:10} {r.direction:5} "
+                f"{r.slope:11.6f} {r.min_slope:10.6f} "
+                f"{(r.outcome or 'unknown'):>15}"
+            )
         if len(flips) > 40:
             print(f"  ... and {len(flips) - 40} more")
 
     attributed = [r for r in flips if r.outcome]
     if flips:
         print()
-        print(f"  outcome coverage: {len(attributed)}/{len(flips)} flip rows "
-              "attributed to a following log line")
+        print(
+            f"  outcome coverage: {len(attributed)}/{len(flips)} flip rows "
+            "attributed to a following log line"
+        )
         if len(attributed) < len(flips):
             print("  note: unattributed rows are usually the last candidate of a")
             print("        run, or a line the outcome patterns do not cover.")
@@ -341,7 +356,8 @@ def report(rows: Sequence[DiagRow], target: int, files: Sequence[str]) -> int:
     print("-" * 78)
     problems = []
     inconsistent = [
-        r for r in rows
+        r
+        for r in rows
         if r.sensitive != (r.loose and not r.strict)
         or r.would_flip != (r.price_ok and r.sensitive)
     ]
@@ -360,8 +376,10 @@ def report(rows: Sequence[DiagRow], target: int, files: Sequence[str]) -> int:
         for p in problems:
             print(f"  ! {p}")
         return 1
-    print("  consistent: sensitive/would_flip/price_ok relationships hold for "
-          "every row")
+    print(
+        "  consistent: sensitive/would_flip/price_ok relationships hold for "
+        "every row"
+    )
     return 0
 
 
@@ -403,9 +421,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if not args.no_dedupe:
         all_rows, dropped = dedupe(all_rows)
 
-    print(f"scanned {total_lines} lines across {len(files)} file(s); "
-          f"{len(all_rows)} DIAG rows"
-          + (f" ({dropped} duplicates dropped)" if dropped else ""))
+    print(
+        f"scanned {total_lines} lines across {len(files)} file(s); "
+        f"{len(all_rows)} DIAG rows"
+        + (f" ({dropped} duplicates dropped)" if dropped else "")
+    )
     return report(all_rows, args.target, files)
 
 

@@ -27,27 +27,49 @@ def _sanitize(obj):
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="FX Monte Carlo — Normal / Fat‑Tails / Jump Risk")
-    parser.add_argument("symbols", nargs="+", help="FX tickers: EURUSD=X USDJPY=X GBPUSD=X")
+    parser = argparse.ArgumentParser(
+        description="FX Monte Carlo — Normal / Fat‑Tails / Jump Risk"
+    )
+    parser.add_argument(
+        "symbols", nargs="+", help="FX tickers: EURUSD=X USDJPY=X GBPUSD=X"
+    )
     parser.add_argument("--period", default="60d")
     parser.add_argument("--interval", default="1d")
     parser.add_argument("--sim", type=int, default=10000)
     parser.add_argument("--horizon", type=int, default=22)
-    parser.add_argument("--fat-tails", action="store_true", dest="fat_tails",
-                        help="Use Student's t-distribution instead of Normal")
-    parser.add_argument("--df", type=int, default=5,
-                        help="t-distribution degrees of freedom (smaller = fatter tails)")
-    parser.add_argument("--jumps", action="store_true",
-                        help="Add Poisson jump risk for news/events")
-    parser.add_argument("--jump-prob", type=float, default=0.05,
-                        help="Daily probability of a jump (default 5%)")
-    parser.add_argument("--jump-vol", type=float, default=0.003,
-                        help="Jump volatility (default 0.3% daily)")
+    parser.add_argument(
+        "--fat-tails",
+        action="store_true",
+        dest="fat_tails",
+        help="Use Student's t-distribution instead of Normal",
+    )
+    parser.add_argument(
+        "--df",
+        type=int,
+        default=5,
+        help="t-distribution degrees of freedom (smaller = fatter tails)",
+    )
+    parser.add_argument(
+        "--jumps", action="store_true", help="Add Poisson jump risk for news/events"
+    )
+    parser.add_argument(
+        "--jump-prob",
+        type=float,
+        default=0.05,
+        help="Daily probability of a jump (default 5%)",
+    )
+    parser.add_argument(
+        "--jump-vol",
+        type=float,
+        default=0.003,
+        help="Jump volatility (default 0.3% daily)",
+    )
     return parser.parse_args()
 
 
-def run_montecarlo(ticker, period, interval, n_sim, t_days,
-                   fat_tails, df, jumps, jump_prob, jump_vol):
+def run_montecarlo(
+    ticker, period, interval, n_sim, t_days, fat_tails, df, jumps, jump_prob, jump_vol
+):
     try:
         df_data = yf.download(ticker, period=period, interval=interval, progress=False)
         if df_data.empty or "Close" not in df_data.columns:
@@ -92,15 +114,17 @@ def run_montecarlo(ticker, period, interval, n_sim, t_days,
             paths = S0 * np.exp(np.cumsum(log_r, axis=1))
             ST = paths[:, -1]
 
-            results.append({
-                "scenario": name,
-                "mean": round(float(np.mean(ST)), 5),
-                "median": round(float(np.median(ST)), 5),
-                "p5": round(float(np.percentile(ST, 5)), 5),
-                "p95": round(float(np.percentile(ST, 95)), 5),
-                "prob_below_2pct": f"{np.mean(ST < S0 * 0.98):.1%}",
-                "prob_above_2pct": f"{np.mean(ST > S0 * 1.02):.1%}",
-            })
+            results.append(
+                {
+                    "scenario": name,
+                    "mean": round(float(np.mean(ST)), 5),
+                    "median": round(float(np.median(ST)), 5),
+                    "p5": round(float(np.percentile(ST, 5)), 5),
+                    "p95": round(float(np.percentile(ST, 95)), 5),
+                    "prob_below_2pct": f"{np.mean(ST < S0 * 0.98):.1%}",
+                    "prob_above_2pct": f"{np.mean(ST > S0 * 1.02):.1%}",
+                }
+            )
 
         return {
             "symbol": ticker,
@@ -111,7 +135,7 @@ def run_montecarlo(ticker, period, interval, n_sim, t_days,
                 "distribution": "Student's t" if fat_tails else "Normal",
                 "jump_risk_enabled": jumps,
             },
-            "scenarios": results
+            "scenarios": results,
         }
 
     except Exception as e:
@@ -122,8 +146,16 @@ if __name__ == "__main__":
     args = parse_args()
     output = [
         run_montecarlo(
-            s, args.period, args.interval, args.sim, args.horizon,
-            args.fat_tails, args.df, args.jumps, args.jump_prob, args.jump_vol
+            s,
+            args.period,
+            args.interval,
+            args.sim,
+            args.horizon,
+            args.fat_tails,
+            args.df,
+            args.jumps,
+            args.jump_prob,
+            args.jump_vol,
         )
         for s in args.symbols
     ]

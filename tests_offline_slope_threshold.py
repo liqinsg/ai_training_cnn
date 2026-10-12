@@ -91,7 +91,7 @@ def run(profile, direction, min_slope, price_side_ok=True):
             "tp_strong_mult": 2.0,
             "ema_period": 10,
             "slope_lookback": 5,
-            "min_slope": 0.001,          # must stay untouched
+            "min_slope": 0.001,  # must stay untouched
         },
         "profile3": {
             "tp_mult": 1.2,
@@ -179,16 +179,16 @@ def verify_resolve_helper(bot_path, label):
     for case_label, c, enabled, expect in cases:
         got = resolve(c, enabled)
         ok = got == expect and type(got) is type(expect)
-        print(
-            f"   {case_label:22} -> {str(got):>7}  {'ok' if ok else 'FAIL'}"
-        )
+        print(f"   {case_label:22} -> {str(got):>7}  {'ok' if ok else 'FAIL'}")
         if not ok:
             problems.append(
                 f"{label}: resolve_weekly_ema100({c}, {enabled}) = {got!r}, "
                 f"expected {expect!r}"
             )
     if resolve(cached, True) is True:
-        problems.append(f"{label}: gate still collapses the cached level into a boolean")
+        problems.append(
+            f"{label}: gate still collapses the cached level into a boolean"
+        )
     return problems
 
 
@@ -355,8 +355,12 @@ def main():
     # Reproduce the shipped bug: `cached and True` evaluates to the *boolean*,
     # so the filter compared prices against True (== 1.0) instead of 145.83.
     old_gate = cached and True
-    print(f"   old `cached and True`      -> {old_gate!r} (type {type(old_gate).__name__})")
-    print(f"   old SELL compare 157.21>   -> {157.21 > old_gate}  (blocks a valid SELL)")
+    print(
+        f"   old `cached and True`      -> {old_gate!r} (type {type(old_gate).__name__})"
+    )
+    print(
+        f"   old SELL compare 157.21>   -> {157.21 > old_gate}  (blocks a valid SELL)"
+    )
 
     cases = [
         # (label, cached, enabled, expect)

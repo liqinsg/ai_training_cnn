@@ -55,6 +55,7 @@ from utils.strategy_helpers import get_candles
 
 import config as _config
 
+
 # ----------------------
 # Config — add these to config.py; safe defaults if you don't.
 #
@@ -112,7 +113,9 @@ ML_BACKTEST_FEE_PCT = _cfg("ML_BACKTEST_FEE_PCT", ML_BACKTEST_FEE_PCT_DEFAULT)
 # is_ml_weighted_dominance_enabled() (below) from custom_strategy.py
 # instead of importing this constant directly, so a config.py edit
 # takes effect without restarting scheduled_runner.py.
-ENABLE_ML_WEIGHTED_DOMINANCE = _cfg("ENABLE_ML_WEIGHTED_DOMINANCE", ENABLE_ML_WEIGHTED_DOMINANCE_DEFAULT)
+ENABLE_ML_WEIGHTED_DOMINANCE = _cfg(
+    "ENABLE_ML_WEIGHTED_DOMINANCE", ENABLE_ML_WEIGHTED_DOMINANCE_DEFAULT
+)
 
 
 def is_ml_weighted_dominance_enabled() -> bool:
@@ -155,13 +158,15 @@ def _candles_to_df(candles: list) -> pd.DataFrame:
             continue
         mid = c.get("mid") or {}
         try:
-            rows.append({
-                "time": c["time"],
-                "open": float(mid["o"]),
-                "high": float(mid["h"]),
-                "low": float(mid["l"]),
-                "close": float(mid["c"]),
-            })
+            rows.append(
+                {
+                    "time": c["time"],
+                    "open": float(mid["o"]),
+                    "high": float(mid["h"]),
+                    "low": float(mid["l"]),
+                    "close": float(mid["c"]),
+                }
+            )
         except (KeyError, TypeError, ValueError):
             continue
 
@@ -199,11 +204,15 @@ def _build_features(candles: pd.DataFrame) -> pd.DataFrame:
 
 def _build_labels(candles: pd.DataFrame, horizon: int) -> pd.Series:
     close = np.asarray(candles["close"], dtype=float)
-    future_return = pd.Series(close, index=candles.index).pct_change(horizon).shift(-horizon)
+    future_return = (
+        pd.Series(close, index=candles.index).pct_change(horizon).shift(-horizon)
+    )
     return (future_return > 0).astype(int)
 
 
-def _fit_pipeline(X: pd.DataFrame, y: pd.Series, holdout_fraction: float) -> tuple[Pipeline, float, float]:
+def _fit_pipeline(
+    X: pd.DataFrame, y: pd.Series, holdout_fraction: float
+) -> tuple[Pipeline, float, float]:
     """
     Fit on the first (1 - holdout_fraction) of the series in time
     order, score on the held-out tail. This is a simple chronological
@@ -258,8 +267,10 @@ class MLConfirmationFilter:
         if not model.is_stale(retrain_hours):
             return model
 
-        print(f"  [ML] Training/refreshing model for {pair} ({granularity}, "
-              f"{candle_count} candles)...")
+        print(
+            f"  [ML] Training/refreshing model for {pair} ({granularity}, "
+            f"{candle_count} candles)..."
+        )
         try:
             raw = get_candles(pair, granularity=granularity, count=candle_count)
             candles = _candles_to_df(raw) if raw is not None else None
@@ -282,8 +293,14 @@ class MLConfirmationFilter:
             model.holdout_accuracy = acc
             model.holdout_f1 = f1
 
-            trust_flag = "" if model.is_trustworthy(min_holdout_f1) else "  ⚠️ below ML_MIN_HOLDOUT_F1, treating as neutral"
-            print(f"  [ML] {pair}: retrained. Holdout acc={acc:.2%} f1={f1:.2f}{trust_flag}")
+            trust_flag = (
+                ""
+                if model.is_trustworthy(min_holdout_f1)
+                else "  ⚠️ below ML_MIN_HOLDOUT_F1, treating as neutral"
+            )
+            print(
+                f"  [ML] {pair}: retrained. Holdout acc={acc:.2%} f1={f1:.2f}{trust_flag}"
+            )
         except Exception as e:
             print(f"  [ML] {pair}: training failed — {e}")
 
@@ -352,7 +369,9 @@ def run_backtest(pair: str) -> dict:
     Prints a human-readable report and returns the metrics dict.
     """
     print(f"\n=== ML Backtest: {pair} ===")
-    raw = get_candles(pair, granularity=ML_TRAIN_GRANULARITY, count=ML_TRAIN_CANDLE_COUNT)
+    raw = get_candles(
+        pair, granularity=ML_TRAIN_GRANULARITY, count=ML_TRAIN_CANDLE_COUNT
+    )
     candles = _candles_to_df(raw) if raw is not None else None
     if candles is None or len(candles) < 200:
         print(f"  Insufficient candle history for {pair}, skipping.")
@@ -372,8 +391,9 @@ def run_backtest(pair: str) -> dict:
     X_hold = Xc.iloc[split_idx:]
 
     proba = pipeline.predict_proba(X_hold)[:, 1]
-    signal = np.where(proba > ML_MIN_CONFIDENCE, 1,
-                       np.where(proba < (1 - ML_MIN_CONFIDENCE), -1, 0))
+    signal = np.where(
+        proba > ML_MIN_CONFIDENCE, 1, np.where(proba < (1 - ML_MIN_CONFIDENCE), -1, 0)
+    )
     signal = pd.Series(signal, index=X_hold.index)
 
     # Diagnostic: a model that just learned "mostly predict up" can post a
@@ -384,8 +404,12 @@ def run_backtest(pair: str) -> dict:
 
     price = candles["close"].reindex(X_hold.index)
     returns = price.pct_change().fillna(0)
-    position = signal.shift(1).fillna(0)  # shift(1): trade on next bar's return, no look-ahead
-    trade_flags = position.diff().abs().fillna(0)  # 1 or 2 on a position change, 0 otherwise
+    position = signal.shift(1).fillna(
+        0
+    )  # shift(1): trade on next bar's return, no look-ahead
+    trade_flags = (
+        position.diff().abs().fillna(0)
+    )  # 1 or 2 on a position change, 0 otherwise
 
     gross_returns = position * returns
     fee_drag = trade_flags * ML_BACKTEST_FEE_PCT
@@ -422,18 +446,27 @@ def run_backtest(pair: str) -> dict:
     print(f"  Holdout bars       : {metrics['holdout_bars']}")
     print(f"  Holdout accuracy   : {acc:.2%}")
     print(f"  Holdout F1         : {f1:.2f}")
-    print(f"  Predicted-up rate  : {predicted_up_rate:.1%}   (actual-up rate: {actual_up_rate:.1%})")
+    print(
+        f"  Predicted-up rate  : {predicted_up_rate:.1%}   (actual-up rate: {actual_up_rate:.1%})"
+    )
     print(f"  Gross return       : {gross_return:.2%}  (no fees)")
-    print(f"  Net return         : {net_return:.2%}  (after {ML_BACKTEST_FEE_PCT:.4%} per position change, {num_trades} changes)")
+    print(
+        f"  Net return         : {net_return:.2%}  (after {ML_BACKTEST_FEE_PCT:.4%} per position change, {num_trades} changes)"
+    )
     print(f"  Buy & hold return  : {buy_hold_return:.2%}")
     print(f"  Max drawdown       : {max_dd:.2%}  (net)")
     print(f"  Trades             : {num_trades}")
     print(f"  Win rate           : {win_rate:.2%}  (net, per bar held)")
 
-    if abs(predicted_up_rate - 0.5) > 0.15 and abs(predicted_up_rate - actual_up_rate) > 0.1:
-        print(f"  ⚠️  Predicted-up rate ({predicted_up_rate:.1%}) is skewed and diverges from "
-              f"actual ({actual_up_rate:.1%}) — model may just be favoring one side rather than "
-              f"discriminating; treat F1 with caution here.")
+    if (
+        abs(predicted_up_rate - 0.5) > 0.15
+        and abs(predicted_up_rate - actual_up_rate) > 0.1
+    ):
+        print(
+            f"  ⚠️  Predicted-up rate ({predicted_up_rate:.1%}) is skewed and diverges from "
+            f"actual ({actual_up_rate:.1%}) — model may just be favoring one side rather than "
+            f"discriminating; treat F1 with caution here."
+        )
 
     return metrics
 
@@ -470,27 +503,37 @@ def main():
     results = [run_backtest(pair) for pair in pairs]
 
     print("\n=== SUMMARY ===")
-    header = (f"{'Pair':<10}{'F1':>8}{'Acc':>8}{'PredUp':>8}"
-              f"{'NetRet':>10}{'B&H':>10}{'MaxDD':>10}{'Trades':>8}{'Win%':>8}")
+    header = (
+        f"{'Pair':<10}{'F1':>8}{'Acc':>8}{'PredUp':>8}"
+        f"{'NetRet':>10}{'B&H':>10}{'MaxDD':>10}{'Trades':>8}{'Win%':>8}"
+    )
     print(header)
     for r in results:
         if r.get("status") != "ok":
             print(f"{r['pair']:<10}  ({r['status']})")
             continue
-        print(f"{r['pair']:<10}"
-              f"{r['holdout_f1']:>8.2f}"
-              f"{r['holdout_accuracy']:>8.1%}"
-              f"{r['predicted_up_rate']:>8.1%}"
-              f"{r['net_return']:>10.2%}"
-              f"{r['buy_hold_return']:>10.2%}"
-              f"{r['max_drawdown']:>10.2%}"
-              f"{r['num_trades']:>8d}"
-              f"{r['win_rate']:>8.1%}")
+        print(
+            f"{r['pair']:<10}"
+            f"{r['holdout_f1']:>8.2f}"
+            f"{r['holdout_accuracy']:>8.1%}"
+            f"{r['predicted_up_rate']:>8.1%}"
+            f"{r['net_return']:>10.2%}"
+            f"{r['buy_hold_return']:>10.2%}"
+            f"{r['max_drawdown']:>10.2%}"
+            f"{r['num_trades']:>8d}"
+            f"{r['win_rate']:>8.1%}"
+        )
 
-    trustworthy = [r for r in results if r.get("status") == "ok" and r["holdout_f1"] >= ML_MIN_HOLDOUT_F1]
+    trustworthy = [
+        r
+        for r in results
+        if r.get("status") == "ok" and r["holdout_f1"] >= ML_MIN_HOLDOUT_F1
+    ]
     if not trustworthy:
-        print(f"\n⚠️  No pair cleared ML_MIN_HOLDOUT_F1={ML_MIN_HOLDOUT_F1}. "
-              f"Recommend leaving ENABLE_ML_CONFIRMATION off for now.")
+        print(
+            f"\n⚠️  No pair cleared ML_MIN_HOLDOUT_F1={ML_MIN_HOLDOUT_F1}. "
+            f"Recommend leaving ENABLE_ML_CONFIRMATION off for now."
+        )
 
 
 if __name__ == "__main__":

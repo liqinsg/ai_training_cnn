@@ -41,8 +41,10 @@ def get_position_win_loss_message(account_id: str) -> str:
         oid = ord.get("id")
         if tid not in trade_orders:
             trade_orders[tid] = {
-                "sl_price": "NONE", "sl_id": "NONE",
-                "tp_price": "NONE", "tp_id": "NONE",
+                "sl_price": "NONE",
+                "sl_id": "NONE",
+                "tp_price": "NONE",
+                "tp_id": "NONE",
             }
         if otype == "STOP_LOSS":
             trade_orders[tid]["sl_price"] = price
@@ -142,5 +144,12 @@ if __name__ == "__main__":
         print("\n" + "━" * 120 + "\n")
 
     # Send combined report via Telegram
-    combined = "\n\n" + "📋 " + "=" * 30 + " MULTI-ACCOUNT REPORT " + "=" * 30 + "\n\n".join(full_report)
+    combined = (
+        "\n\n"
+        + "📋 "
+        + "=" * 30
+        + " MULTI-ACCOUNT REPORT "
+        + "=" * 30
+        + "\n\n".join(full_report)
+    )
     send_telegram_message(combined.strip())

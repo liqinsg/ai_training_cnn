@@ -42,9 +42,14 @@ DEFAULT_PAIRS = config.DEFAULT_PAIRS
 YAHOO_TO_OANDA = config.YAHOO_TO_OANDA
 
 FEAT_CFG = FeatureConfig(
-    use_atr=True, atr_sl_mult=2.0, atr_tp_mult=3.0,
-    use_macd=False, use_rsi=True, use_adx=True,
-    model_type="xgboost", target_horizon=TARGET_HORIZON,
+    use_atr=True,
+    atr_sl_mult=2.0,
+    atr_tp_mult=3.0,
+    use_macd=False,
+    use_rsi=True,
+    use_adx=True,
+    model_type="xgboost",
+    target_horizon=TARGET_HORIZON,
     train_lookback_bars=LOOKBACK_BARS,
 )
 
@@ -53,6 +58,7 @@ OUTPUT_XGB = MODEL_STEM.with_suffix(".json")
 OUTPUT_SCALER = BASE_DIR / "scaler.joblib"
 OUTPUT_FEAT = MODEL_STEM.with_suffix(".features.json")
 LEGACY_PKL = MODEL_STEM.with_suffix(".pkl")
+
 
 # ── FETCH SINGLE PAIR ────────────────────────────────────
 def fetch_pair_data(fetcher, pair, oanda):
@@ -67,18 +73,22 @@ def fetch_pair_data(fetcher, pair, oanda):
         logger.error(f"  ❌ Failed {pair}: {e}")
         return pd.DataFrame()
 
+
 # ── FETCH ALL DATA ──────────────────────────────────────
-def fetch_all_data():    
+def fetch_all_data():
     from oandapyV20 import API
+
     api = API(access_token=OANDA_API_TOKEN, environment=OANDA_ENV)
-    fetcher = DataFetcher(use_oanda=True, oanda_api=api, oanda_granularity=OANDA_GRANULARITY)
+    fetcher = DataFetcher(
+        use_oanda=True, oanda_api=api, oanda_granularity=OANDA_GRANULARITY
+    )
     feat_engine = FeatureEngine(FEAT_CFG)
 
     all_dfs = []
     for pair in DEFAULT_PAIRS:
         oanda = YAHOO_TO_OANDA[pair]
         logger.info(f"📥 Fetching {pair} ({OANDA_GRANULARITY})...")
-        
+
         raw = fetch_pair_data(fetcher, pair, oanda)
         if raw.empty:
             continue
@@ -102,27 +112,39 @@ def fetch_all_data():
         raise RuntimeError("No data fetched!")
 
     combined = pd.concat(all_dfs, ignore_index=True)
-    logger.info(f"\n📊 COMBINED: {len(combined)} rows | {len(combined['pair'].unique())} pairs")
+    logger.info(
+        f"\n📊 COMBINED: {len(combined)} rows | {len(combined['pair'].unique())} pairs"
+    )
     return combined
+
 
 # ── TRAIN ───────────────────────────────────────────────
 def train_model(df):
     """Train XGBoost on prepared dataset — STRING-SAFE"""
-    
+
     # ── EXCLUDE NON-NUMERIC & META COLUMNS ──────────────────────
     exclude = [
-        "target", "future_return", "pair", 
-        "Open", "High", "Low", "Close", "Volume",
-        "regime", "market_condition", "trend_state", "mode",
+        "target",
+        "future_return",
+        "pair",
+        "Open",
+        "High",
+        "Low",
+        "Close",
+        "Volume",
+        "regime",
+        "market_condition",
+        "trend_state",
+        "mode",
     ]
-    
+
     # Select ONLY numeric features — auto-skips any string columns
     feature_cols = [
-        c for c in df.columns 
-        if c not in exclude 
-        and pd.api.types.is_numeric_dtype(df[c])
+        c
+        for c in df.columns
+        if c not in exclude and pd.api.types.is_numeric_dtype(df[c])
     ]
-    
+
     logger.info(f"🧪 Features: {len(feature_cols)} (numeric only)")
 
     X = df[feature_cols].values
@@ -138,13 +160,20 @@ def train_model(df):
     )
 
     logger.info(f"Training: {len(X_train)} | Validation: {len(X_val)}")
-    logger.info(f"UP ratio — Train: {y_train.mean()*100:.1f}% | Val: {y_val.mean()*100:.1f}%")
+    logger.info(
+        f"UP ratio — Train: {y_train.mean()*100:.1f}% | Val: {y_val.mean()*100:.1f}%"
+    )
 
     # ── MODEL
     model = xgb.XGBClassifier(
-        n_estimators=200, max_depth=5, learning_rate=0.05,
-        subsample=0.8, colsample_bytree=0.8, random_state=42,
-        use_label_encoder=False, eval_metric="logloss",
+        n_estimators=200,
+        max_depth=5,
+        learning_rate=0.05,
+        subsample=0.8,
+        colsample_bytree=0.8,
+        random_state=42,
+        use_label_encoder=False,
+        eval_metric="logloss",
     )
 
     logger.info("🏋️ Training XGBoost...")
@@ -162,13 +191,16 @@ def train_model(df):
     logger.info(f"   Val   ROC-AUC:   {roc:.4f}")
 
     # ── Feature Importance
-    imp = pd.DataFrame({"feature": feature_cols, "importance": model.feature_importances_})
+    imp = pd.DataFrame(
+        {"feature": feature_cols, "importance": model.feature_importances_}
+    )
     imp = imp.sort_values("importance", ascending=False).head(10)
     logger.info(f"\n🏆 TOP 10 FEATURES:")
     for _, row in imp.iterrows():
         logger.info(f"   {row['feature']:25s} {row['importance']:.4f}")
 
     return model, feature_cols
+
 
 # ── SAVE ─────────────────────────────────────────────────
 def save_model(model, feature_cols):
@@ -193,6 +225,7 @@ def save_model(model, feature_cols):
     logger.info(f"   xgb   : {OUTPUT_XGB.name}  ({OUTPUT_XGB.stat().st_size} B)")
     logger.info(f"   scaler: {OUTPUT_SCALER.name}  ({OUTPUT_SCALER.stat().st_size} B)")
     logger.info(f"   feat  : {OUTPUT_FEAT.name}  ({len(feature_cols)} features)")
+
 
 # ── MAIN ─────────────────────────────────────────────────
 if __name__ == "__main__":

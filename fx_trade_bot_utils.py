@@ -10,6 +10,7 @@ import pandas as pd
 from data_guard import get_safe_series, safe_last
 from telegram_message import send_telegram_message
 from utils.strategy_helpers import get_live_prices
+from utils.logging_utils import get_logger
 
 # OANDA Endpoints — VERIFIED against your installed oandapyV20
 from oandapyV20.endpoints.instruments import InstrumentsCandles
@@ -19,7 +20,7 @@ from oandapyV20.endpoints.trades import OpenTrades, TradeCRCDO
 from oandapyV20.endpoints.pricing import PricingInfo
 from oandapyV20.endpoints.transactions import TransactionsSinceID
 
-logger = logging.getLogger(__name__)
+logger = get_logger("fx_trade_bot_utils")
 
 
 REASON_TAKE_PROFIT = "TAKE_PROFIT"
@@ -34,9 +35,15 @@ REASON_USER_MANUAL = "USER_MANUAL"
 REASON_OTHER = "OTHER"
 
 _VALID_REASON_CODES = {
-    REASON_TAKE_PROFIT, REASON_TRAIL_STOP, REASON_TIME_EXPIRY,
-    REASON_DIRECTION_FLIP, REASON_SCORE_DROP, REASON_MC_SHIFT,
-    REASON_MAX_DRAWDOWN, REASON_REBALANCE, REASON_USER_MANUAL,
+    REASON_TAKE_PROFIT,
+    REASON_TRAIL_STOP,
+    REASON_TIME_EXPIRY,
+    REASON_DIRECTION_FLIP,
+    REASON_SCORE_DROP,
+    REASON_MC_SHIFT,
+    REASON_MAX_DRAWDOWN,
+    REASON_REBALANCE,
+    REASON_USER_MANUAL,
     REASON_OTHER,
 }
 
@@ -269,9 +276,7 @@ def close_position(
             return False
         if "orderFillTransaction" in resp:
             fill_price = resp["orderFillTransaction"].get("price", "?")
-            logger.info(
-                f"✅ Closed {instrument} @ {fill_price}"
-            )
+            logger.info(f"✅ Closed {instrument} @ {fill_price}")
             logger.info(f"📤 CLOSE {instrument} → {reason_code}{reason_body}")
             if telegram_send:
                 telegram_send(
@@ -773,21 +778,23 @@ class DynamicPositionManager:
             logger.warning(f"  ⚠️ Price fetch failed {instrument}: {e}")
             return None
 
-    def _update_trade_sl(self, trade_id: str, new_sl: float, decimals: int,
-                         old_sl: float | None = None, pair: str = "",
-                         sl_action: str = "TRAIL_SL") -> bool:
-        old_sl_str = (
-            f"{old_sl:.{decimals}f}" if old_sl is not None else "None"
-        )
+    def _update_trade_sl(
+        self,
+        trade_id: str,
+        new_sl: float,
+        decimals: int,
+        old_sl: float | None = None,
+        pair: str = "",
+        sl_action: str = "TRAIL_SL",
+    ) -> bool:
+        old_sl_str = f"{old_sl:.{decimals}f}" if old_sl is not None else "None"
         new_sl_str = f"{new_sl:.{decimals}f}"
         if self.dry_run:
             logger.info(
                 f"   🧪 DRY_RUN SL #{trade_id}: would set stopLoss → {new_sl_str} "
                 f"(no TradeCRCDO write sent)"
             )
-            logger.info(
-                f"🔄 UPDATE {pair} → {sl_action}: {old_sl_str} → {new_sl_str}"
-            )
+            logger.info(f"🔄 UPDATE {pair} → {sl_action}: {old_sl_str} → {new_sl_str}")
             if self.telegram:
                 self.telegram(
                     f"🔄 UPDATE SL: {pair} #{trade_id}\n"
@@ -808,9 +815,7 @@ class DynamicPositionManager:
                     },
                 )
             )
-            logger.info(
-                f"🔄 UPDATE {pair} → {sl_action}: {old_sl_str} → {new_sl_str}"
-            )
+            logger.info(f"🔄 UPDATE {pair} → {sl_action}: {old_sl_str} → {new_sl_str}")
             if self.telegram:
                 self.telegram(
                     f"🔄 UPDATE SL: {pair} #{trade_id}\n"
@@ -871,9 +876,7 @@ class DynamicPositionManager:
                 )
                 if bars_held >= self.max_hold:
                     detail = f"held {bars_held:.1f} bars >= max_hold={self.max_hold}"
-                    logger.info(
-                        f"⏰ TIME EXIT {pair} #{tid}: {detail}"
-                    )
+                    logger.info(f"⏰ TIME EXIT {pair} #{tid}: {detail}")
                     if close_position_fn:
                         try:
                             close_position_fn(
@@ -946,8 +949,11 @@ class DynamicPositionManager:
                     ):
                         continue
                     self._update_trade_sl(
-                        tid, new_sl, decimals,
-                        old_sl=current_sl, pair=pair,
+                        tid,
+                        new_sl,
+                        decimals,
+                        old_sl=current_sl,
+                        pair=pair,
                         sl_action=f"{action} (profit={profit_pips:.1f}p)",
                     )
 

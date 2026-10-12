@@ -5,6 +5,7 @@ from config_oanda import OANDA_API_TOKEN, OANDA_ENV
 # Initialize OANDA client directly (no utils import)
 api = oandapyV20.API(access_token=OANDA_API_TOKEN, environment=OANDA_ENV)
 
+
 def check_all_accounts():
     try:
         # Step 1: Fetch list of all sub-account IDs
@@ -45,6 +46,7 @@ def check_all_accounts():
 
     except Exception as e:
         print(f"❌ Account list request failed: {e}")
+
 
 if __name__ == "__main__":
     check_all_accounts()

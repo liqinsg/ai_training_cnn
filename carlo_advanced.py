@@ -15,6 +15,7 @@ from utils.oanda_execution import api
 from utils import oanda_client
 import oandapyV20.endpoints.instruments as instruments
 
+
 # --------------------------
 # YOUR EXISTING CANDLE FETCH — UNCHANGED
 # --------------------------
@@ -28,9 +29,11 @@ def get_candles(instrument: str, granularity: str, count: int) -> list:
         print(f"  [HELPERS] Candle fetch failed {instrument} {granularity}: {e}")
         return []
 
+
 # --------------------------
 # MAIN MC CALCULATION — FULLY FIXED
 # --------------------------
+
 
 def run_monte_carlo(pair: str, period: str = "60d", sims: int = 5000):
     """
@@ -44,7 +47,7 @@ def run_monte_carlo(pair: str, period: str = "60d", sims: int = 5000):
         "GBPJPY=X": "GBP_JPY",
         "AUDUSD=X": "AUD_USD",
         "USDJPY=X": "USD_JPY",
-        "USDCHF=X": "USD_CHF"
+        "USDCHF=X": "USD_CHF",
     }
     # Convert to OANDA format
     oanda_pair = YAHOO_TO_OANDA.get(pair, pair)
@@ -56,7 +59,7 @@ def run_monte_carlo(pair: str, period: str = "60d", sims: int = 5000):
     # --- rest of code stays exactly the same ---
     granularity = "D"
     count = lookback_days
-    candles = get_candles(oanda_pair, granularity, count)    
+    candles = get_candles(oanda_pair, granularity, count)
 
     if not candles or len(candles) < 30:
         raise ValueError(f"Not enough data for {oanda_pair} — need ≥30 days")
@@ -65,7 +68,7 @@ def run_monte_carlo(pair: str, period: str = "60d", sims: int = 5000):
     closes = np.array([float(c["mid"]["c"]) for c in candles])
     latest_close = closes[-1]
     log_returns = np.diff(np.log(closes))
-    
+
     # 3. Calculate stats
     ann_drift = float(np.mean(log_returns) * 252 * 100)  # %
     ann_vol = float(np.std(log_returns) * np.sqrt(252) * 100)  # %
@@ -76,10 +79,13 @@ def run_monte_carlo(pair: str, period: str = "60d", sims: int = 5000):
     vol_daily = np.std(log_returns)
     np.random.seed(42)  # Reproducible
 
-    paths = np.exp(
-        (drift_daily - 0.5 * vol_daily**2) * dt
-        + vol_daily * np.sqrt(dt) * np.random.normal(0, 1, (sim_count, 1))
-    ).cumprod(axis=1) * latest_close
+    paths = (
+        np.exp(
+            (drift_daily - 0.5 * vol_daily**2) * dt
+            + vol_daily * np.sqrt(dt) * np.random.normal(0, 1, (sim_count, 1))
+        ).cumprod(axis=1)
+        * latest_close
+    )
 
     # 5. 90% expected range
     all_final = paths[:, -1]
@@ -93,8 +99,7 @@ def run_monte_carlo(pair: str, period: str = "60d", sims: int = 5000):
         percentile_rank = 50.0  # Flat market — neutral
     else:
         percentile_rank = round(
-            ((latest_close - range_90_low) / (range_90_high - range_90_low)) * 100,
-            1
+            ((latest_close - range_90_low) / (range_90_high - range_90_low)) * 100, 1
         )
     # Hard clamp — NEVER outside 0–100%
     percentile_rank = max(0.0, min(100.0, percentile_rank))
@@ -122,15 +127,16 @@ def run_monte_carlo(pair: str, period: str = "60d", sims: int = 5000):
         "percentile_rank": percentile_rank,
         "p_up": round(p_up, 1),
         "p_down": round(p_down, 1),
-        "regime": regime
+        "regime": regime,
     }
+
 
 def build_telegram_report(results: list) -> str:
     """Format MC results for Telegram — safe against missing keys"""
     lines = [
         f"📊 FX DAILY MC — {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}",
         "🔹 Period: 60d | Simulations: 5000 | Pairs: 8",
-        ""
+        "",
     ]
     for r in results:
         # Skip empty/invalid entries
@@ -147,11 +153,13 @@ def build_telegram_report(results: list) -> str:
             )
     return "\n".join(lines)
 
+
 # --------------------------
 # RUN WHEN CALLED
 # --------------------------
 if __name__ == "__main__":
     import sys
+
     if len(sys.argv) < 2:
         print("Usage: python carlo_advanced.py EUR_USD")
         sys.exit(1)

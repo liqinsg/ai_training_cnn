@@ -6,12 +6,76 @@
 import contextlib
 import sys
 import os
-import logging
+from utils.logging_utils import get_logger
 import argparse
 from pathlib import Path
 from datetime import datetime, timezone
-
 import config_bot as C
+import numpy as np
+import pandas as pd
+import config_bot
+import config
+
+from utils.trading_core import forex_market_closed
+from utils.strategy_helpers import (
+    build_strength_matrix,
+    format_strength_ranking,
+    get_live_prices,
+)
+from utils.strategy_config import (
+    CURRENCIES,
+    USE_TOP_PAIRS_ONLY as STRATEGY_USE_TOP_PAIRS_ONLY,
+    TOP_N_CURRENCIES as STRATEGY_TOP_N_CURRENCIES,
+    TOP_PAIRS_MIN_GAP as STRATEGY_TOP_PAIRS_MIN_GAP,
+    MIN_STRENGTH_GAP as STRATEGY_MIN_STRENGTH_GAP,
+)
+from telegram_message import send_telegram_message
+from oandapyV20.endpoints.instruments import InstrumentsCandles
+from strategy_decision import StrategyConfig, StrategyEngine, FilterMode, Direction
+from data_pipeline import (
+    FeatureConfig,
+    FeatureEngine,
+    ModelWrapper,
+    DataFetcher,
+    ATRModule,
+)
+from fx_trade_bot_utils import (
+    pip_size,
+    load_cooldown,
+    get_open_position,
+    close_position,
+    fetch_candles,
+    open_oanda_order_simple as open_oanda_order,
+    DynamicPositionManager,
+    load_mc_legacy,
+    PositionStatus,
+    REASON_TAKE_PROFIT,
+    REASON_TRAIL_STOP,
+    REASON_TIME_EXPIRY,
+    REASON_DIRECTION_FLIP,
+    REASON_SCORE_DROP,
+    REASON_MC_SHIFT,
+    REASON_MAX_DRAWDOWN,
+    REASON_REBALANCE,
+    REASON_USER_MANUAL,
+    REASON_OTHER,
+)
+from fx_trade_bot_mc import MCGenerator, MCConfig
+from fx_trade_bot_ml import ensure_model
+# from portfolio_balance import balance_from_config
+from sl_zone_hierarchy import compute_sl_zone
+from config_oanda import (
+    api,
+    get_oanda_profile,
+    OANDA_ACCOUNT_ID_1_LIVE,
+    OANDA_ACCOUNT_ID_2_LIVE,
+    OANDA_ACCOUNT_ID_3_LIVE,
+    OANDA_ACCOUNT_ID_4_LIVE,
+    OANDA_ACCOUNT_ID_DEMO_1,
+    OANDA_ACCOUNT_ID_DEMO_2,
+    OANDA_ACCOUNT_ID_DEMO_3,
+    OANDA_ACCOUNT_ID_DEMO_4,
+)
 
 # ─── BASE SETUP ──────────────────────────────────────────────────────────────
 BASE_DIR = Path(__file__).resolve().parent
@@ -23,9 +87,6 @@ sys.path.extend([str(BASE_DIR), str(BASE_DIR / "utils")])
 # and always said "practice" (the import-time env) even under --live.
 # Raise that logger to WARNING before any config import, then print ONE
 # consolidated line ourselves once the real environment is known.
-import logging as _logging  # noqa: E402  (must precede config imports)
-
-logging.getLogger("oandapyV20.oandapyV20").setLevel(_logging.WARNING)
 
 # ─── FULL ARGPARSE FIRST (so --help exits before any config import) ──────────
 parser = argparse.ArgumentParser(
@@ -129,6 +190,7 @@ profile_id = PROFILE_ID
 cfg = C.get_profile(PROFILE_ID)
 
 # ===== 3. 常用变量直接映射（复制/对照用）=====
+APP_VERSION = "684"
 VERSION = cfg["VERSION"]
 # NOTE: two distinct names on purpose —
 #   PROFILE_NAME  : internal key used by _TREND_TP_CONFIG / TREND_TP_CONFIG lookups
@@ -164,15 +226,10 @@ ADX_MIN = cfg["ADX_MIN_SCORE"]
 # ===== 4. 启动确认日志 =====
 print("=" * 50)
 print(f"🚀 FX Bot v{VERSION} | {PROFILE_NAME}")
-print(f"⚖️  权重: S={W_S:.2f} R={W_R:.2f} A={W_A:.2f} X={W_X:.2f} M={W_M:.2f}")
+print(f"⚖️  Weight: S={W_S:.2f} R={W_R:.2f} A={W_A:.2f} X={W_X:.2f} M={W_M:.2f}")
 print(f"🔧 D-Gate={D_GATE_ENABLED} | 最低置信={MIN_CONVICTION} | 斜率门槛={MIN_SLOPE}")
-print(f"✅ 配置来源: config_profile.json — Profile{PROFILE_ID}")
+print(f"✅ Params Data Source: config_profile.json — Profile{PROFILE_ID}")
 print("=" * 50)
-
-import numpy as np
-import pandas as pd
-import config_bot
-import config
 
 # ─── PROFILE_BUNDLE + UNIFIED PROFILE LOADER ────────────────────────────────
 # COOLDOWN_FILE / RESULTS_DIR / PROFILE_LABEL / PROFILE_NAME were previously
@@ -230,66 +287,6 @@ SL_PAIR_FLOOR_OVERRIDES = {"GBPJPY=X": 50}
 
 # ─── SLOPE_DIAG (former profile3 evidence-collection switch) ─────────────────
 SLOPE_DIAG = True
-from utils.trading_core import forex_market_closed
-from utils.strategy_helpers import (
-    build_strength_matrix,
-    format_strength_ranking,
-    get_live_prices,
-)
-from utils.strategy_config import (
-    CURRENCIES,
-    USE_TOP_PAIRS_ONLY as STRATEGY_USE_TOP_PAIRS_ONLY,
-    TOP_N_CURRENCIES as STRATEGY_TOP_N_CURRENCIES,
-    TOP_PAIRS_MIN_GAP as STRATEGY_TOP_PAIRS_MIN_GAP,
-    MIN_STRENGTH_GAP as STRATEGY_MIN_STRENGTH_GAP,
-)
-from telegram_message import send_telegram_message
-from oandapyV20.endpoints.instruments import InstrumentsCandles
-from strategy_decision import StrategyConfig, StrategyEngine, FilterMode, Direction
-from data_pipeline import (
-    FeatureConfig,
-    FeatureEngine,
-    ModelWrapper,
-    DataFetcher,
-    ATRModule,
-)
-from fx_trade_bot_utils import (
-    pip_size,
-    load_cooldown,
-    get_open_position,
-    close_position,
-    fetch_candles,
-    open_oanda_order_simple as open_oanda_order,
-    DynamicPositionManager,
-    load_mc_legacy,
-    PositionStatus,
-    REASON_TAKE_PROFIT,
-    REASON_TRAIL_STOP,
-    REASON_TIME_EXPIRY,
-    REASON_DIRECTION_FLIP,
-    REASON_SCORE_DROP,
-    REASON_MC_SHIFT,
-    REASON_MAX_DRAWDOWN,
-    REASON_REBALANCE,
-    REASON_USER_MANUAL,
-    REASON_OTHER,
-)
-from fx_trade_bot_mc import MCGenerator, MCConfig
-from fx_trade_bot_ml import ensure_model
-from portfolio_balance import balance_from_config
-from sl_zone_hierarchy import compute_sl_zone
-from config_oanda import (
-    api,
-    get_oanda_profile,
-    OANDA_ACCOUNT_ID_1_LIVE,
-    OANDA_ACCOUNT_ID_2_LIVE,
-    OANDA_ACCOUNT_ID_3_LIVE,
-    OANDA_ACCOUNT_ID_4_LIVE,
-    OANDA_ACCOUNT_ID_DEMO_1,
-    OANDA_ACCOUNT_ID_DEMO_2,
-    OANDA_ACCOUNT_ID_DEMO_3,
-    OANDA_ACCOUNT_ID_DEMO_4,
-)
 
 # ─── TREND FILTER + SMART TP CONFIGURATION ──────────────────────────────────
 # NOTE (v6.8.3.4, ChatGPT P0 advice + Gemini audit lock-in):
@@ -754,17 +751,7 @@ def cfg(name, default):
 # ─── INIT FOLDERS & LOGGING ──────────────────────────────────────────────────
 RESULTS_DIR.mkdir(exist_ok=True)
 TODAY_STR = datetime.now(timezone.utc).strftime("%Y%m%d")
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[
-        # Use PROFILE_NAME (safe "profile4"), not PROFILE_LABEL: display labels
-        # like "PF-D Structure/D-Gate" contain "/" and would be read as a path.
-        logging.FileHandler(BASE_DIR / f"bot_{PROFILE_NAME}.log"),
-        logging.StreamHandler(sys.stdout),
-    ],
-)
-logger = logging.getLogger(__name__)
+logger = get_logger(f"fx_trade_bot_v{APP_VERSION}")
 
 # ─── CONSOLIDATED STRATEGY CONSTANTS ─────────────────────────────────────────
 TREND_TP_CONFIG = cfg("TREND_TP_CONFIG", _TREND_TP_CONFIG)
@@ -875,8 +862,6 @@ DEBUG_MODE = cfg_bot("DEBUG_MODE", False)
 # 独立的斜率诊断开关：不挂在 DEBUG_MODE 上，避免为了拿 slope 分布
 # 而连带把 oandapyV20 的 HTTP 日志放出来污染日志文件。
 SLOPE_DIAG = SLOPE_DIAG if SLOPE_DIAG is not None else cfg_bot("SLOPE_DIAG", False)
-if not DEBUG_MODE:
-    logging.getLogger("oandapyV20").setLevel(logging.WARNING)
 
 MAX_SIMULTANEOUS_TRADES = MAX_OPEN  # from unified PROFILE (config_bot.PROFILES)
 TRAILING_TP = cfg_bot("TRAILING_TP", False)
@@ -1556,8 +1541,13 @@ def main():
 
     def close_wrap(instr, reason_code=None, detail_msg=""):
         return close_position(
-            api, OANDA_ACCOUNT_ID, instr, send_telegram_message, dry_run=DRY_RUN_MODE,
-            reason_code=reason_code, detail_msg=detail_msg,
+            api,
+            OANDA_ACCOUNT_ID,
+            instr,
+            send_telegram_message,
+            dry_run=DRY_RUN_MODE,
+            reason_code=reason_code,
+            detail_msg=detail_msg,
         )
 
     dyn_mgr = DynamicPositionManager(
@@ -1573,10 +1563,7 @@ def main():
         telegram_send=send_telegram_message,
         dry_run=DRY_RUN_MODE,  # v6.8.3.6: BE/Trailing SL + dynamic TP writes suppressed in DRY_RUN
     )
-    oanda_level = logging.getLogger("oandapyV20").level
-    logging.getLogger("oandapyV20").setLevel(logging.CRITICAL)
     dyn_mgr.update_all(pair_data, close_wrap)
-    logging.getLogger("oandapyV20").setLevel(oanda_level)
 
     # Step 6 — Scan Open Positions
     open_pos_by_oanda, open_pos_count = {}, 0
@@ -1771,8 +1758,7 @@ def main():
         )
 
         d_gate_label = (
-            D_GATE_DIRECTIONS.get(pair, D_GATE_BOTH)
-            if D_GATE_ENABLED else "N/A"
+            D_GATE_DIRECTIONS.get(pair, D_GATE_BOTH) if D_GATE_ENABLED else "N/A"
         )
         xgb_score = (
             getattr(sig, "probability", None)
@@ -1879,9 +1865,7 @@ def main():
 
         if DRY_RUN_MODE:
             _r = _open_reasons.get(pair, "UNKNOWN")
-            logger.info(
-                f"✅ OPEN {pair} {direction} lots={DEFAULT_LOT_SIZE} → {_r}"
-            )
+            logger.info(f"✅ OPEN {pair} {direction} lots={DEFAULT_LOT_SIZE} → {_r}")
             logger.info(
                 f"🧪 [DRY-RUN] SIGNAL {pair} {direction} | "
                 f"SL={sl_price} | TP={tp_price} | Score={FINAL:.1f} — NO ORDER SENT"
@@ -1918,7 +1902,9 @@ def main():
                 logger.info(
                     f"✅ EXECUTED {pair} {direction} | SL={sl_price} | TP={tp_price} | TradeID={tid}"
                 )
-                logger.info(f"✅ OPEN {pair} {direction} lots={DEFAULT_LOT_SIZE} → {_r}")
+                logger.info(
+                    f"✅ OPEN {pair} {direction} lots={DEFAULT_LOT_SIZE} → {_r}"
+                )
                 trade_lines[pair] = (
                     f"✅ {pair} {direction} Score={FINAL:.1f} | SL={sl_price} TP={tp_price}\n"
                     f"└─ {_r}"

@@ -10,18 +10,28 @@ import datetime
 from utils.utils import format_oanda_time
 from datetime import datetime, timezone
 
+
 def get_open_trades():
     resp = api.request(OpenTrades(OANDA_ACCOUNT_ID))
-    return [{"id": trade["id"], "instrument": trade["instrument"], "units": trade["currentUnits"], "open_time": format_oanda_time(trade["openTime"])} for trade in resp["trades"]]
+    return [
+        {
+            "id": trade["id"],
+            "instrument": trade["instrument"],
+            "units": trade["currentUnits"],
+            "open_time": format_oanda_time(trade["openTime"]),
+        }
+        for trade in resp["trades"]
+    ]
+
 
 def get_position_summary() -> str:
     """✅ Returns formatted position text for Telegram — importable"""
     resp = api.request(OpenPositions(OANDA_ACCOUNT_ID))
     lines = []
-    lines.append("="*60)
+    lines.append("=" * 60)
     lines.append("📊 OANDA OPEN POSITIONS & ACTIVE ORDERS")
     lines.append(f"🕒 {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
-    lines.append("="*60)
+    lines.append("=" * 60)
     lines.append("")
 
     total_pnl = 0.0
@@ -42,11 +52,13 @@ def get_position_summary() -> str:
             sl = trade.get("stopLossOrder", {}).get("price", "NONE")
             tp = trade.get("takeProfitOrder", {}).get("price", "NONE")
 
-            lines.append(f"  {side_label} {instr} | {abs(int(units))} units | P&L {pnl:.2f}")
+            lines.append(
+                f"  {side_label} {instr} | {abs(int(units))} units | P&L {pnl:.2f}"
+            )
             lines.append(f"  🛡️  SL @ {sl} | TP @ {tp}\n")
 
     lines.append(f"🧾 TOTAL UNREALIZED P&L: **{total_pnl:.2f}**")
-    lines.append("="*60)
+    lines.append("=" * 60)
     return "\n".join(lines)
 
 

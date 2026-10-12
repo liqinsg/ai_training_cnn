@@ -73,7 +73,11 @@ from oandapyV20.exceptions import V20Error
 
 import config as _config
 from config import OANDA_ACCOUNT_ID
-from utils.trading_core import oanda_client, format_price_for_instrument, get_latest_price
+from utils.trading_core import (
+    oanda_client,
+    format_price_for_instrument,
+    get_latest_price,
+)
 from utils.strategy_helpers import get_atr_with_volatility_context, get_candles
 from utils.dynamic_risk_manager import ActionType, RiskAction, RiskConfig, RiskStateEnum
 from utils.pyramid_cluster import CloseAllocationMethod, PyramidCluster
@@ -81,6 +85,7 @@ from utils.cluster_state_store import ClusterStateStore, ClusterStateStoreError
 from utils.signal_instrumentation import log_trade_outcome  # V2 4.1 — additive only
 
 logger = logging.getLogger(__name__)
+
 
 # --- Single source of truth for the flag, with a LOUD warning if it's simply
 #     absent from config.py — this is the exact defect that caused Phase 2 to
@@ -112,7 +117,9 @@ _store = ClusterStateStore(CLUSTER_STATE_PATH)
 # regardless of which timeframe the entry signal itself was generated on —
 # it's fine-grained enough not to understate the true extreme, and cheap
 # enough to fetch every 15-minute cycle without hitting rate limits.
-EXTREME_LOOKBACK_GRANULARITY = getattr(_config, "RISK_EXTREME_LOOKBACK_GRANULARITY", "H1")
+EXTREME_LOOKBACK_GRANULARITY = getattr(
+    _config, "RISK_EXTREME_LOOKBACK_GRANULARITY", "H1"
+)
 
 
 class RiskIntegrationError(Exception):
@@ -122,6 +129,7 @@ class RiskIntegrationError(Exception):
 # ---------------------------------------------------------------------------
 # Config snapshot
 # ---------------------------------------------------------------------------
+
 
 def build_risk_config() -> RiskConfig:
     """
@@ -159,6 +167,7 @@ def default_risk_calculator(size: float, price_distance: float) -> float:
 # State store pass-through (thin wrappers so callers only import this module)
 # ---------------------------------------------------------------------------
 
+
 def list_managed_instruments() -> List[str]:
     return _store.list_managed_instruments()
 
@@ -179,12 +188,15 @@ def restore_cluster(cluster_data: dict) -> PyramidCluster:
     """Reconstruct a PyramidCluster from stored state. risk_calculator is
     intentionally re-supplied fresh here rather than persisted — see
     PyramidCluster.from_dict's docstring."""
-    return PyramidCluster.from_dict(cluster_data, risk_calculator=default_risk_calculator)
+    return PyramidCluster.from_dict(
+        cluster_data, risk_calculator=default_risk_calculator
+    )
 
 
 # ---------------------------------------------------------------------------
 # Reconciliation — OANDA is always the source of truth
 # ---------------------------------------------------------------------------
+
 
 def reconcile_with_oanda(cluster: PyramidCluster, instrument: str) -> bool:
     """
@@ -213,26 +225,36 @@ def reconcile_with_oanda(cluster: PyramidCluster, instrument: str) -> bool:
     """
     try:
         resp = oanda_client.request(
-            trades_ep.TradesList(OANDA_ACCOUNT_ID, params={"instrument": instrument, "state": "OPEN"})
+            trades_ep.TradesList(
+                OANDA_ACCOUNT_ID, params={"instrument": instrument, "state": "OPEN"}
+            )
         )
     except V20Error as e:
-        raise RiskIntegrationError(f"reconcile_with_oanda: failed to fetch open trades for {instrument}: {e}") from e
+        raise RiskIntegrationError(
+            f"reconcile_with_oanda: failed to fetch open trades for {instrument}: {e}"
+        ) from e
 
-    live_by_id: Dict[str, float] = {t["id"]: abs(float(t["currentUnits"])) for t in resp.get("trades", [])}
+    live_by_id: Dict[str, float] = {
+        t["id"]: abs(float(t["currentUnits"])) for t in resp.get("trades", [])
+    }
 
     surviving_units = []
     for unit in cluster.units:
         if unit.trade_id not in live_by_id:
             logger.info(
                 "[RECONCILE] %s unit trade_id=%s no longer open at OANDA — removing from cluster.",
-                instrument, unit.trade_id,
+                instrument,
+                unit.trade_id,
             )
             continue
         live_size = live_by_id[unit.trade_id]
         if live_size != unit.size:
             logger.info(
                 "[RECONCILE] %s unit trade_id=%s size drift: local=%s oanda=%s — syncing to OANDA.",
-                instrument, unit.trade_id, unit.size, live_size,
+                instrument,
+                unit.trade_id,
+                unit.size,
+                live_size,
             )
             unit.size = live_size
         surviving_units.append(unit)
@@ -253,11 +275,26 @@ def reconcile_with_oanda(cluster: PyramidCluster, instrument: str) -> bool:
 # "elapsed time since entry" into a `count` for get_candles() — which supports
 # a most-recent-N-candles fetch, not a date-range fetch (see fetch_market_context).
 _GRANULARITY_HOURS = {
-    "S5": 5 / 3600, "S10": 10 / 3600, "S15": 15 / 3600, "S30": 30 / 3600,
-    "M1": 1 / 60, "M2": 2 / 60, "M4": 4 / 60, "M5": 5 / 60, "M10": 10 / 60,
-    "M15": 15 / 60, "M30": 30 / 60,
-    "H1": 1.0, "H2": 2.0, "H3": 3.0, "H4": 4.0, "H6": 6.0, "H8": 8.0, "H12": 12.0,
-    "D": 24.0, "W": 24.0 * 7,
+    "S5": 5 / 3600,
+    "S10": 10 / 3600,
+    "S15": 15 / 3600,
+    "S30": 30 / 3600,
+    "M1": 1 / 60,
+    "M2": 2 / 60,
+    "M4": 4 / 60,
+    "M5": 5 / 60,
+    "M10": 10 / 60,
+    "M15": 15 / 60,
+    "M30": 30 / 60,
+    "H1": 1.0,
+    "H2": 2.0,
+    "H3": 3.0,
+    "H4": 4.0,
+    "H6": 6.0,
+    "H8": 8.0,
+    "H12": 12.0,
+    "D": 24.0,
+    "W": 24.0 * 7,
 }
 
 # OANDA's documented per-request candle count ceiling.
@@ -289,7 +326,9 @@ def _compute_candle_count_since(entry_time: datetime, granularity: str) -> int:
     """
     entry_time = _ensure_tz_aware_utc(entry_time)
     hours_per_candle = _GRANULARITY_HOURS.get(granularity, 1.0)
-    elapsed_hours = max((datetime.now(timezone.utc) - entry_time).total_seconds() / 3600.0, 0.0)
+    elapsed_hours = max(
+        (datetime.now(timezone.utc) - entry_time).total_seconds() / 3600.0, 0.0
+    )
     estimated = int(elapsed_hours / hours_per_candle) + _CANDLE_COUNT_BUFFER
     return max(_MIN_CANDLE_COUNT, min(estimated, _MAX_CANDLE_COUNT))
 
@@ -348,7 +387,9 @@ def fetch_market_context(instrument: str, cluster: PyramidCluster) -> tuple:
     """
     price = get_latest_price(instrument)
     if price is None:
-        raise RiskIntegrationError(f"fetch_market_context: no live price available for {instrument}")
+        raise RiskIntegrationError(
+            f"fetch_market_context: no live price available for {instrument}"
+        )
 
     atr_now, _z = get_atr_with_volatility_context(
         instrument,
@@ -356,7 +397,9 @@ def fetch_market_context(instrument: str, cluster: PyramidCluster) -> tuple:
         getattr(_config, "JPY_ATR_HISTORY_LOOKBACK", 100),
     )
     if atr_now is None or atr_now <= 0:
-        raise RiskIntegrationError(f"fetch_market_context: ATR unavailable for {instrument}")
+        raise RiskIntegrationError(
+            f"fetch_market_context: ATR unavailable for {instrument}"
+        )
 
     entry_time = _ensure_tz_aware_utc(cluster.risk_manager.entry_time)
     count = _compute_candle_count_since(entry_time, EXTREME_LOOKBACK_GRANULARITY)
@@ -366,7 +409,9 @@ def fetch_market_context(instrument: str, cluster: PyramidCluster) -> tuple:
     except Exception as e:
         # A real fetch failure (network, bad instrument, etc.) must propagate —
         # never silently treated as "no candles since entry".
-        raise RiskIntegrationError(f"fetch_market_context: get_candles failed for {instrument}: {e}") from e
+        raise RiskIntegrationError(
+            f"fetch_market_context: get_candles failed for {instrument}: {e}"
+        ) from e
 
     since_entry = []
     for c in candles or []:
@@ -390,7 +435,10 @@ def fetch_market_context(instrument: str, cluster: PyramidCluster) -> tuple:
             "[RISK] %s: no completed candles found at/after entry_time=%s "
             "(requested count=%d, got %d raw candles back) — falling back to "
             "live price as the only known extreme so far.",
-            instrument, entry_time.isoformat(), count, len(candles or []),
+            instrument,
+            entry_time.isoformat(),
+            count,
+            len(candles or []),
         )
         highest_high = lowest_low = price
 
@@ -405,7 +453,10 @@ def fetch_market_context(instrument: str, cluster: PyramidCluster) -> tuple:
 # Applying a RiskAction to live OANDA orders
 # ---------------------------------------------------------------------------
 
-def apply_risk_action(cluster: PyramidCluster, instrument: str, action: RiskAction) -> None:
+
+def apply_risk_action(
+    cluster: PyramidCluster, instrument: str, action: RiskAction
+) -> None:
     """
     Execute the RiskAction returned by `cluster.update()` against OANDA,
     and sync `cluster`'s in-memory state to match what actually executed.
@@ -434,10 +485,14 @@ def apply_risk_action(cluster: PyramidCluster, instrument: str, action: RiskActi
         _execute_close(cluster, instrument, action.close_ratio)
         return
 
-    raise RiskIntegrationError(f"apply_risk_action: unhandled action type {action.action}")
+    raise RiskIntegrationError(
+        f"apply_risk_action: unhandled action type {action.action}"
+    )
 
 
-def _update_sl_for_all_units(cluster: PyramidCluster, new_sl: float, instrument: str) -> None:
+def _update_sl_for_all_units(
+    cluster: PyramidCluster, new_sl: float, instrument: str
+) -> None:
     """
     SL is logically shared across the cluster, but OANDA attaches stop orders
     per trade ID — so one UPDATE_SL action means one TradeCRCDO call per unit.
@@ -453,25 +508,39 @@ def _update_sl_for_all_units(cluster: PyramidCluster, new_sl: float, instrument:
 
     for unit in cluster.units:
         if not unit.trade_id:
-            logger.warning("[RISK] %s unit with no trade_id — cannot update SL, skipping.", instrument)
+            logger.warning(
+                "[RISK] %s unit with no trade_id — cannot update SL, skipping.",
+                instrument,
+            )
             continue
         try:
-            oanda_client.request(trades_ep.TradeCRCDO(OANDA_ACCOUNT_ID, unit.trade_id, data=payload))
-            logger.info("[RISK] %s trade_id=%s SL updated to %s", instrument, unit.trade_id, price_str)
+            oanda_client.request(
+                trades_ep.TradeCRCDO(OANDA_ACCOUNT_ID, unit.trade_id, data=payload)
+            )
+            logger.info(
+                "[RISK] %s trade_id=%s SL updated to %s",
+                instrument,
+                unit.trade_id,
+                price_str,
+            )
         except V20Error as e:
             raise RiskIntegrationError(
                 f"_update_sl_for_all_units: failed to update SL for {instrument} trade_id={unit.trade_id}: {e}"
             ) from e
 
 
-def _execute_close(cluster: PyramidCluster, instrument: str, close_ratio: float) -> None:
+def _execute_close(
+    cluster: PyramidCluster, instrument: str, close_ratio: float
+) -> None:
     """
     FIFO-allocate the close across units, send one TradeClose per affected
     trade ID, confirm the ACTUAL executed size from each response (not the
     requested size), then sync cluster state via `apply_close()` using only
     what was confirmed to have actually executed.
     """
-    instructions = cluster.close_allocation(close_ratio, method=CloseAllocationMethod.FIFO)
+    instructions = cluster.close_allocation(
+        close_ratio, method=CloseAllocationMethod.FIFO
+    )
     confirmed = []
 
     for instr in instructions:
@@ -501,7 +570,10 @@ def _execute_close(cluster: PyramidCluster, instrument: str, close_ratio: float)
         actual_closed = abs(float(fill.get("units", instr.close_size)))
         logger.info(
             "[RISK] %s trade_id=%s requested_close=%s actual_close=%s",
-            instrument, instr.trade_id, instr.close_size, actual_closed,
+            instrument,
+            instr.trade_id,
+            instr.close_size,
+            actual_closed,
         )
         confirmed.append(
             replace(
@@ -517,6 +589,7 @@ def _execute_close(cluster: PyramidCluster, instrument: str, close_ratio: float)
 # ---------------------------------------------------------------------------
 # New cluster creation from a live fill
 # ---------------------------------------------------------------------------
+
 
 def new_cluster_from_fill(signal_data: dict, fill: dict) -> PyramidCluster:
     """
@@ -541,7 +614,9 @@ def new_cluster_from_fill(signal_data: dict, fill: dict) -> PyramidCluster:
     """
     for required_key in ("filled_price", "units", "trade_id"):
         if required_key not in fill:
-            raise RiskIntegrationError(f"new_cluster_from_fill: fill missing required key {required_key!r}: {fill}")
+            raise RiskIntegrationError(
+                f"new_cluster_from_fill: fill missing required key {required_key!r}: {fill}"
+            )
 
     pair = signal_data["pair"]
     direction = 1 if signal_data["action"] == "BUY" else -1
@@ -552,7 +627,9 @@ def new_cluster_from_fill(signal_data: dict, fill: dict) -> PyramidCluster:
         getattr(_config, "JPY_ATR_HISTORY_LOOKBACK", 100),
     )
     if atr_now is None or atr_now <= 0:
-        raise RiskIntegrationError(f"new_cluster_from_fill: ATR unavailable for {pair} at entry")
+        raise RiskIntegrationError(
+            f"new_cluster_from_fill: ATR unavailable for {pair} at entry"
+        )
 
     filled_price = float(fill["filled_price"])
     filled_units = abs(float(fill["units"]))
@@ -575,6 +652,7 @@ def new_cluster_from_fill(signal_data: dict, fill: dict) -> PyramidCluster:
 # ---------------------------------------------------------------------------
 # V2 SECTION 4.1 — ADDITIVE outcome-logging helper
 # ---------------------------------------------------------------------------
+
 
 def _log_closure_outcome(
     cluster: PyramidCluster,
@@ -620,6 +698,7 @@ def _log_closure_outcome(
 # ---------------------------------------------------------------------------
 # Phase A orchestration — manage every existing risk-managed position
 # ---------------------------------------------------------------------------
+
 
 def manage_open_positions() -> List[str]:
     """
@@ -685,21 +764,26 @@ def manage_open_positions() -> List[str]:
                             "fill price not fetched; see module docstring)"
                         ),
                         close_reason="closed_externally_or_by_broker "
-                                     "(TP/SL/manual — detected via reconciliation)",
+                        "(TP/SL/manual — detected via reconciliation)",
                     )
                 except Exception as log_err:
                     logger.warning(
                         "[V2-LOG] Failed to log trade outcome for %s (external close): %s",
-                        instrument, log_err,
+                        instrument,
+                        log_err,
                     )
                 # --- end V2 4.1 addition ---
 
                 delete_cluster_data(instrument)
-                print(f"  [RISK] {instrument} closed externally (TP/manual) — removed from managed state.")
+                print(
+                    f"  [RISK] {instrument} closed externally (TP/manual) — removed from managed state."
+                )
                 # is_still_managed stays False — this instrument is confirmed flat.
             else:
                 price, atr_now, hh, ll = fetch_market_context(instrument, cluster)
-                action = cluster.update(price, atr_now, hh, ll, current_time=datetime.now(timezone.utc))
+                action = cluster.update(
+                    price, atr_now, hh, ll, current_time=datetime.now(timezone.utc)
+                )
 
                 print(
                     f"  [RISK] {instrument} price={price} r={cluster.risk_manager.unrealized_r(price):+.2f}R "
@@ -731,12 +815,15 @@ def manage_open_positions() -> List[str]:
                     except Exception as log_err:
                         logger.warning(
                             "[V2-LOG] Failed to log trade outcome for %s (full close): %s",
-                            instrument, log_err,
+                            instrument,
+                            log_err,
                         )
                     # --- end V2 4.1 addition ---
 
                     delete_cluster_data(instrument)
-                    print(f"  [RISK] {instrument} fully closed this cycle — removed from managed state.")
+                    print(
+                        f"  [RISK] {instrument} fully closed this cycle — removed from managed state."
+                    )
                     # is_still_managed stays False — confirmed flat as of this cycle's own action.
                 else:
                     save_cluster_data(instrument, cluster.to_dict())
@@ -744,6 +831,7 @@ def manage_open_positions() -> List[str]:
 
         except Exception as e:
             import traceback
+
             print(f"  [RISK ERROR] {instrument}: {e}")
             traceback.print_exc()
             # Deliberately do NOT delete or save state on error — leave the LAST

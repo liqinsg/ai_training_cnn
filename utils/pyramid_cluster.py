@@ -58,13 +58,17 @@ from utils.dynamic_risk_manager import (
 # Enums & structured outputs
 # ---------------------------------------------------------------------------
 
+
 class AddUnitStatus(Enum):
     """Result codes for a proposed pyramid add."""
+
     OK = "OK"
-    REJECTED_NOT_SECURED = "REJECTED_NOT_SECURED"           # base position not yet at BE+
-    REJECTED_SIZE_TOO_LARGE = "REJECTED_SIZE_TOO_LARGE"     # violates sizing-decay rule
-    REJECTED_RISK_EXCEEDED = "REJECTED_RISK_EXCEEDED"       # would breach aggregate risk cap
-    REJECTED_CLUSTER_CLOSED = "REJECTED_CLUSTER_CLOSED"     # cluster already closed/time-exited
+    REJECTED_NOT_SECURED = "REJECTED_NOT_SECURED"  # base position not yet at BE+
+    REJECTED_SIZE_TOO_LARGE = "REJECTED_SIZE_TOO_LARGE"  # violates sizing-decay rule
+    REJECTED_RISK_EXCEEDED = "REJECTED_RISK_EXCEEDED"  # would breach aggregate risk cap
+    REJECTED_CLUSTER_CLOSED = (
+        "REJECTED_CLUSTER_CLOSED"  # cluster already closed/time-exited
+    )
 
 
 @dataclass
@@ -79,6 +83,7 @@ class AddUnitCheck:
                                (present for RISK_EXCEEDED and successful OK checks).
         max_allowed_risk: The ceiling that was checked against.
     """
+
     status: AddUnitStatus
     reason: str
     projected_total_risk: Optional[float] = None
@@ -88,12 +93,15 @@ class AddUnitCheck:
 @dataclass
 class PositionUnit:
     """A single fill within a pyramided cluster."""
+
     size: float
     entry_price: float
     entry_time: datetime
-    trade_id: Optional[str] = None  # OANDA trade ID for this specific fill/ticket — needed
-                                     # because SL-modify and close calls are per-trade-ID, not
-                                     # per-position, even when several units share one instrument.
+    trade_id: Optional[str] = (
+        None  # OANDA trade ID for this specific fill/ticket — needed
+    )
+    # because SL-modify and close calls are per-trade-ID, not
+    # per-position, even when several units share one instrument.
 
     def to_dict(self) -> dict:
         """Serialize to a plain, JSON-safe dict."""
@@ -118,6 +126,7 @@ class PositionUnit:
 @dataclass
 class ClusterMetrics:
     """Snapshot of cluster-wide metrics, for logging/dashboards."""
+
     unit_count: int
     unit_sizes: List[float]
     total_size: float
@@ -129,7 +138,8 @@ class ClusterMetrics:
 
 class CloseAllocationMethod(Enum):
     """How a cluster-level close_ratio maps to specific unit tickets."""
-    FIFO = "FIFO"        # Close oldest units first — matches OANDA's default FIFO rule
+
+    FIFO = "FIFO"  # Close oldest units first — matches OANDA's default FIFO rule
     PRO_RATA = "PRO_RATA"  # Trim every unit proportionally by the same ratio
 
 
@@ -143,6 +153,7 @@ class UnitCloseInstruction:
     `trade_id` is included so the execution layer knows exactly which OANDA
     trade ticket to send the close request to.
     """
+
     unit_index: int
     entry_price: float
     entry_time: datetime
@@ -156,12 +167,15 @@ class UnitCloseInstruction:
 # This is a placeholder — in a real account-risk check, replace with a calculator that
 # converts to account-currency risk (e.g. via OANDA's pip value / margin calc for the
 # instrument), since JPY-cross pip values depend on account currency and current USD/JPY rate.
-DEFAULT_RISK_CALCULATOR: Callable[[float, float], float] = lambda size, distance: size * distance
+DEFAULT_RISK_CALCULATOR: Callable[[float, float], float] = (
+    lambda size, distance: size * distance
+)
 
 
 # ---------------------------------------------------------------------------
 # PyramidCluster
 # ---------------------------------------------------------------------------
+
 
 class PyramidCluster:
     """
@@ -256,7 +270,9 @@ class PyramidCluster:
             RiskStateEnum.TIME_DECAY_REDUCE,
         }
 
-    def _projected_total_risk(self, projected_units: List[PositionUnit], shared_sl: float) -> float:
+    def _projected_total_risk(
+        self, projected_units: List[PositionUnit], shared_sl: float
+    ) -> float:
         """Aggregate risk = sum over units of risk_calculator(size, |entry - shared_sl|)."""
         return sum(
             self.risk_calculator(u.size, abs(u.entry_price - shared_sl))
@@ -289,7 +305,10 @@ class PyramidCluster:
             first-violated REJECTED_* status otherwise (checked in order:
             cluster state -> secured -> sizing decay -> aggregate risk).
         """
-        if self.risk_manager.state in (RiskStateEnum.CLOSED, RiskStateEnum.TIME_DECAY_EXIT):
+        if self.risk_manager.state in (
+            RiskStateEnum.CLOSED,
+            RiskStateEnum.TIME_DECAY_EXIT,
+        ):
             return AddUnitCheck(
                 status=AddUnitStatus.REJECTED_CLUSTER_CLOSED,
                 reason=f"Cluster is in terminal state {self.risk_manager.state.value}; cannot add.",
@@ -317,7 +336,9 @@ class PyramidCluster:
 
         shared_sl = self.risk_manager.current_sl
         projected_units = self.units + [
-            PositionUnit(size=new_size, entry_price=new_entry_price, entry_time=datetime.min)
+            PositionUnit(
+                size=new_size, entry_price=new_entry_price, entry_time=datetime.min
+            )
         ]
         projected_risk = self._projected_total_risk(projected_units, shared_sl)
 
@@ -389,7 +410,12 @@ class PyramidCluster:
             return check
 
         self.units.append(
-            PositionUnit(size=new_size, entry_price=new_entry_price, entry_time=entry_time, trade_id=trade_id)
+            PositionUnit(
+                size=new_size,
+                entry_price=new_entry_price,
+                entry_time=entry_time,
+                trade_id=trade_id,
+            )
         )
         return check
 
@@ -631,7 +657,7 @@ class PyramidCluster:
             KeyError: if a required field is missing from `data`.
         """
         obj = cls.__new__(cls)  # bypass __init__ — it forces a single base unit and a
-                                # freshly-computed initial SL, neither of which apply on restore
+        # freshly-computed initial SL, neither of which apply on restore
         obj.max_size_decay_ratio = data["max_size_decay_ratio"]
         obj.risk_calculator = risk_calculator or DEFAULT_RISK_CALCULATOR
         obj.units = [PositionUnit.from_dict(u) for u in data["units"]]
@@ -677,12 +703,27 @@ if __name__ == "__main__":
     print("Base entry:", cluster.metrics())
 
     # --- Attempt an early add BEFORE break-even is reached: should be rejected ---
-    early_check = cluster.can_add_unit(new_size=5_000, new_entry_price=98.70, max_allowed_risk=max_allowed_risk)
-    print("\nEarly add attempt (pre-BE):", early_check.status.value, "-", early_check.reason)
+    early_check = cluster.can_add_unit(
+        new_size=5_000, new_entry_price=98.70, max_allowed_risk=max_allowed_risk
+    )
+    print(
+        "\nEarly add attempt (pre-BE):",
+        early_check.status.value,
+        "-",
+        early_check.reason,
+    )
 
     # --- Push the trade to +1R so BE triggers ---
-    result = cluster.update(price=99.30, atr_now=0.34, highest_high=99.30, lowest_low=98.40, hours_elapsed=8)
-    print("\nAfter update to price=99.30:", result.action.value, result.reason, "| state:", result.state.value)
+    result = cluster.update(
+        price=99.30, atr_now=0.34, highest_high=99.30, lowest_low=98.40, hours_elapsed=8
+    )
+    print(
+        "\nAfter update to price=99.30:",
+        result.action.value,
+        result.reason,
+        "| state:",
+        result.state.value,
+    )
     print("Cluster metrics:", cluster.metrics())
 
     # --- Step 2: first safe add (5,000 units = 50% of base 10,000) ---
@@ -696,8 +737,20 @@ if __name__ == "__main__":
     print("Cluster metrics after add #1:", cluster.metrics())
 
     # --- Advance further, trail engages, then attempt a second add ---
-    result2 = cluster.update(price=99.80, atr_now=0.32, highest_high=99.80, lowest_low=98.40, hours_elapsed=18)
-    print("\nAfter update to price=99.80:", result2.action.value, result2.reason, "| state:", result2.state.value)
+    result2 = cluster.update(
+        price=99.80,
+        atr_now=0.32,
+        highest_high=99.80,
+        lowest_low=98.40,
+        hours_elapsed=18,
+    )
+    print(
+        "\nAfter update to price=99.80:",
+        result2.action.value,
+        result2.reason,
+        "| state:",
+        result2.state.value,
+    )
     print("Cluster metrics:", cluster.metrics())
 
     # --- Step 3: second safe add (2,500 units = 50% of prior add's 5,000) ---
@@ -711,8 +764,15 @@ if __name__ == "__main__":
     print("Cluster metrics after add #2:", cluster.metrics())
 
     # --- Attempt an oversized third add: should be rejected on sizing-decay ---
-    oversized_check = cluster.can_add_unit(new_size=2_000, new_entry_price=99.90, max_allowed_risk=max_allowed_risk)
-    print("\nOversized add attempt (2,000 > 70% of 2,500=1,750):", oversized_check.status.value, "-", oversized_check.reason)
+    oversized_check = cluster.can_add_unit(
+        new_size=2_000, new_entry_price=99.90, max_allowed_risk=max_allowed_risk
+    )
+    print(
+        "\nOversized add attempt (2,000 > 70% of 2,500=1,750):",
+        oversized_check.status.value,
+        "-",
+        oversized_check.reason,
+    )
 
     print("\nCluster state before stagnation:")
     print(cluster.metrics())
@@ -721,14 +781,22 @@ if __name__ == "__main__":
     #     forcing the shared risk manager to issue a PARTIAL_CLOSE ---
     print("\n--- Simulating stagnation -> time-decay PARTIAL_CLOSE ---")
     stall_result = cluster.update(
-        price=99.00, atr_now=0.30, highest_high=99.80, lowest_low=98.40, hours_elapsed=60
+        price=99.00,
+        atr_now=0.30,
+        highest_high=99.80,
+        lowest_low=98.40,
+        hours_elapsed=60,
     )
-    print(f"update() -> action={stall_result.action.value} close_ratio={stall_result.close_ratio} "
-          f"reason={stall_result.reason}")
+    print(
+        f"update() -> action={stall_result.action.value} close_ratio={stall_result.close_ratio} "
+        f"reason={stall_result.reason}"
+    )
 
     if stall_result.action == ActionType.PARTIAL_CLOSE:
         # Step A: ask the cluster how to fan the close out across tickets (FIFO = OANDA default)
-        instructions = cluster.close_allocation(stall_result.close_ratio, method=CloseAllocationMethod.FIFO)
+        instructions = cluster.close_allocation(
+            stall_result.close_ratio, method=CloseAllocationMethod.FIFO
+        )
         print("\nFIFO close_allocation() instructions:")
         for instr in instructions:
             print(

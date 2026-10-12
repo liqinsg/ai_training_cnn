@@ -18,7 +18,7 @@ STRENGTH_PAIRS = [
     "USD_JPY",
     "AUD_JPY",
     "USD_CHF",
-    "GBP_JPY"
+    "GBP_JPY",
 ]
 
 # ========== Strength Lookback & Weight ==========

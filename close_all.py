@@ -16,9 +16,8 @@ from oandapyV20 import API
 import oandapyV20.endpoints.positions as positions
 import oandapyV20.endpoints.orders as orders
 
-from config_oanda import (
-    OANDA_ENV, OANDA_API_TOKEN, OANDA_ACCOUNT_ID
-)
+from config_oanda import OANDA_ENV, OANDA_API_TOKEN, OANDA_ACCOUNT_ID
+
 oanda_env = OANDA_ENV
 oanda_client = API(
     access_token=OANDA_API_TOKEN,
@@ -35,8 +34,7 @@ def cancel_pending_orders(instrument: str | None = None):
 
     if instrument:
         pending_orders = [
-            o for o in pending_orders
-            if o.get("instrument") == instrument
+            o for o in pending_orders if o.get("instrument") == instrument
         ]
 
     if not pending_orders:
@@ -79,8 +77,7 @@ def close_open_positions(instrument: str | None = None):
 
     if instrument:
         open_positions = [
-            p for p in open_positions
-            if p.get("instrument") == instrument
+            p for p in open_positions if p.get("instrument") == instrument
         ]
 
     if not open_positions:
@@ -178,4 +175,3 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
     close_all(args.instrument, yes=args.yes)
-    

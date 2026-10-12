@@ -6,9 +6,15 @@ def cfg_bot(name, default):
     return getattr(config_bot, name, getattr(config, name, default))
 
 
-def calc_weighted_score(direction: str, gap: float, rsi_val: float, adx_val: float,
-                         xgb_prob: float, mc_pct: float, is_test: bool = False) -> dict:
-
+def calc_weighted_score(
+    direction: str,
+    gap: float,
+    rsi_val: float,
+    adx_val: float,
+    xgb_prob: float,
+    mc_pct: float,
+    is_test: bool = False,
+) -> dict:
     """
     Compute FINAL_SCORE using 2-Coins weighted formula.
     TEST MODE: relax ADX, XGB, and threshold for easier signal generation.
@@ -16,12 +22,12 @@ def calc_weighted_score(direction: str, gap: float, rsi_val: float, adx_val: flo
     """
     # ─── THRESHOLDS ───
     if is_test:
-        MIN_FINAL_SCORE = 25.0   # ✅ Lower bar for testing
-        ADX_PASS_LEVEL = 0.0      # ✅ No ADX filter in test mode
-        GAP_BLOCK_THRESHOLD = 2.0 # ✅ Wider gap tolerance in test
+        MIN_FINAL_SCORE = 25.0  # ✅ Lower bar for testing
+        ADX_PASS_LEVEL = 0.0  # ✅ No ADX filter in test mode
+        GAP_BLOCK_THRESHOLD = 2.0  # ✅ Wider gap tolerance in test
     else:
         MIN_FINAL_SCORE = min_conv  # from config_bot.py (default 40.0)
-        ADX_PASS_LEVEL = 25.0       # ❌ Strict trend requirement in live
+        ADX_PASS_LEVEL = 25.0  # ❌ Strict trend requirement in live
         GAP_BLOCK_THRESHOLD = cfg_bot("STRENGTH_SIGNAL_BLOCK_THRESHOLD", 1.0)
 
     # ─── 1. STRENGTH SCORE (0–100) ───
@@ -66,14 +72,18 @@ def calc_weighted_score(direction: str, gap: float, rsi_val: float, adx_val: flo
     M = max(0.0, min(100.0, mc_pct if mc_pct is not None else 50.0))
 
     # ─── FINAL WEIGHTED SUM ───
-    FINAL = S*W_S + R*W_R + A*W_A + X*W_X + M*W_M
+    FINAL = S * W_S + R * W_R + A * W_A + X * W_X + M * W_M
     PASS = FINAL >= MIN_FINAL_SCORE
 
     return {
-        "S": round(S,1), "R": round(R,1), "A": round(A,1),
-        "X": round(X,1), "M": round(M,1),
-        "FINAL": round(FINAL,1), "PASS": PASS,
-        "THRESHOLD": round(MIN_FINAL_SCORE,1),
-        "GAP_THRESHOLD": round(GAP_BLOCK_THRESHOLD,1),
-        "MODE": "TEST" if is_test else "LIVE"
+        "S": round(S, 1),
+        "R": round(R, 1),
+        "A": round(A, 1),
+        "X": round(X, 1),
+        "M": round(M, 1),
+        "FINAL": round(FINAL, 1),
+        "PASS": PASS,
+        "THRESHOLD": round(MIN_FINAL_SCORE, 1),
+        "GAP_THRESHOLD": round(GAP_BLOCK_THRESHOLD, 1),
+        "MODE": "TEST" if is_test else "LIVE",
     }

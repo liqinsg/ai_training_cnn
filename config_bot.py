@@ -23,6 +23,7 @@ FOREX_PAIRS_FILE = os.path.join(CONFIG_DIR, "forex_pairs.json")
 with open(CONFIG_FILE, "r", encoding="utf-8") as f:
     _FULL = json.load(f)
 
+
 # ─── Pair universe (DEFAULT_PAIRS / WHITELIST) ───
 # Held in forex_pairs.json (bare symbols, no "=X") — surfaced here so the bot can
 # read P["WHITELIST"] from the unified profile dict like every other key.
@@ -43,8 +44,10 @@ try:
         str(k): [_with_suffix(p) for p in v] for k, v in _FOREX["WHITELIST"].items()
     }
     YAHOO_TO_OANDA = {p: _yahoo_to_oanda(p) for p in DEFAULT_PAIRS}
-    logger.info(f"   forex_pairs.json ✅ {len(DEFAULT_PAIRS)} default pairs, "
-                f"{len(WHITELIST)} whitelist bucket(s)")
+    logger.info(
+        f"   forex_pairs.json ✅ {len(DEFAULT_PAIRS)} default pairs, "
+        f"{len(WHITELIST)} whitelist bucket(s)"
+    )
 except (OSError, KeyError, ValueError) as err:
     logger.warning(f"⚠️  forex_pairs.json unavailable ({err}) — pair lists empty")
     DEFAULT_PAIRS = []
@@ -57,6 +60,7 @@ PROFILE_DEFAULTS: Dict = _FULL["profile_defaults"]
 PROFILES: Dict = _FULL["profiles"]
 PROFILE_IDS = sorted([int(k) for k in PROFILES.keys()])
 
+
 # ─── Helper: nested get ───
 def get_global(dotted_key: str):
     """Get global config by dotted path: get_global('risk_trade.SL_MIN_PIPS')"""
@@ -65,6 +69,7 @@ def get_global(dotted_key: str):
     for p in parts:
         v = v[p]
     return v
+
 
 # ─── Build merged profile ───
 def build_profile_cfg(profile_id: int) -> Dict:
@@ -101,11 +106,17 @@ def build_profile_cfg(profile_id: int) -> Dict:
         "MIN_SLOPE": p["MIN_SLOPE"],
         # Slope-filter / confluence switches that cfg_bot() resolves from P.
         "TREND_FILTER_ENABLED": get_global("confluence_filter.TREND_FILTER_ENABLED"),
-        "WEEK_EMA100_FILTER_ENABLED": get_global("confluence_filter.WEEK_EMA100_FILTER_ENABLED"),
+        "WEEK_EMA100_FILTER_ENABLED": get_global(
+            "confluence_filter.WEEK_EMA100_FILTER_ENABLED"
+        ),
         "RSI_DIRECTION_AWARE": get_global("confluence_filter.RSI_DIRECTION_AWARE"),
         "MULTI_TF_CONFLUENCE": get_global("confluence_filter.MULTI_TF_CONFLUENCE"),
-        "CONFLUENCE_REQUIRED_TFS": get_global("confluence_filter.CONFLUENCE_REQUIRED_TFS"),
-        "REQUIRE_STRONG_MOMENTUM": GLOBAL["monte_carlo"].get("REQUIRE_STRONG_MOMENTUM", True),
+        "CONFLUENCE_REQUIRED_TFS": get_global(
+            "confluence_filter.CONFLUENCE_REQUIRED_TFS"
+        ),
+        "REQUIRE_STRONG_MOMENTUM": GLOBAL["monte_carlo"].get(
+            "REQUIRE_STRONG_MOMENTUM", True
+        ),
         "D_GATE_ENABLED": p["D_GATE_ENABLED"],
         "D_GATE_BUFFER_PCT": p.get("D_GATE_BUFFER_PCT", d["D_GATE_BUFFER_PCT"]),
         "D_GATE_CONFIRM": p.get("D_GATE_CONFIRM", d["D_GATE_CONFIRM"]),
@@ -114,10 +125,14 @@ def build_profile_cfg(profile_id: int) -> Dict:
         "D_GATE_SHADOW": p.get("D_GATE_SHADOW", GLOBAL["d_gate_base"]["D_GATE_SHADOW"]),
         "MAX_OPEN": p["MAX_OPEN"],
         "MAX_OPEN_POSITIONS": p["MAX_OPEN"],
-        "MAX_ENTRIES_THIS_RUN": p.get("MAX_ENTRIES_THIS_RUN", d["MAX_ENTRIES_THIS_RUN"]),
+        "MAX_ENTRIES_THIS_RUN": p.get(
+            "MAX_ENTRIES_THIS_RUN", d["MAX_ENTRIES_THIS_RUN"]
+        ),
         "TOP_N": p["TOP_N"],
         "TOP_N_CURRENCIES": p["TOP_N"],
-        "USE_TOP_PAIRS_ONLY": p.get("USE_TOP_PAIRS_ONLY", d.get("USE_TOP_PAIRS_ONLY", True)),
+        "USE_TOP_PAIRS_ONLY": p.get(
+            "USE_TOP_PAIRS_ONLY", d.get("USE_TOP_PAIRS_ONLY", True)
+        ),
         "WHITELIST": list(WHITELIST.get(pid, DEFAULT_PAIRS)),
         "ALL_PAIRS": list(WHITELIST.get(pid, DEFAULT_PAIRS)),
         "ACCOUNT_SUFFIX": p["ACCOUNT_SUFFIX"],
@@ -150,7 +165,9 @@ def build_profile_cfg(profile_id: int) -> Dict:
         "TP_RAISE_THRESHOLD_PIPS": get_global("tp_trailing.TP_RAISE_THRESHOLD_PIPS"),
         "TRAIL_ATR_MULT": get_global("tp_trailing.TRAIL_ATR_MULT"),
         # confluence
-        "REQUIRE_DIRECTION_CONSENSUS": get_global("confluence_filter.REQUIRE_DIRECTION_CONSENSUS"),
+        "REQUIRE_DIRECTION_CONSENSUS": get_global(
+            "confluence_filter.REQUIRE_DIRECTION_CONSENSUS"
+        ),
         "CONSENSUS_THRESHOLD": get_global("confluence_filter.CONSENSUS_THRESHOLD"),
         "SLOPE_DIAG": get_global("confluence_filter.SLOPE_DIAG"),
         # adx
@@ -160,6 +177,7 @@ def build_profile_cfg(profile_id: int) -> Dict:
         "ADX_SCALE_FACTOR": get_global("adx_logic.ADX_SCALE_FACTOR"),
     }
     return cfg
+
 
 def get_profile(profile_id: int) -> Dict:
     """Public API — return merged config for given profile ID"""
@@ -207,25 +225,26 @@ def validate_weights(weights: Dict, label: str, tol: float = 0.005) -> bool:
         logger.warning(f"⚠️  WARN: Weights sum = {s:.4f}")
     return ok
 
+
 def self_test():
-    print("="*60)
+    print("=" * 60)
     print(f"🚀 FX BOT CONFIG SELF-TEST — v{VERSION}")
-    print("="*60)
+    print("=" * 60)
 
     print("[1/4] File & Structure Check")
-    print("─"*36)
+    print("─" * 36)
     print(f"  config_profile.json ✅ version: {VERSION}")
     print(f"  Profiles loaded    ✅ count: {len(PROFILES)} — IDs: {PROFILE_IDS}")
 
     print("\n[2/4] Global Validation")
-    print("─"*36)
-    global_weights = {k: v for k, v in {
-        "S": 0.50, "R": 0.15, "A": 0.15, "X": 0.12, "M": 0.08
-    }.items()}
+    print("─" * 36)
+    global_weights = {
+        k: v for k, v in {"S": 0.50, "R": 0.15, "A": 0.15, "X": 0.12, "M": 0.08}.items()
+    }
     validate_weights(global_weights, "Global defaults")
 
     print("\n[3/4] Per-Profile Validation")
-    print("─"*36)
+    print("─" * 36)
     all_ok = True
     for pid in PROFILE_IDS:
         p = PROFILES[str(pid)]
@@ -234,20 +253,23 @@ def self_test():
         all_ok = all_ok and ok
 
     print("[4/4] Smoke Test — build_profile_cfg()")
-    print("─"*36)
+    print("─" * 36)
     for pid in PROFILE_IDS:
         cfg = build_profile_cfg(pid)
-        print(f"  Profile{pid} ✅ {cfg['PROFILE_LABEL']} | "
-              f"min_conv={cfg['MIN_CONVICTION']} | "
-              f"dgate={cfg['D_GATE_ENABLED']} | "
-              f"sum={cfg['W_S']+cfg['W_R']+cfg['W_A']+cfg['W_X']+cfg['W_M']:.4f}")
+        print(
+            f"  Profile{pid} ✅ {cfg['PROFILE_LABEL']} | "
+            f"min_conv={cfg['MIN_CONVICTION']} | "
+            f"dgate={cfg['D_GATE_ENABLED']} | "
+            f"sum={cfg['W_S']+cfg['W_R']+cfg['W_A']+cfg['W_X']+cfg['W_M']:.4f}"
+        )
 
-    print("="*60)
+    print("=" * 60)
     if all_ok:
         print("✅ ✅ ✅ ALL SELF-TESTS PASSED — Ready to trade ✅ ✅ ✅")
     else:
         print("⚠️  Some validations had warnings — review above")
-    print("="*60)
+    print("=" * 60)
+
 
 if __name__ == "__main__":
     self_test()

@@ -63,7 +63,9 @@ def compute_rsi(close: pd.Series, period: int = 14) -> pd.Series:
     return 100 - (100 / (1 + rs))
 
 
-def compute_atr(high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14) -> pd.Series:
+def compute_atr(
+    high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14
+) -> pd.Series:
     prev_close = close.shift(1)
     tr1 = high - low
     tr2 = (high - prev_close).abs()
@@ -72,13 +74,17 @@ def compute_atr(high: pd.Series, low: pd.Series, close: pd.Series, period: int =
     return tr.rolling(window=period, min_periods=period).mean()
 
 
-def compute_macd(close: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9) -> pd.DataFrame:
+def compute_macd(
+    close: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9
+) -> pd.DataFrame:
     ema_fast = close.ewm(span=fast, adjust=False).mean()
     ema_slow = close.ewm(span=slow, adjust=False).mean()
     macd_line = ema_fast - ema_slow
     signal_line = macd_line.ewm(span=signal, adjust=False).mean()
     histogram = macd_line - signal_line
-    return pd.DataFrame({"macd": macd_line, "signal": signal_line, "histogram": histogram})
+    return pd.DataFrame(
+        {"macd": macd_line, "signal": signal_line, "histogram": histogram}
+    )
 
 
 def compute_indicators(df: pd.DataFrame) -> dict:
@@ -98,10 +104,14 @@ def compute_indicators(df: pd.DataFrame) -> dict:
     return indicators
 
 
-def fetch_price_data(symbol: str, period: str = "60d", interval: str = "1h") -> pd.DataFrame:
+def fetch_price_data(
+    symbol: str, period: str = "60d", interval: str = "1h"
+) -> pd.DataFrame:
     yahoo_symbol = translate_pair_to_yahoo(symbol)
     if yahoo_symbol is None:
-        raise ValueError(f"Unable to translate symbol to Yahoo Finance ticker: {symbol}")
+        raise ValueError(
+            f"Unable to translate symbol to Yahoo Finance ticker: {symbol}"
+        )
 
     df = yf.download(yahoo_symbol, period=period, interval=interval, progress=False)
     if df.empty:

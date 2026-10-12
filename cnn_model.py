@@ -6,7 +6,7 @@ from tensorflow.keras import layers, models
 # =========================
 # Config
 # =========================
-DATA_DIR = "data/train/iscsi"   # <- contains iscsi.png
+DATA_DIR = "data/train/iscsi"  # <- contains iscsi.png
 IMAGE_SIZE = (64, 64)
 BATCH_SIZE = 1
 EPOCHS = 5
@@ -18,11 +18,11 @@ NUM_CLASSES = 1  # single class
 # Load image file paths
 # =========================
 image_paths = sorted(
-    glob.glob(os.path.join(DATA_DIR, "*.png")) +
-    glob.glob(os.path.join(DATA_DIR, "*.jpg")) +
-    glob.glob(os.path.join(DATA_DIR, "*.jpeg")) +
-    glob.glob(os.path.join(DATA_DIR, "*.bmp")) +
-    glob.glob(os.path.join(DATA_DIR, "*.gif"))
+    glob.glob(os.path.join(DATA_DIR, "*.png"))
+    + glob.glob(os.path.join(DATA_DIR, "*.jpg"))
+    + glob.glob(os.path.join(DATA_DIR, "*.jpeg"))
+    + glob.glob(os.path.join(DATA_DIR, "*.bmp"))
+    + glob.glob(os.path.join(DATA_DIR, "*.gif"))
 )
 
 if len(image_paths) == 0:
@@ -41,6 +41,7 @@ else:
     train_paths = image_paths[:split]
     val_paths = image_paths[split:]
 
+
 def make_ds(paths):
     paths_ds = tf.data.Dataset.from_tensor_slices(paths)
 
@@ -58,6 +59,7 @@ def make_ds(paths):
     ds = ds.batch(BATCH_SIZE).prefetch(tf.data.AUTOTUNE)
     return ds
 
+
 train_ds = make_ds(train_paths)
 val_ds = make_ds(val_paths) if len(val_paths) > 0 else None
 
@@ -67,33 +69,29 @@ print(f"Train: {len(train_paths)} | Val: {len(val_paths)} | NUM_CLASSES={NUM_CLA
 # =========================
 # Model
 # =========================
-model = models.Sequential([
-    layers.Input(shape=(IMAGE_SIZE[0], IMAGE_SIZE[1], 3)),
-
-    layers.Conv2D(32, 3, padding="same", activation="relu"),
-    layers.MaxPooling2D(2),
-
-    layers.Conv2D(64, 3, padding="same", activation="relu"),
-    layers.MaxPooling2D(2),
-
-    layers.Conv2D(128, 3, padding="same", activation="relu"),
-    layers.MaxPooling2D(2),
-
-    layers.GlobalAveragePooling2D(),
-    layers.Dropout(0.3),
-
-    layers.Dense(64, activation="relu"),
-    layers.Dropout(0.3),
-
-    layers.Dense(NUM_CLASSES, activation="softmax")
-])
+model = models.Sequential(
+    [
+        layers.Input(shape=(IMAGE_SIZE[0], IMAGE_SIZE[1], 3)),
+        layers.Conv2D(32, 3, padding="same", activation="relu"),
+        layers.MaxPooling2D(2),
+        layers.Conv2D(64, 3, padding="same", activation="relu"),
+        layers.MaxPooling2D(2),
+        layers.Conv2D(128, 3, padding="same", activation="relu"),
+        layers.MaxPooling2D(2),
+        layers.GlobalAveragePooling2D(),
+        layers.Dropout(0.3),
+        layers.Dense(64, activation="relu"),
+        layers.Dropout(0.3),
+        layers.Dense(NUM_CLASSES, activation="softmax"),
+    ]
+)
 
 model.summary()
 
 model.compile(
     optimizer=tf.keras.optimizers.Adam(learning_rate=1e-3),
     loss="sparse_categorical_crossentropy",
-    metrics=["accuracy"]
+    metrics=["accuracy"],
 )
 
 # =========================
@@ -104,17 +102,10 @@ callbacks = [
 ]
 
 if val_ds is None:
-    history = model.fit(
-        train_ds,
-        epochs=EPOCHS,
-        callbacks=callbacks
-    )
+    history = model.fit(train_ds, epochs=EPOCHS, callbacks=callbacks)
 else:
     history = model.fit(
-        train_ds,
-        validation_data=val_ds,
-        epochs=EPOCHS,
-        callbacks=callbacks
+        train_ds, validation_data=val_ds, epochs=EPOCHS, callbacks=callbacks
     )
 
 # model.save("cnn_model.h5")

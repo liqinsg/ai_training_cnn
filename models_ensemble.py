@@ -7,11 +7,7 @@ from google import genai
 from google.genai import types
 
 # Only import from config — NO imports from utils/trading_core here!
-from config import (
-    GEMINI_API_KEY,
-    GEMINI_NEWS_MODEL,
-    USE_GEMINI_AI
-)
+from config import GEMINI_API_KEY, GEMINI_NEWS_MODEL, USE_GEMINI_AI
 
 # Initialize clients locally
 gemini_client = genai.Client(api_key=GEMINI_API_KEY) if USE_GEMINI_AI else None
@@ -31,9 +27,8 @@ def get_gemini_decision(prompt: str):
             model=GEMINI_NEWS_MODEL,
             contents=prompt,
             config=types.GenerateContentConfig(
-                temperature=0.1,
-                response_mime_type="application/json"
-            )
+                temperature=0.1, response_mime_type="application/json"
+            ),
         )
         # Parse your TradeSignal-compatible response here
         return json.loads(response.text.strip("`json \n"))

@@ -5,6 +5,7 @@ from oandapyV20.endpoints.positions import PositionDetails
 from oanda_config import oanda_config
 from utils.trading_core import api
 
+
 def check_recent_closed_no_open(instrument, cooldown_mins=60):
     """
     ✅ NO JSON FILE — PULLS LIVE FROM OANDA
@@ -14,7 +15,9 @@ def check_recent_closed_no_open(instrument, cooldown_mins=60):
 
     # Step 1: Check if position is OPEN
     try:
-        pos = api.request(PositionDetails(oanda_config.ACCOUNT_ID, instrument=instrument))
+        pos = api.request(
+            PositionDetails(oanda_config.ACCOUNT_ID, instrument=instrument)
+        )
         pos_data = pos.get("position", {})
         long_units = abs(float(pos_data.get("long", {}).get("units", 0)))
         short_units = abs(float(pos_data.get("short", {}).get("units", 0)))
@@ -24,10 +27,11 @@ def check_recent_closed_no_open(instrument, cooldown_mins=60):
 
     # Step 2: Get ALL trades (open + closed) for this instrument, latest first
     try:
-        resp = api.request(TradesList(
-            oanda_config.ACCOUNT_ID,
-            params={"instrument": instrument, "count": 5}
-        ))
+        resp = api.request(
+            TradesList(
+                oanda_config.ACCOUNT_ID, params={"instrument": instrument, "count": 5}
+            )
+        )
         trades = resp.get("trades", [])
     except Exception:
         trades = []
@@ -37,7 +41,9 @@ def check_recent_closed_no_open(instrument, cooldown_mins=60):
     last_dir = None
     for t in trades:
         if t.get("state") == "CLOSED":
-            last_closed_time = datetime.fromisoformat(t["closeTime"].replace("Z", "+00:00"))
+            last_closed_time = datetime.fromisoformat(
+                t["closeTime"].replace("Z", "+00:00")
+            )
             last_dir = "LONG" if float(t.get("initialUnits", 0)) > 0 else "SHORT"
             break
 

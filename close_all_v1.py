@@ -30,6 +30,7 @@ oanda_client = API(
     environment=OANDA_ENV,
 )
 
+
 def select_account():
     print("\n=== EMERGENCY CLOSE ALL ===\n")
 
@@ -49,6 +50,7 @@ def select_account():
 
         print("Invalid selection.")
 
+
 def close_all(account_id: str):
     print(f"\n=== Account: {account_id} | Cancel pending orders ===")
     cancel_pending_orders(account_id)
@@ -57,7 +59,8 @@ def close_all(account_id: str):
     close_open_positions(account_id)
 
     print("\nDone.")
-    
+
+
 def cancel_pending_orders(account_id: str, instrument: str | None = None):
     req = orders.OrderList(accountID=account_id)
     oanda_client.request(req)
@@ -66,8 +69,7 @@ def cancel_pending_orders(account_id: str, instrument: str | None = None):
 
     if instrument:
         pending_orders = [
-            o for o in pending_orders
-            if o.get("instrument") == instrument
+            o for o in pending_orders if o.get("instrument") == instrument
         ]
 
     if not pending_orders:
@@ -110,8 +112,7 @@ def close_open_positions(account_id: str, instrument: str | None = None):
 
     if instrument:
         open_positions = [
-            p for p in open_positions
-            if p.get("instrument") == instrument
+            p for p in open_positions if p.get("instrument") == instrument
         ]
 
     if not open_positions:
@@ -173,6 +174,7 @@ def close_open_positions(account_id: str, instrument: str | None = None):
         except Exception as e:
             print(f"  ERROR closing {pair}: {e}")
 
+
 def show_account_summary(account_id):
     try:
         req = positions.OpenPositions(accountID=account_id)
@@ -202,7 +204,7 @@ def show_account_summary(account_id):
                 if total_pl >= 0
                 else f"{RED}{total_pl:.2f}{RESET}"
             )
-            
+
             print(
                 f"    {pair:<10} "
                 f"Long:{long_u:<8} "
@@ -213,7 +215,8 @@ def show_account_summary(account_id):
 
     except Exception as e:
         print(f"  ERROR: {e}")
-        
+
+
 def show_menu():
     print("\n========== EMERGENCY CLOSE ALL ==========\n")
 
@@ -230,7 +233,8 @@ def show_menu():
     print()
 
     print("0: Exit")
-        
+
+
 if __name__ == "__main__":
 
     while True:
@@ -247,9 +251,7 @@ if __name__ == "__main__":
             continue
 
         if choice == PROTECTED_ACCOUNT:
-            print(
-                f"\n*** Account {ACCOUNTS[choice]} is PROTECTED. ***"
-            )
+            print(f"\n*** Account {ACCOUNTS[choice]} is PROTECTED. ***")
             print("Viewing only. Close-all operation is disabled.")
             input("\nPress Enter to return to menu...")
             continue

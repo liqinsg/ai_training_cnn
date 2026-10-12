@@ -54,17 +54,36 @@ def _build_test_cluster(n_units: int = 1) -> PyramidCluster:
         structural_sl_level=149.000,
         initial_trade_id="T-BASE",
     )
-    cluster.update(price=150.20, atr_now=0.24, highest_high=150.20, lowest_low=149.40, hours_elapsed=4)
+    cluster.update(
+        price=150.20,
+        atr_now=0.24,
+        highest_high=150.20,
+        lowest_low=149.40,
+        hours_elapsed=4,
+    )
     if n_units >= 2:
-        cluster.add_unit(5000, 150.20, datetime(2026, 8, 10, 4, 0, tzinfo=timezone.utc), 1e9, trade_id="T-ADD1")
+        cluster.add_unit(
+            5000,
+            150.20,
+            datetime(2026, 8, 10, 4, 0, tzinfo=timezone.utc),
+            1e9,
+            trade_id="T-ADD1",
+        )
     if n_units >= 3:
-        cluster.add_unit(2500, 150.50, datetime(2026, 8, 10, 8, 0, tzinfo=timezone.utc), 1e9, trade_id="T-ADD2")
+        cluster.add_unit(
+            2500,
+            150.50,
+            datetime(2026, 8, 10, 8, 0, tzinfo=timezone.utc),
+            1e9,
+            trade_id="T-ADD2",
+        )
     return cluster
 
 
 # ---------------------------------------------------------------------------
 # 1. reconcile_with_oanda
 # ---------------------------------------------------------------------------
+
 
 class TestReconcileWithOanda(unittest.TestCase):
     @patch("utils.risk_integration.oanda_client")
@@ -85,7 +104,9 @@ class TestReconcileWithOanda(unittest.TestCase):
     def test_externally_closed_unit_is_dropped(self, mock_client):
         cluster = _build_test_cluster(n_units=2)
         # T-ADD1 hit its TP at the broker and no longer appears in open trades.
-        mock_client.request.return_value = {"trades": [{"id": "T-BASE", "currentUnits": "10000"}]}
+        mock_client.request.return_value = {
+            "trades": [{"id": "T-BASE", "currentUnits": "10000"}]
+        }
         still_open = ri.reconcile_with_oanda(cluster, "USD_JPY")
         self.assertTrue(still_open)
         self.assertEqual(len(cluster.units), 1)
@@ -96,7 +117,9 @@ class TestReconcileWithOanda(unittest.TestCase):
         cluster = _build_test_cluster(n_units=1)
         # OANDA reports less than we think we have (e.g. a partial fill on close we
         # locally missed) — OANDA is always the source of truth for size.
-        mock_client.request.return_value = {"trades": [{"id": "T-BASE", "currentUnits": "7500"}]}
+        mock_client.request.return_value = {
+            "trades": [{"id": "T-BASE", "currentUnits": "7500"}]
+        }
         ri.reconcile_with_oanda(cluster, "USD_JPY")
         self.assertEqual(cluster.units[0].size, 7500)
 
@@ -125,12 +148,17 @@ class TestReconcileWithOanda(unittest.TestCase):
 # 2. apply_risk_action -> UPDATE_SL
 # ---------------------------------------------------------------------------
 
+
 class TestApplyRiskActionUpdateSL(unittest.TestCase):
     @patch("utils.risk_integration.oanda_client")
     def test_sends_one_tradecrcdo_per_unit_stoploss_only_payload(self, mock_client):
         cluster = _build_test_cluster(n_units=3)
         mock_client.request.return_value = {}
-        action = RiskAction(action=ActionType.UPDATE_SL, new_sl=150.000, state=RiskStateEnum.TRAILING_CHANDELIER)
+        action = RiskAction(
+            action=ActionType.UPDATE_SL,
+            new_sl=150.000,
+            state=RiskStateEnum.TRAILING_CHANDELIER,
+        )
 
         ri.apply_risk_action(cluster, "USD_JPY", action)
 
@@ -141,7 +169,9 @@ class TestApplyRiskActionUpdateSL(unittest.TestCase):
             # oandapyV20 request objects expose their configured data payload
             payload = req.data
             self.assertIn("stopLoss", payload)
-            self.assertNotIn("takeProfit", payload)  # must NOT touch TP — see module docstring
+            self.assertNotIn(
+                "takeProfit", payload
+            )  # must NOT touch TP — see module docstring
             self.assertEqual(payload["stopLoss"]["price"], "150.000")
             sent_trade_ids.add(req.trade_id if hasattr(req, "trade_id") else None)
 
@@ -150,7 +180,11 @@ class TestApplyRiskActionUpdateSL(unittest.TestCase):
         cluster = _build_test_cluster(n_units=1)
         cluster.units[0].trade_id = None
         mock_client.request.return_value = {}
-        action = RiskAction(action=ActionType.UPDATE_SL, new_sl=150.0, state=RiskStateEnum.TRAILING_CHANDELIER)
+        action = RiskAction(
+            action=ActionType.UPDATE_SL,
+            new_sl=150.0,
+            state=RiskStateEnum.TRAILING_CHANDELIER,
+        )
         ri.apply_risk_action(cluster, "USD_JPY", action)  # must not raise
         mock_client.request.assert_not_called()
 
@@ -158,7 +192,11 @@ class TestApplyRiskActionUpdateSL(unittest.TestCase):
     def test_oanda_failure_raises_riskintegrationerror(self, mock_client):
         cluster = _build_test_cluster(n_units=1)
         mock_client.request.side_effect = V20Error(400, "simulated failure")
-        action = RiskAction(action=ActionType.UPDATE_SL, new_sl=150.0, state=RiskStateEnum.TRAILING_CHANDELIER)
+        action = RiskAction(
+            action=ActionType.UPDATE_SL,
+            new_sl=150.0,
+            state=RiskStateEnum.TRAILING_CHANDELIER,
+        )
         with self.assertRaises(ri.RiskIntegrationError):
             ri.apply_risk_action(cluster, "USD_JPY", action)
 
@@ -166,6 +204,7 @@ class TestApplyRiskActionUpdateSL(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # 3. apply_risk_action -> PARTIAL_CLOSE / FULL_CLOSE
 # ---------------------------------------------------------------------------
+
 
 class TestApplyRiskActionClose(unittest.TestCase):
     @patch("utils.risk_integration.oanda_client")
@@ -175,7 +214,11 @@ class TestApplyRiskActionClose(unittest.TestCase):
         # different actual fill (7480) — cluster state must reflect the CONFIRMED amount.
         mock_client.request.return_value = {"orderFillTransaction": {"units": "-7480"}}
 
-        action = RiskAction(action=ActionType.PARTIAL_CLOSE, close_ratio=0.5, state=RiskStateEnum.TIME_DECAY_REDUCE)
+        action = RiskAction(
+            action=ActionType.PARTIAL_CLOSE,
+            close_ratio=0.5,
+            state=RiskStateEnum.TIME_DECAY_REDUCE,
+        )
         ri.apply_risk_action(cluster, "USD_JPY", action)
 
         # FIFO means only T-BASE (the oldest, 10000) should have been touched for a 7500 target.
@@ -194,9 +237,14 @@ class TestApplyRiskActionClose(unittest.TestCase):
         def fake_response(request):
             requested = abs(int(request.data["units"]))
             return {"orderFillTransaction": {"units": str(-requested)}}
+
         mock_client.request.side_effect = fake_response
 
-        action = RiskAction(action=ActionType.FULL_CLOSE, close_ratio=1.0, state=RiskStateEnum.TIME_DECAY_EXIT)
+        action = RiskAction(
+            action=ActionType.FULL_CLOSE,
+            close_ratio=1.0,
+            state=RiskStateEnum.TIME_DECAY_EXIT,
+        )
         ri.apply_risk_action(cluster, "USD_JPY", action)
 
         self.assertEqual(mock_client.request.call_count, 2)  # both units closed
@@ -204,7 +252,9 @@ class TestApplyRiskActionClose(unittest.TestCase):
         self.assertEqual(cluster.risk_manager.state, RiskStateEnum.CLOSED)
 
     @patch("utils.risk_integration.oanda_client")
-    def test_close_failure_raises_and_does_not_apply_partial_progress(self, mock_client):
+    def test_close_failure_raises_and_does_not_apply_partial_progress(
+        self, mock_client
+    ):
         """If the SECOND leg of a multi-unit close fails, the FIRST leg's OANDA
         call already executed (can't be undone), but apply_close() must not run
         with a half-confirmed instruction list — this test documents that the
@@ -214,7 +264,11 @@ class TestApplyRiskActionClose(unittest.TestCase):
             {"orderFillTransaction": {"units": "-10000"}},  # first unit closes fine
             V20Error(400, "simulated failure on second leg"),  # second unit fails
         ]
-        action = RiskAction(action=ActionType.FULL_CLOSE, close_ratio=1.0, state=RiskStateEnum.TIME_DECAY_EXIT)
+        action = RiskAction(
+            action=ActionType.FULL_CLOSE,
+            close_ratio=1.0,
+            state=RiskStateEnum.TIME_DECAY_EXIT,
+        )
         with self.assertRaises(ri.RiskIntegrationError):
             ri.apply_risk_action(cluster, "USD_JPY", action)
         # cluster.units must be UNCHANGED (apply_close was never called) — this is
@@ -226,7 +280,9 @@ class TestApplyRiskActionClose(unittest.TestCase):
     @patch("utils.risk_integration.oanda_client")
     def test_no_change_action_makes_no_oanda_calls(self, mock_client):
         cluster = _build_test_cluster(n_units=1)
-        action = RiskAction(action=ActionType.NO_CHANGE, state=RiskStateEnum.TRAILING_CHANDELIER)
+        action = RiskAction(
+            action=ActionType.NO_CHANGE, state=RiskStateEnum.TRAILING_CHANDELIER
+        )
         ri.apply_risk_action(cluster, "USD_JPY", action)
         mock_client.request.assert_not_called()
 
@@ -235,21 +291,31 @@ class TestApplyRiskActionClose(unittest.TestCase):
 # 4. new_cluster_from_fill
 # ---------------------------------------------------------------------------
 
+
 class TestNewClusterFromFill(unittest.TestCase):
     @patch("utils.risk_integration.get_atr_with_volatility_context")
     def test_builds_cluster_from_actual_fill_not_planned_signal(self, mock_atr):
         mock_atr.return_value = (0.30, 0.1)
         signal_data = {
-            "pair": "USD_JPY", "action": "BUY",
+            "pair": "USD_JPY",
+            "action": "BUY",
             "entry": 149.500,  # PLANNED entry — must NOT be used
-            "stop_loss": 149.000, "take_profit": 150.500,
+            "stop_loss": 149.000,
+            "take_profit": 150.500,
         }
         # ACTUAL fill differs from planned entry due to slippage
-        fill = {"status": "SUCCESS", "filled_price": "149.532", "units": "9980", "trade_id": "T-777"}
+        fill = {
+            "status": "SUCCESS",
+            "filled_price": "149.532",
+            "units": "9980",
+            "trade_id": "T-777",
+        }
 
         cluster = ri.new_cluster_from_fill(signal_data, fill)
 
-        self.assertEqual(cluster.risk_manager.entry_price_0, 149.532)  # ACTUAL fill price used
+        self.assertEqual(
+            cluster.risk_manager.entry_price_0, 149.532
+        )  # ACTUAL fill price used
         self.assertEqual(cluster.units[0].size, 9980)  # ACTUAL filled units used
         self.assertEqual(cluster.units[0].trade_id, "T-777")
         self.assertEqual(cluster.direction, 1)
@@ -257,14 +323,22 @@ class TestNewClusterFromFill(unittest.TestCase):
     @patch("utils.risk_integration.get_atr_with_volatility_context")
     def test_sell_signal_produces_short_direction(self, mock_atr):
         mock_atr.return_value = (0.30, 0.1)
-        signal_data = {"pair": "EUR_JPY", "action": "SELL", "stop_loss": 165.000, "take_profit": 163.000}
+        signal_data = {
+            "pair": "EUR_JPY",
+            "action": "SELL",
+            "stop_loss": 165.000,
+            "take_profit": 163.000,
+        }
         fill = {"filled_price": "164.500", "units": "10000", "trade_id": "T-888"}
         cluster = ri.new_cluster_from_fill(signal_data, fill)
         self.assertEqual(cluster.direction, -1)
 
     def test_missing_fill_field_raises_clearly(self):
         signal_data = {"pair": "USD_JPY", "action": "BUY", "stop_loss": 149.0}
-        incomplete_fill = {"filled_price": "149.5", "units": "10000"}  # missing trade_id
+        incomplete_fill = {
+            "filled_price": "149.5",
+            "units": "10000",
+        }  # missing trade_id
         with self.assertRaises(ri.RiskIntegrationError) as ctx:
             ri.new_cluster_from_fill(signal_data, incomplete_fill)
         self.assertIn("trade_id", str(ctx.exception))
@@ -284,11 +358,14 @@ class TestNewClusterFromFill(unittest.TestCase):
 #    start/end kwargs; the original bug called it with start=entry_time).
 # ---------------------------------------------------------------------------
 
+
 class TestFetchMarketContext(unittest.TestCase):
     @patch("utils.risk_integration.get_candles")
     @patch("utils.risk_integration.get_atr_with_volatility_context")
     @patch("utils.risk_integration.get_latest_price")
-    def test_calls_get_candles_with_real_signature_not_start_kwarg(self, mock_price, mock_atr, mock_candles):
+    def test_calls_get_candles_with_real_signature_not_start_kwarg(
+        self, mock_price, mock_atr, mock_candles
+    ):
         """Direct regression test for the reported TypeError: get_candles() must
         be called as (instrument, granularity, count) — positionally compatible
         with the real project-wide signature — never with a start= kwarg."""
@@ -301,33 +378,50 @@ class TestFetchMarketContext(unittest.TestCase):
 
         mock_candles.assert_called_once()
         call = mock_candles.call_args
-        self.assertNotIn("start", call.kwargs, "get_candles must never be called with start= — real signature has no such parameter")
+        self.assertNotIn(
+            "start",
+            call.kwargs,
+            "get_candles must never be called with start= — real signature has no such parameter",
+        )
         self.assertNotIn("end", call.kwargs)
         # Positional/keyword form must match (instrument, granularity, count) exactly.
         args, kwargs = call
         all_params = list(args) + list(kwargs.values())
         self.assertIn("USD_JPY", all_params)
-        self.assertTrue(any(isinstance(v, int) for v in all_params), "count must be passed as a plain int")
+        self.assertTrue(
+            any(isinstance(v, int) for v in all_params),
+            "count must be passed as a plain int",
+        )
 
     @patch("utils.risk_integration.get_candles")
     @patch("utils.risk_integration.get_atr_with_volatility_context")
     @patch("utils.risk_integration.get_latest_price")
-    def test_extremes_include_live_price_even_if_candles_lag(self, mock_price, mock_atr, mock_candles):
+    def test_extremes_include_live_price_even_if_candles_lag(
+        self, mock_price, mock_atr, mock_candles
+    ):
         mock_price.return_value = 151.000  # price has moved beyond any completed candle
         mock_atr.return_value = (0.30, 0.1)
         mock_candles.return_value = [
-            {"complete": True, "time": "2026-08-11T12:00:00.000000000Z", "mid": {"h": "150.200", "l": "149.800"}},
+            {
+                "complete": True,
+                "time": "2026-08-11T12:00:00.000000000Z",
+                "mid": {"h": "150.200", "l": "149.800"},
+            },
         ]
         cluster = _build_test_cluster(n_units=1)  # entry_time = 2026-08-10T00:00:00 UTC
         price, atr_now, hh, ll = ri.fetch_market_context("USD_JPY", cluster)
         self.assertEqual(price, 151.000)
-        self.assertEqual(hh, 151.000)  # live price extends the high beyond the candle's 150.200
+        self.assertEqual(
+            hh, 151.000
+        )  # live price extends the high beyond the candle's 150.200
         self.assertEqual(ll, 149.800)
 
     @patch("utils.risk_integration.get_candles")
     @patch("utils.risk_integration.get_atr_with_volatility_context")
     @patch("utils.risk_integration.get_latest_price")
-    def test_candles_before_entry_time_are_excluded(self, mock_price, mock_atr, mock_candles):
+    def test_candles_before_entry_time_are_excluded(
+        self, mock_price, mock_atr, mock_candles
+    ):
         """get_candles() returns the most-recent-N regardless of entry_time —
         some of those may predate entry and must NOT influence the Chandelier
         extremes (that would understate/overstate the true since-entry range)."""
@@ -335,9 +429,17 @@ class TestFetchMarketContext(unittest.TestCase):
         mock_atr.return_value = (0.30, 0.1)
         mock_candles.return_value = [
             # Before entry_time (2026-08-10T00:00 UTC) — must be excluded.
-            {"complete": True, "time": "2026-08-09T12:00:00.000000000Z", "mid": {"h": "999.000", "l": "1.000"}},
+            {
+                "complete": True,
+                "time": "2026-08-09T12:00:00.000000000Z",
+                "mid": {"h": "999.000", "l": "1.000"},
+            },
             # After entry_time — must be included.
-            {"complete": True, "time": "2026-08-11T06:00:00.000000000Z", "mid": {"h": "150.500", "l": "149.900"}},
+            {
+                "complete": True,
+                "time": "2026-08-11T06:00:00.000000000Z",
+                "mid": {"h": "150.500", "l": "149.900"},
+            },
         ]
         cluster = _build_test_cluster(n_units=1)
         price, atr_now, hh, ll = ri.fetch_market_context("USD_JPY", cluster)
@@ -352,7 +454,11 @@ class TestFetchMarketContext(unittest.TestCase):
         mock_price.return_value = 150.000
         mock_atr.return_value = (0.30, 0.1)
         mock_candles.return_value = [
-            {"complete": False, "time": "2026-08-11T06:00:00.000000000Z", "mid": {"h": "999.000", "l": "1.000"}},
+            {
+                "complete": False,
+                "time": "2026-08-11T06:00:00.000000000Z",
+                "mid": {"h": "999.000", "l": "1.000"},
+            },
         ]
         cluster = _build_test_cluster(n_units=1)
         price, atr_now, hh, ll = ri.fetch_market_context("USD_JPY", cluster)
@@ -363,7 +469,9 @@ class TestFetchMarketContext(unittest.TestCase):
     @patch("utils.risk_integration.get_candles")
     @patch("utils.risk_integration.get_atr_with_volatility_context")
     @patch("utils.risk_integration.get_latest_price")
-    def test_empty_candle_response_falls_back_to_price_without_raising(self, mock_price, mock_atr, mock_candles):
+    def test_empty_candle_response_falls_back_to_price_without_raising(
+        self, mock_price, mock_atr, mock_candles
+    ):
         """Insufficient/empty candle history (e.g. very recent entry, or thin
         broker history) must NOT crash — falls back to live price as the only
         known extreme, exactly as before this fix."""
@@ -381,7 +489,9 @@ class TestFetchMarketContext(unittest.TestCase):
     @patch("utils.risk_integration.get_candles")
     @patch("utils.risk_integration.get_atr_with_volatility_context")
     @patch("utils.risk_integration.get_latest_price")
-    def test_get_candles_exception_propagates_not_swallowed(self, mock_price, mock_atr, mock_candles):
+    def test_get_candles_exception_propagates_not_swallowed(
+        self, mock_price, mock_atr, mock_candles
+    ):
         """A real fetch failure must raise RiskIntegrationError — never be
         treated the same as a legitimate empty response."""
         mock_price.return_value = 149.700
@@ -411,6 +521,7 @@ class TestCandleCountEstimation(unittest.TestCase):
 
     def test_count_scales_with_elapsed_hours_for_h1(self):
         from datetime import timedelta
+
         entry_time = datetime.now(timezone.utc) - timedelta(hours=48)
         count = ri._compute_candle_count_since(entry_time, "H1")
         # ~48 H1 candles elapsed + buffer, comfortably within a small tolerance window.
@@ -419,7 +530,10 @@ class TestCandleCountEstimation(unittest.TestCase):
 
     def test_count_is_clamped_to_oanda_max(self):
         from datetime import timedelta
-        entry_time = datetime.now(timezone.utc) - timedelta(days=3000)  # absurdly long-open position
+
+        entry_time = datetime.now(timezone.utc) - timedelta(
+            days=3000
+        )  # absurdly long-open position
         count = ri._compute_candle_count_since(entry_time, "H1")
         self.assertEqual(count, ri._MAX_CANDLE_COUNT)
 
@@ -456,6 +570,7 @@ class TestParseOandaCandleTime(unittest.TestCase):
 #       [RISK] Currently managing: ['USD_JPY']    <- contradicts the line above
 # ---------------------------------------------------------------------------
 
+
 class TestManageOpenPositions(unittest.TestCase):
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
@@ -482,7 +597,9 @@ class TestManageOpenPositions(unittest.TestCase):
             ri.ENABLE_DYNAMIC_RISK_MANAGER = original_flag
 
     @patch("utils.risk_integration.oanda_client")
-    def test_externally_closed_instrument_is_excluded_from_returned_list(self, mock_client):
+    def test_externally_closed_instrument_is_excluded_from_returned_list(
+        self, mock_client
+    ):
         """DIRECT regression test for the reported bug: an instrument found
         closed at OANDA must NOT appear in the returned list — the exact
         scenario from the live log (USD_JPY closed externally)."""
@@ -490,12 +607,20 @@ class TestManageOpenPositions(unittest.TestCase):
         ri.ENABLE_DYNAMIC_RISK_MANAGER = True
         try:
             self._seed_cluster("USD_JPY")
-            mock_client.request.return_value = {"trades": []}  # nothing open at OANDA anymore
+            mock_client.request.return_value = {
+                "trades": []
+            }  # nothing open at OANDA anymore
 
             result = ri.manage_open_positions()
 
-            self.assertNotIn("USD_JPY", result, "closed instrument must not remain in the managed list")
-            self.assertIsNone(ri.load_cluster_data("USD_JPY"), "state entry must be deleted")
+            self.assertNotIn(
+                "USD_JPY",
+                result,
+                "closed instrument must not remain in the managed list",
+            )
+            self.assertIsNone(
+                ri.load_cluster_data("USD_JPY"), "state entry must be deleted"
+            )
         finally:
             ri.ENABLE_DYNAMIC_RISK_MANAGER = original_flag
 
@@ -511,15 +636,21 @@ class TestManageOpenPositions(unittest.TestCase):
         try:
             self._seed_cluster("USD_JPY")
             # Still open at OANDA, matching size, price hasn't moved enough for any action.
-            mock_client.request.return_value = {"trades": [{"id": "T-BASE", "currentUnits": "10000"}]}
-            mock_price.return_value = 150.30  # same as entry+small move, still < BE trigger
+            mock_client.request.return_value = {
+                "trades": [{"id": "T-BASE", "currentUnits": "10000"}]
+            }
+            mock_price.return_value = (
+                150.30  # same as entry+small move, still < BE trigger
+            )
             mock_atr.return_value = (0.24, 0.1)
             mock_candles.return_value = []
 
             result = ri.manage_open_positions()
 
             self.assertIn("USD_JPY", result)
-            self.assertIsNotNone(ri.load_cluster_data("USD_JPY"), "still-open position must remain saved")
+            self.assertIsNotNone(
+                ri.load_cluster_data("USD_JPY"), "still-open position must remain saved"
+            )
         finally:
             ri.ENABLE_DYNAMIC_RISK_MANAGER = original_flag
 
@@ -540,18 +671,30 @@ class TestManageOpenPositions(unittest.TestCase):
             cfg.enable_time_stop = True
             cfg.time_exit_threshold = 0.01  # force an immediate full time-stop exit
             cluster = PyramidCluster(
-                initial_size=10000, entry_price=149.500, direction=1, atr_entry=0.25,
+                initial_size=10000,
+                entry_price=149.500,
+                direction=1,
+                atr_entry=0.25,
                 entry_time=datetime.now(timezone.utc) - timedelta(hours=100),
-                config=cfg, structural_sl_level=149.000, initial_trade_id="T-BASE",
+                config=cfg,
+                structural_sl_level=149.000,
+                initial_trade_id="T-BASE",
             )
             ri.save_cluster_data("USD_JPY", cluster.to_dict())
 
             mock_client.request.side_effect = [
-                {"trades": [{"id": "T-BASE", "currentUnits": "10000"}]},  # reconcile: still open
-                {"orderFillTransaction": {"units": "-10000"}},            # the FULL_CLOSE itself
+                {
+                    "trades": [{"id": "T-BASE", "currentUnits": "10000"}]
+                },  # reconcile: still open
+                {"orderFillTransaction": {"units": "-10000"}},  # the FULL_CLOSE itself
             ]
-            mock_price.return_value = 149.400  # below entry, well under 1R, forcing time-exit
-            mock_atr.return_value = (0.05, 0.1)  # compressed ATR, satisfies vol_compression_frac check
+            mock_price.return_value = (
+                149.400  # below entry, well under 1R, forcing time-exit
+            )
+            mock_atr.return_value = (
+                0.05,
+                0.1,
+            )  # compressed ATR, satisfies vol_compression_frac check
             mock_candles.return_value = []
 
             result = ri.manage_open_positions()
@@ -562,7 +705,9 @@ class TestManageOpenPositions(unittest.TestCase):
             ri.ENABLE_DYNAMIC_RISK_MANAGER = original_flag
 
     @patch("utils.risk_integration.oanda_client")
-    def test_exception_mid_processing_keeps_instrument_in_returned_list(self, mock_client):
+    def test_exception_mid_processing_keeps_instrument_in_returned_list(
+        self, mock_client
+    ):
         """Ambiguous-state safety net: if something fails mid-cycle, the
         instrument's true state is unknown — it SHOULD stay in the returned
         list (unlike the two confirmed-closed cases above) so a same-cycle
@@ -576,7 +721,9 @@ class TestManageOpenPositions(unittest.TestCase):
             result = ri.manage_open_positions()
 
             self.assertIn("USD_JPY", result)
-            self.assertIsNotNone(ri.load_cluster_data("USD_JPY"), "state must be left untouched on error")
+            self.assertIsNotNone(
+                ri.load_cluster_data("USD_JPY"), "state must be left untouched on error"
+            )
         finally:
             ri.ENABLE_DYNAMIC_RISK_MANAGER = original_flag
 

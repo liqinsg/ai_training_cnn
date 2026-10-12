@@ -46,10 +46,13 @@ from utils.trading_core import get_open_position, close_position
 
 class PositionDecision(Enum):
     """What to do this cycle, given a new signal and the current OANDA position."""
-    ENTER = "ENTER"                          # no existing position -> open normally
-    SKIP_SAME_DIRECTION = "SKIP_SAME_DIRECTION"  # existing position already matches the signal
-    CLOSE_THEN_ENTER = "CLOSE_THEN_ENTER"    # opposite direction -> close it, then enter
-    SKIP_HEDGED = "SKIP_HEDGED"              # both long AND short open simultaneously — ambiguous
+
+    ENTER = "ENTER"  # no existing position -> open normally
+    SKIP_SAME_DIRECTION = (
+        "SKIP_SAME_DIRECTION"  # existing position already matches the signal
+    )
+    CLOSE_THEN_ENTER = "CLOSE_THEN_ENTER"  # opposite direction -> close it, then enter
+    SKIP_HEDGED = "SKIP_HEDGED"  # both long AND short open simultaneously — ambiguous
 
 
 class PositionDirectionError(Exception):
@@ -82,7 +85,9 @@ def get_position_direction(pair: str) -> Optional[str]:
     return None
 
 
-def resolve_signal_vs_position(signal_action: str, existing_direction: Optional[str]) -> PositionDecision:
+def resolve_signal_vs_position(
+    signal_action: str, existing_direction: Optional[str]
+) -> PositionDecision:
     """
     Pure decision logic — no I/O, fully unit-testable without mocking OANDA.
 

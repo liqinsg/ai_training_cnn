@@ -64,9 +64,7 @@ def _env_int(name: str, default: int) -> int:
         )
         return default
     if value < 1:
-        logger.warning(
-            f"⚠️ data_guard: {name}={value} < 1 → 使用默认 {default}"
-        )
+        logger.warning(f"⚠️ data_guard: {name}={value} < 1 → 使用默认 {default}")
         return default
     return value
 
@@ -103,7 +101,7 @@ def _resolve_column(df: pd.DataFrame, column_name: str) -> Optional[pd.Series]:
             return None
     except Exception:
         return None
-    if isinstance(got, pd.DataFrame):        # 重名列 → 取第一列
+    if isinstance(got, pd.DataFrame):  # 重名列 → 取第一列
         got = got.iloc[:, 0]
     return got if isinstance(got, pd.Series) else None
 
@@ -123,6 +121,7 @@ def has_min_bars(data: Any, min_bars: int | None = None, context: str = "") -> b
     """统一最小数据量检查。min_bars 省略时取 MIN_REQUIRED_BARS。"""
     need = MIN_REQUIRED_BARS if min_bars is None else int(min_bars)
     return not insufficient_bars(need, _length(data), context)
+
 
 # ─── 3) 通用安全取列 ─────────────────────────────────────────────────────────
 def get_safe_series(
@@ -228,7 +227,7 @@ def to_float(value, default: float | None = None) -> float | None:
         out = float(value)
     except (TypeError, ValueError):
         return default
-    if out != out:                       # NaN
+    if out != out:  # NaN
         return default
     return out
 
@@ -252,4 +251,3 @@ def to_float(value, default: float | None = None) -> float | None:
 #
 #  ④ 切片 → 永远走 safe_tail，禁止手写 .iloc[-20:]
 #       tail = safe_tail(diff_pct, confirm_bars, context=pair)
-

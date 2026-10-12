@@ -36,13 +36,17 @@ TRADE_PAIRS = [
 ]
 
 # Timeframes that must ALL be above MA5 for an entry signal
-SIGNAL_TIMEFRAMES = ["H4", "H1", "M30"]  # ["H4", "H1", "M30", "M15"] for testing now ignore M15
+SIGNAL_TIMEFRAMES = [
+    "H4",
+    "H1",
+    "M30",
+]  # ["H4", "H1", "M30", "M15"] for testing now ignore M15
 REQUIRE_ALIGNED = len(SIGNAL_TIMEFRAMES)
 
 # TP / SL in pips (JPY pairs: 1 pip = 0.01)
-TP_PIPS = 100                 # fixed take profit: entry + 100 pips
-SL_BUFFER_PIPS = 20          # pips below today's daily low
-SPREAD_PIPS = 3              # conservative spread buffer added to SL
+TP_PIPS = 100  # fixed take profit: entry + 100 pips
+SL_BUFFER_PIPS = 20  # pips below today's daily low
+SPREAD_PIPS = 3  # conservative spread buffer added to SL
 
 # NOTE: if your code imports SL_PIPS (as your earlier traceback showed),
 # add this alias (it does not rename anything else).
@@ -86,7 +90,9 @@ GEMINI_NEWS_FALLBACK_MODEL = "gemini-flash-lite-latest"
 
 # Meta selector
 META_MODE = "MANUAL"  # e.g. "MANUAL"
-MANUAL_STRATEGY = 1  # 1=TREND_COMBINED, 2=RANGE_REVERSION, 3=BREAKOUT_CONFIRM, 4=TREND_PULLBACK
+MANUAL_STRATEGY = (
+    1  # 1=TREND_COMBINED, 2=RANGE_REVERSION, 3=BREAKOUT_CONFIRM, 4=TREND_PULLBACK
+)
 STRATEGY_PULLBACK = 4
 
 # ADX regime thresholds
@@ -124,7 +130,7 @@ EXPIRE_AFTER = 1440  # minutes (1 day)
 MIN_QUALIFYING_PAIRS = 1  # or 2-3
 
 # Candidate currencies / pairs universe
-INSTRUMENT = 'EUR_USD'
+INSTRUMENT = "EUR_USD"
 
 CURRENCIES = ["USD", "EUR", "GBP", "AUD", "NZD", "JPY", "CHF"]
 STRENGTH_PAIRS = [
@@ -135,12 +141,12 @@ STRENGTH_PAIRS = [
     "EUR_JPY",
     "EUR_AUD",
     "GBP_JPY",
-    "AUD_JPY"
+    "AUD_JPY",
 ]
 
 STRENGTH_TIMEFRAMES = {"H1": 1, "H4": 3, "H8": 6}
 
-STRENGTH_FAST_LOOKBACK = 5   # bars
+STRENGTH_FAST_LOOKBACK = 5  # bars
 STRENGTH_SLOW_LOOKBACK = 20  # bars
 STRENGTH_FAST_WEIGHT = 0.7
 STRENGTH_SLOW_WEIGHT = 0.3
@@ -252,18 +258,28 @@ MC_MAX_AGE_HOURS = 24
 MIN_PROB = 0.50  # 0.52
 TREND_THRESHOLD = 20  # 25
 DEFAULT_PAIRS = [
-    "EURUSD=X", "GBPUSD=X", "EURJPY=X", "GBPJPY=X",
-    "AUDUSD=X", "USDJPY=X", "USDCHF=X"]
+    "EURUSD=X",
+    "GBPUSD=X",
+    "EURJPY=X",
+    "GBPJPY=X",
+    "AUDUSD=X",
+    "USDJPY=X",
+    "USDCHF=X",
+]
 YAHOO_TO_OANDA = {
-    "EURUSD=X": "EUR_USD", "GBPUSD=X": "GBP_USD", "EURJPY=X": "EUR_JPY",
-    "GBPJPY=X": "GBP_JPY", "AUDUSD=X": "AUD_USD", "USDJPY=X": "USD_JPY",
-    "USDCHF=X": "USD_CHF"
+    "EURUSD=X": "EUR_USD",
+    "GBPUSD=X": "GBP_USD",
+    "EURJPY=X": "EUR_JPY",
+    "GBPJPY=X": "GBP_JPY",
+    "AUDUSD=X": "AUD_USD",
+    "USDJPY=X": "USD_JPY",
+    "USDCHF=X": "USD_CHF",
 }
 
 # ==========================================
 # MODE SELECTOR — ONE FLIP TO SWITCH
 # ==========================================
-MODE = "TESTING"   # ✅ Change to "LIVE" when going live
+MODE = "TESTING"  # ✅ Change to "LIVE" when going live
 
 # Auto‑set parameters based on mode
 if MODE == "TESTING":
@@ -285,15 +301,15 @@ else:
 # PIVOT / SUPPORT-RESISTANCE
 # ==========================================
 ENABLE_PIVOTS = True
-PIVOT_METHOD = "Classic"       # Classic / Fibonacci / Camarilla / Woodie
-PIVOT_TIMEFRAME = "D"          # Daily pivots (standard)
-PIVOT_BIAS_CHECK = True        # Require price below P for SELL / above P for BUY
+PIVOT_METHOD = "Classic"  # Classic / Fibonacci / Camarilla / Woodie
+PIVOT_TIMEFRAME = "D"  # Daily pivots (standard)
+PIVOT_BIAS_CHECK = True  # Require price below P for SELL / above P for BUY
 
 USE_YFINANCE_DATA = False
 USE_OANDA_DATA = True
 
 # forex xgbboost playbook params
-DIRECTION = 'auto'
+DIRECTION = "auto"
 # Regime detection parameters (used when DIRECTION='auto')
 REGIME_FAST_EMA = 20
 REGIME_SLOW_EMA = 30
@@ -314,4 +330,4 @@ THRESHOLD = 0.6
 LOOKBACKS = [5, 10, 20, 50]
 
 TEST_MODE = True
-MOCK_SIGNAL = 'BUY'  # or SELL
+MOCK_SIGNAL = "BUY"  # or SELL

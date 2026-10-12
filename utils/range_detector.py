@@ -3,6 +3,7 @@ from typing import Tuple
 import sys
 from pathlib import Path
 import config as _config
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 """
@@ -18,7 +19,7 @@ def is_sideways(
     lookback_days: int = _config.RANGE_DETECT_LOOKBACK_DAYS,
     max_range_pct: float = _config.RANGE_DETECT_MAX_RANGE_PCT,
     min_volatility_ratio: float = _config.RANGE_DETECT_MIN_VOL_RATIO,
-    ma_band_threshold: float = 0.5
+    ma_band_threshold: float = 0.5,
 ) -> Tuple[bool, str, dict]:
     """
     Check if pair is in sideways/range-bound condition.
@@ -52,7 +53,11 @@ def is_sideways(
         # --- 2. Volatility check (ATR vs historical) ---
         atr_current = _atr_from_candles(candles[-15:], period=14)
         atr_historical = _atr_from_candles(candles[-40:-15], period=14)
-        if isinstance(atr_current, float) and isinstance(atr_historical, float) and atr_historical > 0:
+        if (
+            isinstance(atr_current, float)
+            and isinstance(atr_historical, float)
+            and atr_historical > 0
+        ):
             vol_ratio = atr_current / atr_historical
             metrics["volatility_ratio"] = round(vol_ratio, 2)
             if vol_ratio < min_volatility_ratio:

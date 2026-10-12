@@ -422,7 +422,7 @@ def forex_market_closed():
     wd = now.weekday()
 
     return (
-        wd == 5 or                    # Saturday
-        (wd == 6 and now.hour < 21) or  # Sunday before open
-        (wd == 4 and now.hour >= 21)    # Friday after close
+        wd == 5
+        or (wd == 6 and now.hour < 21)  # Saturday
+        or (wd == 4 and now.hour >= 21)  # Sunday before open  # Friday after close
     )

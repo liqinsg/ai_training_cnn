@@ -130,7 +130,9 @@ def load_from_csv(file_path: Path) -> List[Candidate]:
             score_x = float(row.get("score_x", row.get("X", 50)) or 50)
             score_m = float(row.get("score_m", row.get("M", 50)) or 50)
 
-            direction = norm_direction(row.get("direction") or row.get("action"), score_final)
+            direction = norm_direction(
+                row.get("direction") or row.get("action"), score_final
+            )
             trend_raw = norm_trend(row.get("trend_raw"), score_s)
             location_raw = norm_location(row.get("location"), score_s)
 
@@ -175,15 +177,17 @@ def load_from_log(file_path: Path) -> List[Candidate]:
             trend_raw = 1.0 if s_score > 55 else (-1.0 if s_score < 45 else 0.0)
             location_raw = 1.0 if s_score > 55 else (-1.0 if s_score < 45 else 0.0)
 
-            candidates.append(Candidate(
-                symbol=symbol,
-                direction=direction,
-                trend_raw=trend_raw,
-                location_raw=location_raw,
-                xgb_p_up=norm_prob(x_score),
-                mc_p_up=norm_prob(m_score),
-                source=f"log:{file_path.name}",
-            ))
+            candidates.append(
+                Candidate(
+                    symbol=symbol,
+                    direction=direction,
+                    trend_raw=trend_raw,
+                    location_raw=location_raw,
+                    xgb_p_up=norm_prob(x_score),
+                    mc_p_up=norm_prob(m_score),
+                    source=f"log:{file_path.name}",
+                )
+            )
     return candidates
 
 
@@ -214,19 +218,21 @@ def load_real_candidates() -> List[Dict[str, Any]]:
     degraded_count = 0
     result = []
     for c in all_cands:
-        is_degraded = (c.trend_raw == 0.0 and c.location_raw == 0.0)
+        is_degraded = c.trend_raw == 0.0 and c.location_raw == 0.0
         if is_degraded:
             degraded_count += 1
-        result.append({
-            "symbol": c.symbol,
-            "direction": c.direction,
-            "trend_raw": c.trend_raw,
-            "location_raw": c.location_raw,
-            "xgb_p_up": c.xgb_p_up,
-            "mc_p_up": c.mc_p_up,
-            "_source": c.source,
-            "_degraded": is_degraded,
-        })
+        result.append(
+            {
+                "symbol": c.symbol,
+                "direction": c.direction,
+                "trend_raw": c.trend_raw,
+                "location_raw": c.location_raw,
+                "xgb_p_up": c.xgb_p_up,
+                "mc_p_up": c.mc_p_up,
+                "_source": c.source,
+                "_degraded": is_degraded,
+            }
+        )
 
     print(f"✅ Loaded {len(result)} real candidates")
     if degraded_count > 0:

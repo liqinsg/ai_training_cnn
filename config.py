@@ -2,12 +2,13 @@
 Central configuration — edit this file to control all strategy behaviour.
 Do not hardcode these values elsewhere in the codebase.
 """
+
 import os
 from dotenv import load_dotenv
 
 load_dotenv()
 
-DEBUG_EDGE_REASON = True 
+DEBUG_EDGE_REASON = True
 
 # ==========================================
 # OANDA CONNECTION
@@ -84,11 +85,17 @@ EXPIRE_AFTER = 1440
 # CURRENCY STRENGTH / JPY TREND
 # ==========================================
 MIN_QUALIFYING_PAIRS = 1
-INSTRUMENT = 'EUR_USD'
+INSTRUMENT = "EUR_USD"
 CURRENCIES = ["USD", "EUR", "GBP", "AUD", "NZD", "JPY", "CHF"]
 STRENGTH_PAIRS = [
-    "EUR_USD", "GBP_USD", "AUD_USD", "USD_JPY",
-    "EUR_JPY", "EUR_AUD", "GBP_JPY", "AUD_JPY"
+    "EUR_USD",
+    "GBP_USD",
+    "AUD_USD",
+    "USD_JPY",
+    "EUR_JPY",
+    "EUR_AUD",
+    "GBP_JPY",
+    "AUD_JPY",
 ]
 STRENGTH_TIMEFRAMES = {"H1": 1, "H4": 3, "H8": 6}
 STRENGTH_FAST_LOOKBACK = 5
@@ -173,12 +180,21 @@ NORMAL_MIN_PROB = 51.0
 DEFAULT_LOT_SIZE = 10000
 USE_DEFAULT_LOT_SIZE = True
 DEFAULT_PAIRS = [
-    "EURUSD=X", "GBPUSD=X", "EURJPY=X", "GBPJPY=X",
-    "AUDUSD=X", "USDJPY=X", "USDCHF=X"
+    "EURUSD=X",
+    "GBPUSD=X",
+    "EURJPY=X",
+    "GBPJPY=X",
+    "AUDUSD=X",
+    "USDJPY=X",
+    "USDCHF=X",
 ]
 YAHOO_TO_OANDA = {
-    "EURUSD=X": "EUR_USD", "GBPUSD=X": "GBP_USD", "EURJPY=X": "EUR_JPY",
-    "GBPJPY=X": "GBP_JPY", "AUDUSD=X": "AUD_USD", "USDJPY=X": "USD_JPY",
+    "EURUSD=X": "EUR_USD",
+    "GBPUSD=X": "GBP_USD",
+    "EURJPY=X": "EUR_JPY",
+    "GBPJPY=X": "GBP_JPY",
+    "AUDUSD=X": "AUD_USD",
+    "USDJPY=X": "USD_JPY",
     "USDCHF=X": "USD_CHF",
     "AUDJPY=X": "AUD_JPY",
 }
@@ -186,7 +202,7 @@ ENABLE_PIVOTS = True
 PIVOT_METHOD = "Classic"
 PIVOT_TIMEFRAME = "D"
 PIVOT_BIAS_CHECK = True
-DIRECTION = 'auto'
+DIRECTION = "auto"
 REGIME_FAST_EMA = 20
 REGIME_SLOW_EMA = 30
 RISK_MULTIPLE = 1.0
@@ -199,7 +215,7 @@ STEP_SIZE = 500
 THRESHOLD = 0.6
 LOOKBACKS = [5, 10, 20, 50]
 TEST_MODE = True
-MOCK_SIGNAL = 'BUY'
+MOCK_SIGNAL = "BUY"
 MC_TP_MAX_BAND_PCT = 0.7
 
 # ==========================================
@@ -222,9 +238,9 @@ if PRESET == "BALANCED":
     RELAXED_MIN_PROB = 50.5
     STRENGTH_GAP_THRESHOLD = 10
     MC_TP_MAX_BAND_PCT = 0.7
-    MAX_TOTAL_TRADES = 4 #2
-    MAX_PER_USD_GROUP = 4 # 2
-    MAX_PER_JPY_GROUP = 4 #2
+    MAX_TOTAL_TRADES = 4  # 2
+    MAX_PER_USD_GROUP = 4  # 2
+    MAX_PER_JPY_GROUP = 4  # 2
     TREND_THRESHOLD = 25
     REOPEN_DELAY_RUNS = 2
 elif PRESET == "CONSERVATIVE":
@@ -245,13 +261,13 @@ elif PRESET == "LEVEL9":
     NORMAL_MIN_PROB = 45.0
     RELAXED_MIN_PROB = 45.0
     # === TESTING: LOOPS ENTRY FILTERS ===
-    STRENGTH_GAP_THRESHOLD = 1.0    # Was 7 → catch smaller gaps
-    MIN_TREND_STRENGTH = 0.001       # Lower → detect mild moves
-    ALLOW_TOP_N = 4                 # More candidates
+    STRENGTH_GAP_THRESHOLD = 1.0  # Was 7 → catch smaller gaps
+    MIN_TREND_STRENGTH = 0.001  # Lower → detect mild moves
+    ALLOW_TOP_N = 4  # More candidates
     ALLOW_BOTTOM_N = 4
     # === KEEP RISK & TP LOGIC UNCHANGED ===
     MC_TP_MAX_BAND_PCT = 0.7
-    MAX_TOTAL_TRADES = 4            # More pairs for testing
+    MAX_TOTAL_TRADES = 4  # More pairs for testing
     MAX_PER_USD_GROUP = 3
     MAX_PER_JPY_GROUP = 3
     TREND_THRESHOLD = 20
@@ -265,12 +281,12 @@ elif PRESET == "LEVEL10":
     STRENGTH_GAP_THRESHOLD = 1.0
     MIN_TREND_STRENGTH = 0.01
     NO_SIDE_WAYS_TRADE = False
-    ALLOW_TOP_N = 5          # ✅ More candidates
-    ALLOW_BOTTOM_N = 5       # ✅ More candidates
+    ALLOW_TOP_N = 5  # ✅ More candidates
+    ALLOW_BOTTOM_N = 5  # ✅ More candidates
     # === RISK LIMITS — UP TO 5 TOTAL ===
-    MAX_TOTAL_TRADES = 5     # ✅ Allow up to 5 open positions
-    MAX_PER_USD_GROUP = 3    # ✅ Max 3 USD pairs
-    MAX_PER_JPY_GROUP = 3    # ✅ Max 3 JPY pairs
+    MAX_TOTAL_TRADES = 5  # ✅ Allow up to 5 open positions
+    MAX_PER_USD_GROUP = 3  # ✅ Max 3 USD pairs
+    MAX_PER_JPY_GROUP = 3  # ✅ Max 3 JPY pairs
     MC_TP_MAX_BAND_PCT = 0.7
     TREND_THRESHOLD = 20
     REOPEN_DELAY_RUNS = 2
@@ -279,29 +295,28 @@ elif PRESET == "LEVEL10":
     STRENGTH_SIGNAL_BLOCK_THRESHOLD = 2.5
 
 
-
 # ==========================================
 # 📏 DYNAMIC TP & MARKET REGIME SETTINGS
 # ==========================================
-VOL_LOW_THRESHOLD = 4.0        # % — below = sideways/low vol
-VOL_HIGH_THRESHOLD = 7.0       # % — above = strong trend
-RANGE_LOW_PCT = 0.20           # Price position in MC range = sideways
-RANGE_HIGH_PCT = 0.50          # Price position = trending
-TP_MULT_SIDEWAYS = 1.5         # Quick take-profit
-TP_MULT_NORMAL = 2.0           # Standard trend
-TP_MULT_STRONG = 2.5           # Let profits run
-MIN_TREND_STRENGTH = 0.05      # % price change required to confirm trend
+VOL_LOW_THRESHOLD = 4.0  # % — below = sideways/low vol
+VOL_HIGH_THRESHOLD = 7.0  # % — above = strong trend
+RANGE_LOW_PCT = 0.20  # Price position in MC range = sideways
+RANGE_HIGH_PCT = 0.50  # Price position = trending
+TP_MULT_SIDEWAYS = 1.5  # Quick take-profit
+TP_MULT_NORMAL = 2.0  # Standard trend
+TP_MULT_STRONG = 2.5  # Let profits run
+MIN_TREND_STRENGTH = 0.05  # % price change required to confirm trend
 
 # ==========================================
 # RE-ENTRY CONTROL — PREVENT OVERTRADING
 # ==========================================
 # After TP: wait for price to pull back before re-entering same direction
-REENTRY_COOLDOWN_MINUTES = 0.001 #60     # Also wait 60min minimum after TP/SL
-REENTRY_MIN_PULLBACK_PIPS = 8.0   # Wait 8+ pips retracement before re-entry
+REENTRY_COOLDOWN_MINUTES = 0.001  # 60     # Also wait 60min minimum after TP/SL
+REENTRY_MIN_PULLBACK_PIPS = 8.0  # Wait 8+ pips retracement before re-entry
 REENTRY_STRENGTH_CONFIRM = True  # Require currency strength still aligned
 # Only enter when price is near MC range boundary
-ENTRY_PERCENTILE_LOW = 15    # LONG only if price in bottom 15% of range
-ENTRY_PERCENTILE_HIGH = 85   # SHORT only if price in top 15% of range
+ENTRY_PERCENTILE_LOW = 15  # LONG only if price in bottom 15% of range
+ENTRY_PERCENTILE_HIGH = 85  # SHORT only if price in top 15% of range
 
 # DEBUG_API = False
 DEBUG_MODE = False
@@ -310,12 +325,12 @@ MIN_SL_PIPS_JPY = MIN_SL_PIPS + 10  # 15 for JPY pairs
 COOLDOWN_RUNS = 0
 REMOVE_COOLDOWN = True
 
-TRAILING_TP = True          # OANDA server-side trailing TP
-DYNAMIC_TP = False            # ✅ Bot actively RAISES TP as price trends
+TRAILING_TP = True  # OANDA server-side trailing TP
+DYNAMIC_TP = False  # ✅ Bot actively RAISES TP as price trends
 
-TP_RAISE_THRESHOLD_PIPS = 15 # Only raise TP when ≥15 pips higher (prevents noise)
+TP_RAISE_THRESHOLD_PIPS = 15  # Only raise TP when ≥15 pips higher (prevents noise)
 
 # Max number of open positions allowed AT ANY TIME
-MAX_SIMULTANEOUS_TRADES = 5   # ← Change this! e.g. 1, 2, 3, 5...
+MAX_SIMULTANEOUS_TRADES = 5  # ← Change this! e.g. 1, 2, 3, 5...
 
 SKIP_MC = True

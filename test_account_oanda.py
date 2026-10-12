@@ -6,7 +6,8 @@ api = oandapyV20.API(access_token=OANDA_API_TOKEN, environment=OANDA_ENV)
 
 try:
     from oandapyV20.endpoints.accounts import AccountDetails
-    OANDA_ACCOUNT_ID = '101-003-39389016-003'
+
+    OANDA_ACCOUNT_ID = "101-003-39389016-003"
     resp = api.request(AccountDetails(OANDA_ACCOUNT_ID))
 
     print("✅ SUCCESS — Account works!")

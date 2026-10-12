@@ -2,7 +2,10 @@ import numpy as np
 import pandas as pd
 
 # Your historical trade results from walk-forward
-trade_outcomes = [1 if r > 0 else 0 for r in res['trade_acc']]  # Or actual PnL per trade
+trade_outcomes = [
+    1 if r > 0 else 0 for r in res["trade_acc"]
+]  # Or actual PnL per trade
+
 
 def monte_carlo(trade_list, sims=5000):
     results = []
@@ -13,6 +16,7 @@ def monte_carlo(trade_list, sims=5000):
             equity *= 1.01 if win else 0.99
         results.append(equity)
     return np.array(results)
+
 
 mc = monte_carlo(trade_outcomes)
 print(f"📊 Monte Carlo (5000 runs):")

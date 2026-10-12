@@ -23,8 +23,7 @@ def setup_logger(name="trading_system", log_dir="logs"):
 
     # Format: timestamp | level | message
     log_format = logging.Formatter(
-        "%(asctime)s | %(levelname)s | %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S"
+        "%(asctime)s | %(levelname)s | %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
     )
 
     # Console handler

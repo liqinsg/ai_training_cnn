@@ -77,6 +77,7 @@ def _utcnow_iso() -> str:
 # Classification enums
 # ---------------------------------------------------------------------------
 
+
 class SlopeClass(str, Enum):
     STRONG = "STRONG"
     WEAK = "WEAK"
@@ -108,8 +109,8 @@ class ProximityClass(str, Enum):
 # the earlier EMA value, so it's roughly comparable across instruments/
 # timeframes without needing an external normalizer (e.g. ATR) that the
 # slope computation itself doesn't have access to at its call site.
-SLOPE_STRONG_THRESHOLD_FRAC = 0.001   # > 0.1% move in EMA over the lookback
-SLOPE_FLAT_BAND_FRAC = 0.0001         # within +/-0.01% counts as FLAT
+SLOPE_STRONG_THRESHOLD_FRAC = 0.001  # > 0.1% move in EMA over the lookback
+SLOPE_FLAT_BAND_FRAC = 0.0001  # within +/-0.01% counts as FLAT
 
 
 def classify_slope(
@@ -135,7 +136,11 @@ def classify_slope(
         label is UNKNOWN if either input is None or ema_past == 0.
     """
     if ema_now is None or ema_past is None or ema_past == 0:
-        return {"label": SlopeClass.UNKNOWN.value, "raw_delta": None, "raw_delta_frac": None}
+        return {
+            "label": SlopeClass.UNKNOWN.value,
+            "raw_delta": None,
+            "raw_delta_frac": None,
+        }
 
     raw_delta = ema_now - ema_past
     raw_delta_frac = raw_delta / abs(ema_past)
@@ -153,7 +158,11 @@ def classify_slope(
     else:
         label = SlopeClass.STRONG
 
-    return {"label": label.value, "raw_delta": raw_delta, "raw_delta_frac": raw_delta_frac}
+    return {
+        "label": label.value,
+        "raw_delta": raw_delta,
+        "raw_delta_frac": raw_delta_frac,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -261,6 +270,7 @@ def level_cluster_strength(
 # Log record builders + writers
 # ---------------------------------------------------------------------------
 
+
 def log_signal_observation(
     *,
     cycle_id: str,
@@ -298,7 +308,9 @@ def log_signal_observation(
     return _append_jsonl(SIGNAL_OBSERVATION_LOG_PATH, record)
 
 
-def log_executed_signal(*, cycle_id: str, pair: str, direction: str, diagnostics: dict) -> bool:
+def log_executed_signal(
+    *, cycle_id: str, pair: str, direction: str, diagnostics: dict
+) -> bool:
     """
     Level-2 marker: records which (cycle_id, pair) combination was the
     single trade actually executed this cycle, with its full diagnostics

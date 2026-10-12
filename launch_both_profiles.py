@@ -41,7 +41,7 @@ proc2 = subprocess.Popen(
     [sys.executable, str(p2_path)],
     stdout=subprocess.PIPE,
     stderr=subprocess.STDOUT,
-    text=True
+    text=True,
 )
 
 print("🚀 Starting PROFILE3 (Account 003)...")
@@ -49,7 +49,7 @@ proc3 = subprocess.Popen(
     [sys.executable, str(p3_path)],
     stdout=subprocess.PIPE,
     stderr=subprocess.STDOUT,
-    text=True
+    text=True,
 )
 
 print()
@@ -57,7 +57,9 @@ print("✅ BOTH BOTS RUNNING!")
 print(f"   Profile2 PID: {proc2.pid}")
 print(f"   Profile3 PID: {proc3.pid}")
 print()
-print("💡 Tip: Check logs anytime → tail -f bot_profile2.log & tail -f bot_profile3.log")
+print(
+    "💡 Tip: Check logs anytime → tail -f bot_profile2.log & tail -f bot_profile3.log"
+)
 print("💡 Tip: Press Ctrl+C to stop BOTH bots")
 print()
 
