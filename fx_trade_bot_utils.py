@@ -262,6 +262,8 @@ def has_open_trade_with_tags(
                 "units": trade.get("currentUnits", "0"),
                 "price": trade.get("price", ""),
                 "tags": list(trade_tags),
+                "sl": float(trade["stopLossOrder"]["price"]) if trade.get("stopLossOrder") else None,
+                "tp": float(trade["takeProfitOrder"]["price"]) if trade.get("takeProfitOrder") else None,
             }
     return False, None
 
@@ -274,6 +276,7 @@ def close_position(
     dry_run: bool = False,
     reason_code: str | None = None,
     detail_msg: str = "",
+    json_log=None,
 ):
     reason_code = reason_code if reason_code in _VALID_REASON_CODES else REASON_OTHER
     reason_header = f"📤 {reason_code}"
@@ -323,8 +326,28 @@ def close_position(
             return False
         if "orderFillTransaction" in resp:
             fill_price = resp["orderFillTransaction"].get("price", "?")
+            trades_closed = resp["orderFillTransaction"].get("tradesClosed", [])
+            total_pnl = 0.0
+            trade_ids = []
+            for tc in trades_closed:
+                trade_ids.append(tc.get("tradeID", ""))
+                try:
+                    total_pnl += float(tc.get("realizedPL", 0))
+                except (ValueError, TypeError):
+                    pass
             logger.info(f"✅ Closed {instrument} @ {fill_price}")
             logger.info(f"📤 CLOSE {instrument} → {reason_code}{reason_body}")
+            if json_log is not None:
+                yahoo_pair = instrument.replace("_", "") + "=X"
+                json_log.bot_close(
+                    pair=yahoo_pair,
+                    reason=reason_code,
+                    units=units,
+                    exit_price=float(fill_price),
+                    pnl=total_pnl,
+                    trade_id=",".join(trade_ids) if trade_ids else instrument,
+                    detail_msg=detail_msg,
+                )
             if telegram_send:
                 telegram_send(
                     f"📤 CLOSED: {instrument}\n└─ Reason: {reason_code}"
@@ -672,6 +695,7 @@ def update_order_tp(
     dry_run: bool = False,
     old_tp_price=None,
     update_reason: str = "DYNAMIC_TP",
+    json_log=None,
 ):
     """Update TP — SKIP if market halted."""
     if not can_trade(api, account_id, instrument):
@@ -798,6 +822,7 @@ class DynamicPositionManager:
         tp_raise_thresh_pips: int = 15,
         telegram_send=None,
         dry_run: bool = False,
+        json_log=None,
     ):
         self.api = api
         self.account_id = account_id
@@ -810,6 +835,7 @@ class DynamicPositionManager:
         self.tp_thresh_pips = tp_raise_thresh_pips
         self.telegram = telegram_send
         self.dry_run = dry_run
+        self.json_log = json_log
 
     def _get_open_trades(self, instrument: str):
         try:
@@ -842,6 +868,7 @@ class DynamicPositionManager:
     ) -> bool:
         old_sl_str = f"{old_sl:.{decimals}f}" if old_sl is not None else "None"
         new_sl_str = f"{new_sl:.{decimals}f}"
+        yahoo_pair = pair.replace("_", "") + "=X"
         if self.dry_run:
             logger.info(
                 f"   🧪 DRY_RUN SL #{trade_id}: would set stopLoss → {new_sl_str} "
@@ -853,6 +880,15 @@ class DynamicPositionManager:
                     f"🔄 UPDATE SL: {pair} #{trade_id}\n"
                     f"└─ {old_sl_str} → {new_sl_str} | {sl_action}\n"
                     f"🧪 DRY-RUN (no real order)"
+                )
+            if self.json_log is not None:
+                self.json_log.bot_update_sl(
+                    pair=yahoo_pair,
+                    trade_id=str(trade_id),
+                    old_sl=old_sl if old_sl is not None else 0.0,
+                    new_sl=new_sl,
+                    update_type=sl_action,
+                    dry_run=True,
                 )
             return True
         try:
@@ -873,6 +909,14 @@ class DynamicPositionManager:
                 self.telegram(
                     f"🔄 UPDATE SL: {pair} #{trade_id}\n"
                     f"└─ {old_sl_str} → {new_sl_str} | {sl_action}"
+                )
+            if self.json_log is not None:
+                self.json_log.bot_update_sl(
+                    pair=yahoo_pair,
+                    trade_id=str(trade_id),
+                    old_sl=old_sl if old_sl is not None else 0.0,
+                    new_sl=new_sl,
+                    update_type=sl_action,
                 )
             return True
         except Exception as e:
@@ -957,6 +1001,7 @@ class DynamicPositionManager:
                                 dry_run=self.dry_run,
                                 old_tp_price=current_tp,
                                 update_reason=f"DYNAMIC_TP LONG (profit={profit_pips:.1f}p)",
+                                json_log=self.json_log,
                             )
                     else:
                         new_tp = current_price - (atr_mult_tp * atr_val)
@@ -973,6 +1018,7 @@ class DynamicPositionManager:
                                 dry_run=self.dry_run,
                                 old_tp_price=current_tp,
                                 update_reason=f"DYNAMIC_TP SHORT (profit={profit_pips:.1f}p)",
+                                json_log=self.json_log,
                             )
                 be_pips = self.be_trigger * atr_val / pip
                 trail_pips = self.trail_trigger * atr_val / pip
