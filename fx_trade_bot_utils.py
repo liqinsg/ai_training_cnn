@@ -1077,6 +1077,80 @@ def load_mc_legacy(
     return None, False
 
 
+def load_mc_bundle(mc_dir: Path, timeframe_prefix: str = "D", max_age_hours: int = 48):
+    """Load the most recent pre-computed MC bundle from mc_results/.
+
+    Scans ``mc_dir`` for files matching ``mc_{timeframe_prefix}_all_pairs_*.json``
+    (e.g. ``mc_D_all_pairs_20261013_0127.json``) and returns the ``results``
+    dict keyed by yahoo-pair symbol (``EURUSD=X``, ...).
+
+    Args:
+        mc_dir: Path to the mc_results directory.
+        timeframe_prefix: "D" (daily) or "W" (weekly) — first char of filename.
+        max_age_hours: Reject files older than this many hours.
+
+    Returns:
+        (bundle_dict, ok, filename) tuple. bundle_dict maps pair → mc_data dict
+        with identical fields to MCGenerator.run_for_pair().
+        ok=False if no eligible file was found.
+    """
+    if not mc_dir or not mc_dir.is_dir():
+        return None, False, None
+
+    import re
+    pattern = re.compile(rf"^mc_{timeframe_prefix}_all_pairs_(\d{{8}})_(\d{{4}})\.json$")
+
+    candidates = []
+    for f in mc_dir.iterdir():
+        if not f.is_file():
+            continue
+        m = pattern.match(f.name)
+        if not m:
+            continue
+        candidates.append(f)
+
+    if not candidates:
+        return None, False, None
+
+    candidates.sort(key=lambda x: x.stat().st_mtime, reverse=True)
+    now = utcnow_safe()
+
+    for f in candidates:
+        mtime = datetime.fromtimestamp(f.stat().st_mtime, timezone.utc)
+        age_hours = (now - mtime).total_seconds() / 3600.0
+        if age_hours > max_age_hours:
+            logger.warning(
+                f"⚠️ MC bundle {f.name} is {age_hours:.1f}h old (> {max_age_hours}h) — skipping"
+            )
+            continue
+        try:
+            with open(f) as j:
+                data = json.load(j)
+            bundle = data.get("results", data) if isinstance(data, dict) else {}
+            if not bundle:
+                logger.warning(f"⚠️ MC bundle {f.name} has empty 'results'")
+                continue
+            return bundle, True, f.name
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to load MC bundle {f.name}: {e}")
+            continue
+
+    return None, False, None
+
+
+def get_mc_results_dir():
+    """Return the mc_results directory path (sibling to the fx_monte_carlo project)."""
+    candidates = [
+        Path.home() / "projects" / "fx_monte_carlo" / "mc_results",
+        Path(__file__).resolve().parent.parent / "fx_monte_carlo" / "mc_results",
+        Path("/home/qili/projects/fx_monte_carlo/mc_results"),
+    ]
+    for c in candidates:
+        if c.is_dir():
+            return c
+    return candidates[0]
+
+
 def build_mc_telegram(mc_results, title, tf, lookback, fcst, sims):
     now = utcnow_safe().strftime("%Y-%m-%d %H:%M UTC")
     lines = [

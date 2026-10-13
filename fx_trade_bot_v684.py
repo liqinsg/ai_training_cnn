@@ -49,6 +49,8 @@ from fx_trade_bot_utils import (
     open_oanda_order_simple as open_oanda_order,
     DynamicPositionManager,
     load_mc_legacy,
+    load_mc_bundle,
+    get_mc_results_dir,
     PositionStatus,
     REASON_TAKE_PROFIT,
     REASON_TRAIL_STOP,
@@ -1476,25 +1478,64 @@ def main():
     if cfg_bot("SKIP_MC", False):
         args.skip_mc = True
     mc_cache = {}
+    mc_weekly_cache = {}
+
+    mc_results_dir = get_mc_results_dir()
+    mc_max_age = MC_MAX_AGE_HOURS
+
+    bundle_d_ok = False
+    bundle_w_ok = False
     if not args.skip_mc:
-        logger.info("[STEP 3] Monte Carlo Forecasts...")
-        mc_gen = MCGenerator(
-            fetcher, YAHOO_TO_OANDA, simulations=SIMULATIONS, confidence=CONFIDENCE
-        )
-        require_mc_momentum = cfg_bot("REQUIRE_STRONG_MOMENTUM", True)
-        for pair in selected_pairs:
-            if pair not in pair_data:
-                continue
-            mc_data, ok = mc_gen.run_for_pair(pair, df=pair_data[pair]["raw"])
-            if ok:
-                regime = mc_data.get("regime", "")
-                if require_mc_momentum and "STRONG MOMENTUM" not in regime:
-                    logger.info(f"⏭️ {pair}: MC regime={regime} — SKIP")
+        logger.info(f"[STEP 3] Monte Carlo — loading pre-computed bundles from {mc_results_dir}...")
+
+        d_bundle, d_ok, d_name = load_mc_bundle(mc_results_dir, "D", mc_max_age)
+        if d_ok:
+            mc_cache = {p: d_bundle[p] for p in selected_pairs if p in d_bundle}
+            bundle_d_ok = True
+            logger.info(
+                f"📦 MC DAILY bundle: {d_name} | "
+                f"loaded {len(mc_cache)}/{len(selected_pairs)} pairs"
+            )
+            for p in selected_pairs:
+                if p in mc_cache:
+                    m = mc_cache[p]
+                    logger.info(
+                        f"🎲 MC {p}: {m.get('regime', '?')} | "
+                        f"Band {m.get('range_90', '?')} | P_UP={m.get('p_up', '?')}%"
+                    )
+                else:
+                    logger.info(f"⏭️ {p}: not found in D bundle — SKIP")
+        else:
+            logger.info(f"ℹ️ No eligible D bundle in {mc_results_dir} (max_age={mc_max_age}h)")
+
+        w_bundle, w_ok, w_name = load_mc_bundle(mc_results_dir, "W", mc_max_age * 2)
+        if w_ok:
+            mc_weekly_cache = {p: w_bundle[p] for p in selected_pairs if p in w_bundle}
+            bundle_w_ok = True
+            logger.info(
+                f"📦 MC WEEKLY bundle: {w_name} | "
+                f"loaded {len(mc_weekly_cache)}/{len(selected_pairs)} pairs"
+            )
+
+        if not bundle_d_ok and not bundle_w_ok:
+            logger.info("[STEP 3] No pre-computed bundles — falling back to dynamic MCGenerator...")
+            mc_gen = MCGenerator(
+                fetcher, YAHOO_TO_OANDA, simulations=SIMULATIONS, confidence=CONFIDENCE
+            )
+            require_mc_momentum = cfg_bot("REQUIRE_STRONG_MOMENTUM", True)
+            for pair in selected_pairs:
+                if pair not in pair_data:
                     continue
-                mc_cache[pair] = mc_data
-                logger.info(
-                    f"🎲 MC {pair}: {regime} | Band {mc_data['range_90']} | P_UP={mc_data['p_up']}%"
-                )
+                mc_data, ok = mc_gen.run_for_pair(pair, df=pair_data[pair]["raw"])
+                if ok:
+                    regime = mc_data.get("regime", "")
+                    if require_mc_momentum and "STRONG MOMENTUM" not in regime:
+                        logger.info(f"⏭️ {pair}: MC regime={regime} — SKIP")
+                        continue
+                    mc_cache[pair] = mc_data
+                    logger.info(
+                        f"🎲 MC {pair}: {regime} | Band {mc_data['range_90']} | P_UP={mc_data['p_up']}%"
+                    )
     else:
         logger.info("[STEP 3] MC Skipped — loading legacy...")
         for pair in selected_pairs:
