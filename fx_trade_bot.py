@@ -947,8 +947,23 @@ except ValueError as exc:
     parser.error(str(exc))
 
 _ENV_LABEL = "LIVE" if LIVE_MODE else "DEMO"
+_cfg_lot = cfg_bot("DEFAULT_LOT_SIZE", 10000)
+_lot_source = "config"
+DEFAULT_LOT_SIZE = _cfg_lot
+_env_lot_key = "LIVE_LOT_SIZE" if LIVE_MODE else "DEMO_LOT_SIZE"
+_env_lot_raw = os.getenv(_env_lot_key)
+if _env_lot_raw is not None:
+    try:
+        DEFAULT_LOT_SIZE = int(_env_lot_raw)
+        _lot_source = f"run.env [{_env_lot_key}]"
+    except ValueError:
+        pass
+if args.lots is not None:
+    DEFAULT_LOT_SIZE = args.lots
+    _lot_source = "CLI --lots"
 logger.info(f"⚙️ Profile: {PROFILE_ID}")
 logger.info(f"🔑 Account: {_account_source} → {OANDA_ACCOUNT_ID} [{_ENV_LABEL}]")
+logger.info(f"📦 Lot size: {DEFAULT_LOT_SIZE}  (source: {_lot_source})")
 
 _prof = get_oanda_profile("live" if LIVE_MODE else "practice")
 api = _prof["oanda_client"]
@@ -997,9 +1012,6 @@ if DRY_RUN_MODE:
 MAX_ENTRIES = args.max_entries if args.max_entries is not None else MAX_ENTRIES_THIS_RUN
 OANDA_GRANULARITY_MAP = {"15m": "M15", "1H": "H1", "H4": "H4", "D": "D"}
 OANDA_GRANULARITY = OANDA_GRANULARITY_MAP.get(TIMEFRAME, "H4")
-DEFAULT_LOT_SIZE = cfg_bot("DEFAULT_LOT_SIZE", 10000)
-if args.lots is not None:
-    DEFAULT_LOT_SIZE = args.lots
 
 # Build run mode banner from TWO INDEPENDENT AXES (account env × execution gate)
 _env_label = (
@@ -1654,9 +1666,11 @@ def main():
             if status == PositionStatus.OPEN:
                 logger.warning(
                     f"⚠️  {pair}: INSTRUMENT has aggregate position but NO owned trade — "
-                    f"likely opened by another profile/process. "
-                    f"Will allow fresh entry (aggregate units={pos['units']}, side={pos['side']})."
+                    f"likely opened by another process / older bot version WITHOUT tags. "
+                    f"BLOCKING new entry to prevent position stacking "
+                    f"(aggregate units={pos['units']}, side={pos['side']})."
                 )
+                open_pos_by_oanda[oanda_inst] = True
     json_log.positions_snapshot(owned_positions_snapshot)
     open_list = [o.replace("_", "/") for o, s in open_pos_by_oanda.items() if s]
     ready_list = [
