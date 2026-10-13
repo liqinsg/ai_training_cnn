@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # ──────────────────────────────────────────────────────
-# FX Trade Bot v6.8.4 — 配置统一入口
+# FX Trade Bot v6.8.5 — 配置统一入口
 # 唯一来源: config_profile.json → config_bot.py
 # ──────────────────────────────────────────────────────
 import contextlib
@@ -160,8 +160,8 @@ parser.add_argument(
     action="store_true",
     help="Skip the weekend/holiday guard and run the full pipeline (debug)",
 )
-# Optional bare positional profile number: `python fx_trade_bot_v684.py 2`.
-# nargs="?" keeps it optional so `python fx_trade_bot_v684.py` still works.
+# Optional bare positional profile number: `python fx_trade_bot_v685.py 2`.
+# nargs="?" keeps it optional so `python fx_trade_bot_v685.py` still works.
 parser.add_argument(
     "profile_pos",
     nargs="?",
@@ -172,8 +172,8 @@ parser.add_argument(
 args = parser.parse_args()
 
 # ===== 1. 选择运行的配置方案 =====
-# 命令行启动:  python fx_trade_bot_v684.py 1 → Profile1
-#             python fx_trade_bot_v684.py 2 → Profile2 (默认)
+# 命令行启动:  python fx_trade_bot_v685.py 1 → Profile1
+#             python fx_trade_bot_v685.py 2 → Profile2 (默认)
 # Resolution: -p N > --profile3 / --profile2 > first positional digit > default 2
 if args.profile is not None:
     PROFILE_ID = args.profile
@@ -194,7 +194,7 @@ profile_id = PROFILE_ID
 cfg = C.get_profile(PROFILE_ID)
 
 # ===== 3. 常用变量直接映射（复制/对照用）=====
-APP_VERSION = "684"
+APP_VERSION = "685"
 VERSION = cfg["VERSION"]
 PROFILE_NAME = f"profile{PROFILE_ID}"
 PROFILE_LABEL = cfg["PROFILE_LABEL"]
@@ -1431,7 +1431,8 @@ def main():
                 f"📊 {pair}: {len(df)} bars | ATR={pair_data[pair]['atr']:.6f} | "
                 f"RSI={pair_data[pair]['rsi']:.1f} | ADX={pair_data[pair]['adx']:.1f}"
             )
-            weekly_ema_cache[oanda] = fetch_weekly_ema100(oanda, api)
+            if cfg_bot("WEEK_EMA100_FILTER_ENABLED", False):
+                weekly_ema_cache[oanda] = fetch_weekly_ema100(oanda, api)
         except Exception as e:
             logger.error(f"❌ Fetch failed {pair}: {e}")
 
