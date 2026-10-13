@@ -1,23 +1,34 @@
 #!/usr/bin/env python3
 """结构化日志 — 区分主动(BOT)/被动(OANDA)操作"""
 import json
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, Optional, List
 
 LOG_DIR = Path(__file__).parent.parent / "logs"
-LOG_DIR.mkdir(exist_ok=True)
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _safe_profile_name(name: str) -> str:
+    """把 profile 名转成安全的文件名片段。
+
+    处理 '/'、'\\'、空格、'.' 等可能被当作路径分隔符或非法字符的符号，
+    避免如 'PF-D Structure/D-Gate' 被拼成子目录路径。
+    """
+    return re.sub(r"[^\w\-]+", "_", name.strip().lower()).strip("_")
 
 
 class StructuredLogger:
     def __init__(self, name: str):
         self.name = name
-        self.filepath = LOG_DIR / f"profile_{name.lower().replace(' ', '_')}.jsonl"
+        self.filepath = LOG_DIR / f"profile_{_safe_profile_name(name)}.jsonl"
         self._known_trades: Dict[str, Dict[str, Any]] = {}
 
     def _write(self, record: Dict[str, Any]) -> None:
         record.setdefault("ts", datetime.utcnow().isoformat(timespec="seconds") + "Z")
         record.setdefault("profile", self.name)
+        self.filepath.parent.mkdir(parents=True, exist_ok=True)
         with open(self.filepath, "a", encoding="utf-8") as f:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
