@@ -138,6 +138,7 @@
         "X": 0.12,
         "M": 0.08
       },
+      "SKIP_MC": false,
       "MIN_CONVICTION": 50.0,
       "MIN_GAP": 0.25,
       "MIN_SLOPE": 0.0010,
@@ -157,6 +158,7 @@
         "X": 0.12,
         "M": 0.08
       },
+      "SKIP_MC": false,
       "MIN_CONVICTION": 45.0,
       "MIN_GAP": 0.25,
       "MIN_SLOPE": 0.0007,
@@ -176,6 +178,7 @@
         "X": 0.12,
         "M": 0.08
       },
+      "SKIP_MC": false,
       "MIN_CONVICTION": 55.0,
       "MIN_GAP": 0.25,
       "MIN_SLOPE": 0.0003,
@@ -197,6 +200,7 @@
         "X": 0.20,
         "M": 0.10
       },
+      "SKIP_MC": false,
       "MIN_CONVICTION": 42.0,
       "MIN_GAP": 0.25,
       "MIN_SLOPE": 0.0003,

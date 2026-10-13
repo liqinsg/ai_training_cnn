@@ -152,6 +152,7 @@ def build_profile_cfg(profile_id: int) -> Dict:
         "MODEL_TYPE": get_global("ml_settings.MODEL_TYPE"),
         "XGB_BULLISH_THRESHOLD": get_global("ml_settings.XGB_BULLISH_THRESHOLD"),
         # monte_carlo
+        "SKIP_MC": get_global("monte_carlo.SKIP_MC"),
         "MC_MAX_AGE_HOURS": get_global("monte_carlo.MC_MAX_AGE_HOURS"),
         "MC_SIMULATIONS": get_global("monte_carlo.MC_SIMULATIONS"),
         "MC_CONFIDENCE": get_global("monte_carlo.MC_CONFIDENCE"),
