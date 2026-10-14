@@ -294,7 +294,7 @@ def _selftest():
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
-    # _selftest()
+    _selftest()
     if "--selftest" in sys.argv:
         _selftest()
     else:
