@@ -241,3 +241,5 @@ www/
 *.bak*
 *.broken
 .env
+Wallet_MPXS8OEH0BAEXK9L/
+.fxbot.env
