@@ -3,8 +3,8 @@
 
 import oracledb
 # Replace USER_NAME, PASSWORD with your username and password
-DB_USER = "USER_NAME"
-DB_PASSWORD = "PASSWORD"
+DB_USER = "FXBOT"
+DB_PASSWORD = "E9czUF4zqqfR4XX"
 # If you want to connect using your wallet, comment out the following line.
 CONNECT_STRING = '(description= (retry_count=20)(retry_delay=3)(address=(protocol=tcps)(port=1522)(host=adb.ap-singapore-1.oraclecloud.com))(connect_data=(service_name=g56a51e50d8721f_mpxs8oeh0baexk9l_medium.adb.oraclecloud.com))(security=(ssl_server_dn_match=yes)))'
 def run_app():
