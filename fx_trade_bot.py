@@ -6,6 +6,7 @@
 import contextlib
 import sys
 import os
+import subprocess
 from utils.logging_utils import get_logger
 import argparse
 from pathlib import Path
@@ -1521,7 +1522,35 @@ def main():
                 else:
                     logger.info(f"⏭️ {p}: not found in D bundle — SKIP")
         else:
-            logger.info(f"ℹ️ No eligible D bundle in {mc_results_dir} (今日未找到)")
+            logger.error(f"❌ No D bundle for today in {mc_results_dir}")
+            send_telegram_message(
+                f"🚨 FX BOT {PROFILE_LABEL}: 今日未找到 D 包\n"
+                f"📁 Dir: {mc_results_dir}\n"
+                f"⏰ 正在触发 run_fx_mc.sh ..."
+            )
+            mc_sh = Path.home() / "projects" / "fx_monte_carlo" / "run_fx_mc.sh"
+            try:
+                if mc_sh.exists():
+                    subprocess.Popen(
+                        ["bash", str(mc_sh)],
+                        cwd=str(mc_sh.parent),
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        start_new_session=True,
+                    )
+                    logger.info(f"✅ Launched {mc_sh}")
+                else:
+                    logger.error(f"❌ MC script not found: {mc_sh}")
+                    send_telegram_message(f"❌ FX BOT {PROFILE_LABEL}: run_fx_mc.sh 不存在 ({mc_sh})")
+            except Exception as e:
+                logger.error(f"❌ Failed to launch MC script: {e}")
+                send_telegram_message(f"❌ FX BOT {PROFILE_LABEL}: 启动 run_fx_mc.sh 失败 — {e}")
+
+            logger.warning("🛑 Aborting this run — D bundle required.")
+            send_telegram_message(
+                f"🛑 FX BOT {PROFILE_LABEL}: 本次运行已放弃，等待 MC 重新生成后重试"
+            )
+            return
 
         w_bundle, w_ok, w_name = load_mc_bundle(mc_results_dir, "W")
         if w_ok:
@@ -1531,26 +1560,6 @@ def main():
                 f"📦 MC WEEKLY bundle: {w_name} | "
                 f"loaded {len(mc_weekly_cache)}/{len(selected_pairs)} pairs"
             )
-
-        if not bundle_d_ok and not bundle_w_ok:
-            logger.info("[STEP 3] No pre-computed bundles — falling back to dynamic MCGenerator...")
-            mc_gen = MCGenerator(
-                fetcher, YAHOO_TO_OANDA, simulations=SIMULATIONS, confidence=CONFIDENCE
-            )
-            require_mc_momentum = cfg_bot("REQUIRE_STRONG_MOMENTUM", True)
-            for pair in selected_pairs:
-                if pair not in pair_data:
-                    continue
-                mc_data, ok = mc_gen.run_for_pair(pair, df=pair_data[pair]["raw"])
-                if ok:
-                    regime = mc_data.get("regime", "")
-                    if require_mc_momentum and "STRONG MOMENTUM" not in regime:
-                        logger.info(f"⏭️ {pair}: MC regime={regime} — SKIP")
-                        continue
-                    mc_cache[pair] = mc_data
-                    logger.info(
-                        f"🎲 MC {pair}: {regime} | Band {mc_data['range_90']} | P_UP={mc_data['p_up']}%"
-                    )
     else:
         logger.info("[STEP 3] MC Skipped — loading legacy...")
         for pair in selected_pairs:
