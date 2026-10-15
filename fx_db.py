@@ -40,6 +40,12 @@ import sys
 import threading
 import time
 from datetime import datetime, timezone
+from dotenv import load_dotenv
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parent
+
+load_dotenv(PROJECT_ROOT / ".fxbot.env", override=False)
 
 log = logging.getLogger("fx_db")
 
