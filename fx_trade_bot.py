@@ -65,7 +65,6 @@ from fx_trade_bot_utils import (
     REASON_USER_MANUAL,
     REASON_OTHER,
 )
-from fx_trade_bot_mc import MCGenerator, MCConfig
 from fx_trade_bot_ml import ensure_model
 # from portfolio_balance import balance_from_config
 from sl_zone_hierarchy import compute_sl_zone
@@ -1095,36 +1094,6 @@ REMOVE_COOLDOWN = cfg_bot("REMOVE_COOLDOWN", False)
 if args.confluence is not None:
     MULTI_TF_CONFLUENCE = args.confluence
 
-# ─── MC TIMEFRAME CONFIG ─────────────────────────────────────────────────────
-if TIMEFRAME in ("H4", "1H", "15m"):
-    MCConfig.set_timeframe(
-        TIMEFRAME,
-        {
-            "YF_INTERVAL": cfg_bot("YF_INTERVAL", "4h"),
-            "YF_PERIOD_FULL": cfg_bot("YF_PERIOD_FULL", "30d"),
-            "YF_PERIOD_RESAMPLE": cfg_bot("YF_PERIOD_RESAMPLE", "60d"),
-            "MC_LOOKBACK": cfg_bot("H4_LOOKBACK", 90),
-            "MC_FORECAST": cfg_bot("H4_FORECAST", 8),
-            "PERIODS_YEAR": cfg_bot("PERIODS_YEAR", 252) * 6,
-            "MC_REPORT_TITLE": f"[{PROFILE_LABEL}] FX {TIMEFRAME} MONTE CARLO",
-            "RESULTS_DIR": RESULTS_DIR,
-        },
-    )
-else:
-    MCConfig.set_timeframe(
-        TIMEFRAME,
-        {
-            "YF_INTERVAL": cfg_bot("YF_INTERVAL_D", "1d"),
-            "YF_PERIOD_FULL": cfg_bot("YF_PERIOD_FULL_D", "120d"),
-            "YF_PERIOD_RESAMPLE": cfg_bot("YF_PERIOD_RESAMPLE_D", "180d"),
-            "MC_LOOKBACK": cfg_bot("DAILY_LOOKBACK", 90),
-            "MC_FORECAST": cfg_bot("DAILY_FORECAST", 5),
-            "PERIODS_YEAR": cfg_bot("PERIODS_YEAR_D", 252),
-            "MC_REPORT_TITLE": f"[{PROFILE_LABEL}] FX DAILY MONTE CARLO",
-            "RESULTS_DIR": RESULTS_DIR,
-        },
-    )
-
 # ─── PIPELINE & STRATEGY CONFIG ──────────────────────────────────────────────
 FEAT_CFG = FeatureConfig(
     use_atr=cfg_bot("USE_ATR", True),
@@ -1506,7 +1475,6 @@ def main():
         d_bundle, d_ok, d_name = load_mc_bundle(mc_results_dir, "D")
         if d_ok:
             mc_cache = {p: d_bundle[p] for p in selected_pairs if p in d_bundle}
-            bundle_d_ok = True
             logger.info(
                 f"📦 MC DAILY bundle: {d_name} | "
                 f"loaded {len(mc_cache)}/{len(selected_pairs)} pairs"
@@ -1558,6 +1526,47 @@ def main():
                 f"📦 MC WEEKLY bundle: {w_name} | "
                 f"loaded {len(mc_weekly_cache)}/{len(selected_pairs)} pairs"
             )
+
+        if PROFILE_ID == 2 and mc_weekly_cache:
+            logger.info("🧪 [PROFILE-2 EXPERIMENT] W+D MC blend enabled — fusing weekly into daily...")
+            for p, d in list(mc_cache.items()):
+                w = mc_weekly_cache.get(p)
+                if not w:
+                    continue
+                w_up = w.get("p_up", 50.0)
+                d_up = d.get("p_up", 50.0)
+                deviation = abs(w_up - d_up) / 100.0
+                w_weight = min(0.65 + deviation * 0.6, 0.85)
+                d_weight = 1.0 - w_weight
+                fused_p_up = w_up * w_weight + d_up * d_weight
+                fused_p_down = 100.0 - fused_p_up
+                fused_ann_drift = w.get("ann_drift_pct", 0) * w_weight + d.get("ann_drift_pct", 0) * d_weight
+                w_lo, w_hi = w.get("range_90", [0, 0])
+                d_lo, d_hi = d.get("range_90", [0, 0])
+                fused_range_lo = w_lo + (d_lo - w_lo) * 0.3
+                fused_range_hi = w_hi + (d_hi - w_hi) * 0.3
+                d_regime = d.get("regime", "?")
+                w_regime = w.get("regime", "?")
+                d_blend = dict(d)
+                d_blend["p_up"] = round(fused_p_up, 1)
+                d_blend["p_down"] = round(fused_p_down, 1)
+                d_blend["p_up_pct"] = round(fused_p_up, 1)
+                d_blend["p_down_pct"] = round(fused_p_down, 1)
+                d_blend["ann_drift_pct"] = round(fused_ann_drift, 2)
+                d_blend["ann_vol_pct"] = w.get("ann_vol_pct", d.get("ann_vol_pct", 0))
+                d_blend["range_90"] = [round(fused_range_lo, 5), round(fused_range_hi, 5)]
+                d_blend["expected_price"] = d.get("expected_price", d.get("current_price", 0))
+                d_blend["regime"] = f"🧬 FUSED | D:{d_regime.split()[-1]} W:{w_regime.split()[-1]} | w_w={w_weight:.0%}"
+                d_blend["blend_source"] = {"D": d_name, "W": w_name, "w_weight": round(w_weight, 2)}
+                mc_cache[p] = d_blend
+                logger.info(
+                    f"🧬 FUSED {p}: P_UP D={d_up:.1f} W={w_up:.1f} → {fused_p_up:.1f}% "
+                    f"(w_w={w_weight:.0%}) | "
+                    f"range W={[round(w_lo,5), round(w_hi,5)]} D={[round(d_lo,5), round(d_hi,5)]} "
+                    f"→ [{round(fused_range_lo,5)}, {round(fused_range_hi,5)}]"
+                )
+        elif PROFILE_ID != 2:
+            logger.info(f"ℹ️ Profile {PROFILE_ID} — using pure D bundle (no W blend)")
     else:
         logger.info("[STEP 3] MC Skipped — loading legacy...")
         for pair in selected_pairs:
