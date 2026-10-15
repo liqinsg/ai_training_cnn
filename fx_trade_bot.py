@@ -1497,14 +1497,13 @@ def main():
     mc_weekly_cache = {}
 
     mc_results_dir = get_mc_results_dir()
-    mc_max_age = MC_MAX_AGE_HOURS
 
     bundle_d_ok = False
     bundle_w_ok = False
     if not args.skip_mc:
         logger.info(f"[STEP 3] Monte Carlo — loading pre-computed bundles from {mc_results_dir}...")
 
-        d_bundle, d_ok, d_name = load_mc_bundle(mc_results_dir, "D", mc_max_age)
+        d_bundle, d_ok, d_name = load_mc_bundle(mc_results_dir, "D")
         if d_ok:
             mc_cache = {p: d_bundle[p] for p in selected_pairs if p in d_bundle}
             bundle_d_ok = True
@@ -1522,9 +1521,9 @@ def main():
                 else:
                     logger.info(f"⏭️ {p}: not found in D bundle — SKIP")
         else:
-            logger.info(f"ℹ️ No eligible D bundle in {mc_results_dir} (max_age={mc_max_age}h)")
+            logger.info(f"ℹ️ No eligible D bundle in {mc_results_dir} (今日未找到)")
 
-        w_bundle, w_ok, w_name = load_mc_bundle(mc_results_dir, "W", mc_max_age * 2)
+        w_bundle, w_ok, w_name = load_mc_bundle(mc_results_dir, "W")
         if w_ok:
             mc_weekly_cache = {p: w_bundle[p] for p in selected_pairs if p in w_bundle}
             bundle_w_ok = True

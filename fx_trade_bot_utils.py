@@ -3,7 +3,7 @@ import os
 import time
 import logging
 from pathlib import Path
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from enum import Enum
 import numpy as np
 import pandas as pd
@@ -1123,22 +1123,20 @@ def load_mc_legacy(
     return None, False
 
 
-def load_mc_bundle(mc_dir: Path, timeframe_prefix: str = "D", max_age_hours: int = 48):
-    """Load the most recent pre-computed MC bundle from mc_results/.
+def load_mc_bundle(mc_dir: Path, timeframe_prefix: str = "D"):
+    """Load pre-computed MC bundle from mc_results/ based on filename date.
 
-    Scans ``mc_dir`` for files matching ``mc_{timeframe_prefix}_all_pairs_*.json``
-    (e.g. ``mc_D_all_pairs_20261013_0127.json``) and returns the ``results``
-    dict keyed by yahoo-pair symbol (``EURUSD=X``, ...).
+    D (Daily): match only files whose filename date == today (YYYYMMDD).
+    W (Weekly): match only files whose filename date >= this Monday.
+
+    Within the eligible set, the latest (by filename timestamp) is picked.
 
     Args:
         mc_dir: Path to the mc_results directory.
-        timeframe_prefix: "D" (daily) or "W" (weekly) — first char of filename.
-        max_age_hours: Reject files older than this many hours.
+        timeframe_prefix: "D" or "W".
 
     Returns:
-        (bundle_dict, ok, filename) tuple. bundle_dict maps pair → mc_data dict
-        with identical fields to MCGenerator.run_for_pair().
-        ok=False if no eligible file was found.
+        (bundle_dict, ok, filename) tuple.
     """
     if not mc_dir or not mc_dir.is_dir():
         return None, False, None
@@ -1153,35 +1151,43 @@ def load_mc_bundle(mc_dir: Path, timeframe_prefix: str = "D", max_age_hours: int
         m = pattern.match(f.name)
         if not m:
             continue
-        candidates.append(f)
+        candidates.append((f, m.group(1), m.group(2)))
 
     if not candidates:
         return None, False, None
 
-    candidates.sort(key=lambda x: x.stat().st_mtime, reverse=True)
     now = utcnow_safe()
+    today_str = now.strftime("%Y%m%d")
 
-    for f in candidates:
-        mtime = datetime.fromtimestamp(f.stat().st_mtime, timezone.utc)
-        age_hours = (now - mtime).total_seconds() / 3600.0
-        if age_hours > max_age_hours:
-            logger.warning(
-                f"⚠️ MC bundle {f.name} is {age_hours:.1f}h old (> {max_age_hours}h) — skipping"
-            )
-            continue
-        try:
-            with open(f) as j:
-                data = json.load(j)
-            bundle = data.get("results", data) if isinstance(data, dict) else {}
-            if not bundle:
-                logger.warning(f"⚠️ MC bundle {f.name} has empty 'results'")
-                continue
-            return bundle, True, f.name
-        except Exception as e:
-            logger.warning(f"⚠️ Failed to load MC bundle {f.name}: {e}")
-            continue
+    if timeframe_prefix == "D":
+        eligible = [(f, d, t) for f, d, t in candidates if d == today_str]
+        if not eligible:
+            logger.warning(f"⚠️ 今日未找到 D 包 (今日={today_str})")
+            return None, False, None
+    elif timeframe_prefix == "W":
+        monday = now - timedelta(days=now.weekday())
+        monday_str = monday.strftime("%Y%m%d")
+        eligible = [(f, d, t) for f, d, t in candidates if d >= monday_str]
+        if not eligible:
+            logger.warning(f"⚠️ 本周未找到 W 包 (本周一={monday_str})")
+            return None, False, None
+    else:
+        return None, False, None
 
-    return None, False, None
+    eligible.sort(key=lambda x: (x[1], x[2]), reverse=True)
+    f = eligible[0][0]
+
+    try:
+        with open(f) as j:
+            data = json.load(j)
+        bundle = data.get("results", data) if isinstance(data, dict) else {}
+        if not bundle:
+            logger.warning(f"⚠️ MC bundle {f.name} has empty 'results'")
+            return None, False, None
+        return bundle, True, f.name
+    except Exception as e:
+        logger.warning(f"⚠️ Failed to load MC bundle {f.name}: {e}")
+        return None, False, None
 
 
 def get_mc_results_dir():
