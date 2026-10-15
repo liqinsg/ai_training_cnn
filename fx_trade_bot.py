@@ -1499,8 +1499,6 @@ def main():
 
     mc_results_dir = get_mc_results_dir()
 
-    bundle_d_ok = False
-    bundle_w_ok = False
     if not args.skip_mc:
         logger.info(f"[STEP 3] Monte Carlo — loading pre-computed bundles from {mc_results_dir}...")
 
@@ -1555,7 +1553,6 @@ def main():
         w_bundle, w_ok, w_name = load_mc_bundle(mc_results_dir, "W")
         if w_ok:
             mc_weekly_cache = {p: w_bundle[p] for p in selected_pairs if p in w_bundle}
-            bundle_w_ok = True
             logger.info(
                 f"📦 MC WEEKLY bundle: {w_name} | "
                 f"loaded {len(mc_weekly_cache)}/{len(selected_pairs)} pairs"
