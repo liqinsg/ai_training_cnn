@@ -40,12 +40,18 @@ import sys
 import threading
 import time
 from datetime import datetime, timezone
-from dotenv import load_dotenv
+# from dotenv import load_dotenv
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent
-
-load_dotenv(PROJECT_ROOT / ".fxbot.env", override=False)
+try:
+    from dotenv import load_dotenv
+    for _p in (Path.home() / ".fxbot.env", PROJECT_ROOT / ".fxbot.env"):
+        if _p.is_file():
+            load_dotenv(_p, override=False, interpolate=False)
+            break
+except ImportError:
+    pass
 
 log = logging.getLogger("fx_db")
 
@@ -300,7 +306,6 @@ def _selftest():
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
-    _selftest()
     if "--selftest" in sys.argv:
         _selftest()
     else:
