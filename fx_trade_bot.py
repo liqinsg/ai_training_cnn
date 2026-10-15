@@ -45,6 +45,7 @@ from fx_trade_bot_utils import (
     load_cooldown,
     get_open_position,
     has_open_trade_with_tags,
+    list_open_trades,
     close_position,
     fetch_candles,
     open_oanda_order_simple as open_oanda_order,
@@ -1669,11 +1670,20 @@ def main():
         else:
             status, pos = get_open_position(api, OANDA_ACCOUNT_ID, oanda_inst)
             if status == PositionStatus.OPEN:
+                other_trades = list_open_trades(api, OANDA_ACCOUNT_ID, oanda_inst)
+                trade_summary = ", ".join(
+                    f"{t['trade_id']}(units={t['units']}, tags={t['tags']})"
+                    for t in other_trades
+                ) or "(no per-trade data from OpenTrades)"
                 logger.warning(
                     f"⚠️  {pair}: INSTRUMENT has aggregate position but NO owned trade — "
                     f"likely opened by another process / older bot version WITHOUT tags. "
                     f"BLOCKING new entry to prevent position stacking "
                     f"(aggregate units={pos['units']}, side={pos['side']})."
+                )
+                logger.warning(
+                    f"  🔍 OWNER_TAGS={OWNER_TAGS} | "
+                    f"existing trade(s) on {oanda_inst}: {trade_summary}"
                 )
                 open_pos_by_oanda[oanda_inst] = True
     json_log.positions_snapshot(owned_positions_snapshot)

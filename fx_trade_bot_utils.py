@@ -268,6 +268,28 @@ def has_open_trade_with_tags(
     return False, None
 
 
+def list_open_trades(api, oanda_account_id: str, instrument: str | None = None) -> list[dict]:
+    """Return all open trades (optionally filtered by instrument) with their tags."""
+    try:
+        resp = api.request(OpenTrades(accountID=oanda_account_id))
+    except Exception as e:
+        logger.error(f"❌ OpenTrades fetch FAILED: {e}")
+        return []
+    results = []
+    for trade in resp.get("trades", []):
+        if instrument and trade.get("instrument") != instrument:
+            continue
+        results.append({
+            "trade_id": trade.get("id", ""),
+            "instrument": trade.get("instrument", ""),
+            "units": trade.get("currentUnits", "0"),
+            "price": trade.get("price", ""),
+            "tags": trade.get("tags") or [],
+            "comment": trade.get("comment") or "",
+        })
+    return results
+
+
 def close_position(
     api,
     oanda_account_id: str,
