@@ -33,7 +33,12 @@
       "AUDUSD",
       "EURUSD",
       "GBPUSD",
-      "USDCHF"
+      "USDCHF",
+      "GBPAUD",
+      "EURCHF",
+      "AUDCHF",
+      "GBPCHF",
+      "EURAUD"
     ],
     "3": [
       "AUDJPY",
