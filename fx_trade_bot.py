@@ -201,6 +201,8 @@ PROFILE_NAME = f"profile{PROFILE_ID}"
 PROFILE_LABEL = cfg["PROFILE_LABEL"]
 OWNER_TAGS = ["fx_bot", f"v{APP_VERSION}", PROFILE_NAME]
 OWNER_COMMENT = f"fx_bot_v{APP_VERSION}_{PROFILE_NAME}_entry"
+OWNER_CLIENT_EXT_ID = f"fx_bot_v{APP_VERSION}_{PROFILE_NAME}"
+OWNER_CLIENT_EXT_TAG = f"fx_bot_v{APP_VERSION}_{PROFILE_NAME}_entry"
 # NOTE: two distinct names on purpose —
 #   PROFILE_NAME  : internal key used by _TREND_TP_CONFIG / TREND_TP_CONFIG lookups
 #                   ("profile1".."profile4"), so it MUST stay the lowercase
@@ -1648,24 +1650,27 @@ def main():
     open_pos_by_oanda, open_pos_count = {}, 0
     owned_positions_snapshot = []
     logger.info(
-        f"🔍 Checking open positions (owner_tags={OWNER_TAGS}, comment={OWNER_COMMENT})..."
+        f"🔍 Checking open positions (owner_client_ext_id={OWNER_CLIENT_EXT_ID}, tag={OWNER_CLIENT_EXT_TAG})..."
     )
     for pair in selected_pairs:
         oanda_inst = YAHOO_TO_OANDA.get(pair)
         if not oanda_inst:
             continue
         found, trade = has_open_trade_with_tags(
-            api, OANDA_ACCOUNT_ID, oanda_inst, OWNER_TAGS
+            api, OANDA_ACCOUNT_ID, oanda_inst, OWNER_TAGS,
+            client_ext_id=OWNER_CLIENT_EXT_ID,
+            client_ext_tag=OWNER_CLIENT_EXT_TAG,
         )
         open_pos_by_oanda[oanda_inst] = found
         if found:
             open_pos_count += 1
             sl_str = f"SL={trade['sl']}" if trade.get("sl") else "SL=NONE"
             tp_str = f"TP={trade['tp']}" if trade.get("tp") else "TP=NONE"
+            ce = trade.get("client_ext", {})
             logger.info(
                 f"📌 OWNED POSITION: {pair} → {oanda_inst} | {trade['direction'].upper()} | "
                 f"units={trade['units']} | tradeID={trade['trade_id']} | "
-                f"{sl_str} | {tp_str} | tags={trade['tags']}"
+                f"{sl_str} | {tp_str} | client_ext={ce}"
             )
             owned_positions_snapshot.append({
                 "pair": pair,
@@ -1676,24 +1681,24 @@ def main():
                 "entry_price": trade.get("price"),
                 "sl": trade.get("sl"),
                 "tp": trade.get("tp"),
-                "tags": trade.get("tags"),
+                "client_ext": trade.get("client_ext"),
             })
         else:
             status, pos = get_open_position(api, OANDA_ACCOUNT_ID, oanda_inst)
             if status == PositionStatus.OPEN:
                 other_trades = list_open_trades(api, OANDA_ACCOUNT_ID, oanda_inst)
                 trade_summary = ", ".join(
-                    f"{t['trade_id']}(units={t['units']}, tags={t['tags']})"
+                    f"{t['trade_id']}(units={t['units']}, client_ext_id={t.get('client_ext_id','')})"
                     for t in other_trades
                 ) or "(no per-trade data from OpenTrades)"
                 logger.warning(
                     f"⚠️  {pair}: INSTRUMENT has aggregate position but NO owned trade — "
-                    f"likely opened by another process / older bot version WITHOUT tags. "
+                    f"likely opened by another process / older bot version WITHOUT clientExtensions. "
                     f"BLOCKING new entry to prevent position stacking "
                     f"(aggregate units={pos['units']}, side={pos['side']})."
                 )
                 logger.warning(
-                    f"  🔍 OWNER_TAGS={OWNER_TAGS} | "
+                    f"  🔍 OWNER_CLIENT_EXT_ID={OWNER_CLIENT_EXT_ID} | "
                     f"existing trade(s) on {oanda_inst}: {trade_summary}"
                 )
                 open_pos_by_oanda[oanda_inst] = True
@@ -2008,6 +2013,7 @@ def main():
                 dry_run=DRY_RUN_MODE,  # defence-in-depth (entry gate above already blocks)
                 tags=OWNER_TAGS,
                 comment=OWNER_COMMENT,
+                client_ext={"id": OWNER_CLIENT_EXT_ID, "tag": OWNER_CLIENT_EXT_TAG},
             )
             status = resp.get("status", "UNKNOWN")
             tid = resp.get("trade_id", "") or "?"

@@ -224,25 +224,23 @@ def has_open_trade_with_tags(
     oanda_account_id: str,
     instrument: str,
     required_tags: list[str],
+    client_ext_id: str | None = None,
+    client_ext_tag: str | None = None,
 ) -> tuple[bool, dict | None]:
     """
-    Check if ANY open trade on `instrument` carries ALL of `required_tags`.
+    Check if ANY open trade on `instrument` carries ownership metadata.
+
+    Priority: clientExtensions (trade-level, PERSISTED by OANDA v20) > tags/comment (order-level, NOT persisted).
+
+    OANDA v20 API behavior for MARKET orders:
+      - tags / comment → NOT persisted to Trade objects (order-only metadata)
+      - clientExtensions → Order-level metadata, NOT on Trade
+      - tradeClientExtensions → Persisted as trade.clientExtensions = {id, tag}
+
+    So we MUST use tradeClientExtensions at order-create time and check
+    trade.clientExtensions at ownership-detection time.
 
     Returns: (found: bool, trade_or_None)
-
-    Why this beats get_open_position (PositionDetails):
-      PositionDetails returns the AGGREGATE long/short net for the whole
-      account — it has no per-trade ownership metadata. So when two
-      profiles run on the same account (or a profile switch happens),
-      Profile B sees Profile A's position as "already open" and silently
-      skips it. WORSE: when both run concurrently, TOCTOU races produce
-      duplicate orders.
-
-      OpenTrades gives per-trade objects with `.tags[]` + `.comment` —
-      fields OANDA v20 automatically copies from the originating order.
-      We tag every open order with ["fx_bot", "<ver>", "p<profile>"],
-      so we can precisely answer: "does *MY* profile already own a
-      trade on this instrument?"
     """
     try:
         resp = api.request(OpenTrades(accountID=oanda_account_id))
@@ -253,15 +251,30 @@ def has_open_trade_with_tags(
     for trade in resp.get("trades", []):
         if trade.get("instrument") != instrument:
             continue
-        trade_tags = set(trade.get("tags") or [])
-        if set(required_tags).issubset(trade_tags):
+
+        trade_ce = trade.get("clientExtensions") or {}
+        trade_ce_id = trade_ce.get("id", "")
+        trade_ce_tag = trade_ce.get("tag", "")
+
+        owned = False
+        if client_ext_id and trade_ce_id == client_ext_id:
+            owned = True
+        elif client_ext_tag and trade_ce_tag == client_ext_tag:
+            owned = True
+        elif required_tags:
+            trade_tags = set(trade.get("tags") or [])
+            if set(required_tags).issubset(trade_tags):
+                owned = True
+
+        if owned:
             direction = "long" if float(trade.get("currentUnits", 0)) > 0 else "short"
             return True, {
                 "trade_id": trade.get("id", ""),
                 "direction": direction,
                 "units": trade.get("currentUnits", "0"),
                 "price": trade.get("price", ""),
-                "tags": list(trade_tags),
+                "tags": list(trade.get("tags") or []),
+                "client_ext": trade_ce,
                 "sl": float(trade["stopLossOrder"]["price"]) if trade.get("stopLossOrder") else None,
                 "tp": float(trade["takeProfitOrder"]["price"]) if trade.get("takeProfitOrder") else None,
             }
@@ -269,7 +282,7 @@ def has_open_trade_with_tags(
 
 
 def list_open_trades(api, oanda_account_id: str, instrument: str | None = None) -> list[dict]:
-    """Return all open trades (optionally filtered by instrument) with their tags."""
+    """Return all open trades (optionally filtered by instrument) with clientExtensions."""
     try:
         resp = api.request(OpenTrades(accountID=oanda_account_id))
     except Exception as e:
@@ -279,13 +292,16 @@ def list_open_trades(api, oanda_account_id: str, instrument: str | None = None) 
     for trade in resp.get("trades", []):
         if instrument and trade.get("instrument") != instrument:
             continue
+        ce = trade.get("clientExtensions") or {}
         results.append({
             "trade_id": trade.get("id", ""),
             "instrument": trade.get("instrument", ""),
             "units": trade.get("currentUnits", "0"),
             "price": trade.get("price", ""),
             "tags": trade.get("tags") or [],
-            "comment": trade.get("comment") or "",
+            "client_ext": ce,
+            "client_ext_id": ce.get("id", ""),
+            "client_ext_tag": ce.get("tag", ""),
         })
     return results
 
@@ -474,6 +490,7 @@ def open_oanda_order_simple(
     max_sl_pips: int | None = None,
     tags: list[str] | None = None,
     comment: str | None = None,
+    client_ext: dict | None = None,
 ) -> dict:
     """Submit order — SKIP immediately if market halted."""
     # ── NEW: SKIP if halted BEFORE any API call ──
@@ -542,10 +559,22 @@ def open_oanda_order_simple(
             "positionFill": "DEFAULT",
         }
     }
-    if tags:
-        order_payload["order"]["tags"] = tags
-    if comment:
-        order_payload["order"]["comment"] = comment
+    # OANDA v20 API: tags/comment are NOT persisted to Trade objects for MARKET orders.
+    # tradeClientExtensions is the ONLY ownership metadata that persists as trade.clientExtensions.
+    if client_ext:
+        order_payload["order"]["tradeClientExtensions"] = client_ext
+        order_payload["order"]["clientExtensions"] = client_ext
+    elif tags or comment:
+        ext_id = comment or "_".join(tags) if tags else ""
+        ext_tag = tags[-1] if tags else ""
+        order_payload["order"]["tradeClientExtensions"] = {
+            "id": ext_id,
+            "tag": ext_tag,
+        }
+        order_payload["order"]["clientExtensions"] = {
+            "id": ext_id,
+            "tag": ext_tag,
+        }
     if sl_price:
         order_payload["order"]["stopLossOnFill"] = {
             "price": str(round(float(sl_price), dec)),

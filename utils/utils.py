@@ -1,3 +1,4 @@
+import datetime
 import random
 import time
 
@@ -28,7 +29,14 @@ def forex_market_closed():
 
 
 def format_oanda_time(ts):
-    dt = datetime.datetime.fromisoformat(ts)
+    # OANDA returns nanosecond precision timestamps like
+    # 2026-10-15T03:22:11.123456789Z. datetime.fromisoformat rejects more than
+    # 6 fractional digits and (on older Pythons) the trailing "Z".
+    value = ts.rstrip("Z")
+    if "." in value:
+        base, frac = value.split(".", 1)
+        value = f"{base}.{frac[:6]}"
+    dt = datetime.datetime.fromisoformat(value).replace(tzinfo=datetime.timezone.utc)
     return dt.strftime("%Y-%m-%d %H:%M UTC")
 
 
