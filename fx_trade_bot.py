@@ -2013,7 +2013,10 @@ def main():
                 dry_run=DRY_RUN_MODE,  # defence-in-depth (entry gate above already blocks)
                 tags=OWNER_TAGS,
                 comment=OWNER_COMMENT,
-                client_ext={"id": OWNER_CLIENT_EXT_ID, "tag": OWNER_CLIENT_EXT_TAG},
+                client_ext={
+                    "id": f"{OWNER_CLIENT_EXT_ID}_{oanda}",
+                    "tag": OWNER_CLIENT_EXT_TAG,
+                },
             )
             status = resp.get("status", "UNKNOWN")
             tid = resp.get("trade_id", "") or "?"
