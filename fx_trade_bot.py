@@ -40,7 +40,7 @@ from data_pipeline import (
     DataFetcher,
     ATRModule,
 )
-from fx_trade_bot_utils import (
+from fx_trade_bot_utils_v1 import (
     pip_size,
     load_cooldown,
     get_open_position,
@@ -54,16 +54,16 @@ from fx_trade_bot_utils import (
     load_mc_bundle,
     get_mc_results_dir,
     PositionStatus,
-    REASON_TAKE_PROFIT,
-    REASON_TRAIL_STOP,
-    REASON_TIME_EXPIRY,
-    REASON_DIRECTION_FLIP,
-    REASON_SCORE_DROP,
-    REASON_MC_SHIFT,
-    REASON_MAX_DRAWDOWN,
-    REASON_REBALANCE,
-    REASON_USER_MANUAL,
-    REASON_OTHER,
+    # REASON_TAKE_PROFIT,
+    # REASON_TRAIL_STOP,
+    # REASON_TIME_EXPIRY,
+    # REASON_DIRECTION_FLIP,
+    # REASON_SCORE_DROP,
+    # REASON_MC_SHIFT,
+    # REASON_MAX_DRAWDOWN,
+    # REASON_REBALANCE,
+    # REASON_USER_MANUAL,
+    # REASON_OTHER,
 )
 from fx_trade_bot_ml import ensure_model
 # from portfolio_balance import balance_from_config
