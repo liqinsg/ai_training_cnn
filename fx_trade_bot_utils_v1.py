@@ -323,7 +323,10 @@ def refresh_tp_cooldown_from_recent_tx(
         if tx.get("reason") != "TAKE_PROFIT_ORDER":
             continue
         inst = tx.get("instrument", "")
-        trade_id = tx.get("tradeID", "")
+        trade_id = tx.get("tradeID") or next(
+            (c.get("tradeID") for c in tx.get("tradesClosed", []) if c.get("tradeID")),
+            "",
+        )
         if not inst or not trade_id:
             continue
         # Find the actual instrument — ORDER_FILL on close reason carries the

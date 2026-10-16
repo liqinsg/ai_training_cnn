@@ -1098,6 +1098,10 @@ SIMULATIONS = cfg_bot("MC_SIMULATIONS", 5000)
 CONFIDENCE = cfg_bot("MC_BAND_PCT", 90) / 100.0
 REMOVE_COOLDOWN = cfg_bot("REMOVE_COOLDOWN", False)
 COOLDOWN_HOURS_AFTER_TP = cfg_bot("COOLDOWN_HOURS_AFTER_TP", 0.0)
+logger.info(
+    f"⏳ TP-COOLDOWN: hours={COOLDOWN_HOURS_AFTER_TP} "
+    f"REMOVE_COOLDOWN={REMOVE_COOLDOWN}"
+)
 if args.confluence is not None:
     MULTI_TF_CONFLUENCE = args.confluence
 
@@ -1757,8 +1761,9 @@ def main():
             logger.info(f"🔒 {pair}: not in {PROFILE_LABEL} ALLOWED_PAIRS — SKIP")
             continue
 
-        if pair in last_closed:
-            _d, _until = last_closed[pair]
+        _cd_key = oanda if oanda in last_closed else pair
+        if _cd_key in last_closed:
+            _d, _until = last_closed[_cd_key]
             _remain = _until - datetime.now(timezone.utc).timestamp()
             if _remain > 0:
                 logger.info(
@@ -1766,7 +1771,7 @@ def main():
                 )
                 continue
             else:
-                del last_closed[pair]
+                del last_closed[_cd_key]
 
         if open_pos_by_oanda.get(oanda, False):
             logger.info(f"⏭️ {pair}: position already open — SKIP DUPLICATE")
