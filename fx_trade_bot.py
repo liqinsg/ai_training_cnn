@@ -1290,7 +1290,9 @@ def calc_weighted_score(
         A = adx_normalized
     A = max(0.0, min(100.0, A))
 
-    X = max(0.0, min(100.0, (xgb_prob or 0.0) * 100.0))
+    _xgb_p_up = xgb_prob or 0.0
+    _xgb_aligned = _xgb_p_up if direction == "BUY" else (1.0 - _xgb_p_up)
+    X = max(0.0, min(100.0, _xgb_aligned * 100.0))
     if X == 0.0:
         X = max(0.0, min(100.0, S * 0.3 + R * 0.3))
     M = max(0.0, min(100.0, mc_pct_up if mc_pct_up is not None else 50.0))
@@ -1779,11 +1781,10 @@ def main():
             spread_pips,
         )
         prob_raw = (
-            getattr(sig, "probability", None)
-            or getattr(sig, "model_prob", None)
-            or getattr(sig, "prob", None)
-            or 0.0
-        )
+            getattr(sig, "model_p_up", None)
+            if sig
+            else None
+        ) or 0.0
         mc_pct_up = mc_cache.get(pair, {}).get("p_up", 50.0)
 
         direction, w = calc_weighted_score(
@@ -1876,11 +1877,8 @@ def main():
             D_GATE_DIRECTIONS.get(pair, D_GATE_BOTH) if D_GATE_ENABLED else "N/A"
         )
         xgb_score = (
-            getattr(sig, "probability", None)
-            or getattr(sig, "model_prob", None)
-            or getattr(sig, "prob", None)
-            or 0.0
-        )
+            getattr(sig, "model_p_up", None) if sig else None
+        ) or 0.0
         _open_reasons[pair] = (
             f"STRENGTH_GAP={abs(gap):.2f} | XGB_SCORE={xgb_score:.2f} | "
             f"MC_P_UP={mc_pct_up:.0f}% | D-GATE={d_gate_label} | "
