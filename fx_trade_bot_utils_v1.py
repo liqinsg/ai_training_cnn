@@ -16,9 +16,13 @@ from utils.logging_utils import get_logger
 from oandapyV20.endpoints.instruments import InstrumentsCandles
 from oandapyV20.endpoints.positions import PositionDetails
 from oandapyV20.endpoints.orders import OrderCreate
-from oandapyV20.endpoints.trades import OpenTrades, TradeCRCDO
+from oandapyV20.endpoints.trades import OpenTrades, TradeCRCDO, TradesList
 from oandapyV20.endpoints.pricing import PricingInfo
-from oandapyV20.endpoints.transactions import TransactionsSinceID
+from oandapyV20.endpoints.transactions import (
+    TransactionList,
+    TransactionsSinceID,
+)
+from oandapyV20.endpoints.accounts import AccountDetails
 
 logger = get_logger("fx_trade_bot_utils")
 
@@ -176,20 +180,182 @@ def _detect_and_cache_halt(instrument: str, resp: dict):
 
 
 # ============================================================================
-# COOLDOWN MANAGEMENT
+# COOLDOWN MANAGEMENT — TIME-BASED (not run-based)
+# State format: {pair: {"direction": "LONG"/"SHORT", "until_ts": float}}
 # ============================================================================
 def load_cooldown(cooldown_file: Path, Direction):
     if cooldown_file.exists():
-        with open(cooldown_file) as f:
-            raw = json.load(f)
-            return {k: (Direction(v[0]), v[1]) for k, v in raw.items()}
+        try:
+            with open(cooldown_file) as f:
+                raw = json.load(f)
+            now_ts = datetime.now(timezone.utc).timestamp()
+            result = {}
+            for k, v in raw.items():
+                if isinstance(v, dict) and "until_ts" in v:
+                    if v["until_ts"] > now_ts:
+                        result[k] = (Direction(v["direction"]), v["until_ts"])
+                elif isinstance(v, list) and len(v) == 2:
+                    if isinstance(v[1], (int, float)) and v[1] > 0:
+                        result[k] = (Direction(v[0]), v[1])
+            return result
+        except Exception as e:
+            logger.warning(f"⚠️ load_cooldown failed ({cooldown_file.name}): {e}")
     return {}
 
 
 def save_cooldown(cooldown_file: Path, state: dict):
-    serializable = {k: (v[0].value, v[1]) for k, v in state.items()}
+    serializable = {
+        k: {"direction": v[0].value, "until_ts": float(v[1])}
+        for k, v in state.items()
+    }
     with open(cooldown_file, "w") as f:
         json.dump(serializable, f)
+
+
+def check_and_record_tp_cooldown(
+    api,
+    oanda_account_id: str,
+    instrument: str,
+    tag_filter: str | None,
+    cooldown_hours: float,
+    cooldown_state: dict,
+) -> bool:
+    """Check the latest CLOSED trade for *instrument*.  If it was closed by
+    TAKE_PROFIT_ORDER, add the instrument to ``cooldown_state`` for
+    ``cooldown_hours``.  Returns True if a TP-triggered cooldown was added."""
+    if cooldown_hours <= 0:
+        return False
+    try:
+        resp = api.request(
+            TradesList(
+                oanda_account_id,
+                params={"state": "CLOSED", "count": 10},
+            )
+        )
+    except Exception as e:
+        logger.warning(f"TradesList failed for TP-cooldown check: {e!s}")
+        return False
+
+    closed_trades = resp.get("trades", [])
+    if not closed_trades:
+        return False
+
+    def _match_tag(t: dict) -> bool:
+        if not tag_filter:
+            return True
+        ce = t.get("clientExtensions", {}) or {}
+        cid = ce.get("id", "")
+        ctag = ce.get("tag", "")
+        return tag_filter in cid or tag_filter in ctag or instrument in cid
+
+    target_trade = None
+    for t in closed_trades:
+        if t.get("instrument") != instrument:
+            continue
+        if _match_tag(t):
+            target_trade = t
+            break
+
+    if target_trade is None:
+        return False
+
+    closing_ids = target_trade.get("closingTransactionIDs") or []
+    if not closing_ids:
+        return False
+
+    try:
+        acct = api.request(AccountDetails(oanda_account_id))
+        last_tid = int(acct["account"]["lastTransactionID"])
+        min_tid = max(0, last_tid - 500)
+        tx_resp = api.request(
+            TransactionsSinceID(
+                oanda_account_id,
+                params={"id": str(min_tid), "count": 500},
+            )
+        )
+        tx_map = {tx["id"]: tx for tx in tx_resp.get("transactions", [])}
+    except Exception as e:
+        logger.warning(f"TransactionsSinceID failed for TP-cooldown: {e!s}")
+        return False
+
+    for cid_str in closing_ids:
+        tx = tx_map.get(str(cid_str))
+        if tx and tx.get("reason") == "TAKE_PROFIT_ORDER":
+            until = time.time() + cooldown_hours * 3600
+            cooldown_state[instrument] = (Direction.NONE, until)
+            logger.info(
+                f"❄️  TP-COOLDOWN  {instrument} locked for "
+                f"{cooldown_hours:.1f}h (closed by TAKE_PROFIT)"
+            )
+            return True
+    return False
+
+
+def refresh_tp_cooldown_from_recent_tx(
+    api,
+    oanda_account_id: str,
+    cooldown_hours: float,
+    cooldown_state: dict,
+) -> list[str]:
+    """Bulk scan of recent transactions — find any ORDER_FILL whose reason is
+    TAKE_PROFIT_ORDER, extract the instrument from that trade, and add it to
+    cooldown_state.  Returns list of instrument names newly locked."""
+    if cooldown_hours <= 0:
+        return []
+    try:
+        acct = api.request(AccountDetails(oanda_account_id))
+        last_tid = int(acct["account"]["lastTransactionID"])
+        min_tid = max(0, last_tid - 500)
+        tx_resp = api.request(
+            TransactionsSinceID(
+                oanda_account_id,
+                params={"id": str(min_tid), "count": 500},
+            )
+        )
+    except Exception as e:
+        logger.warning(f"refresh_tp_cooldown: tx fetch failed: {e!s}")
+        return []
+
+    new_locks: list[str] = []
+    for tx in tx_resp.get("transactions", []):
+        if tx.get("type") != "ORDER_FILL":
+            continue
+        if tx.get("reason") != "TAKE_PROFIT_ORDER":
+            continue
+        inst = tx.get("instrument", "")
+        trade_id = tx.get("tradeID", "")
+        if not inst or not trade_id:
+            continue
+        # Find the actual instrument — ORDER_FILL on close reason carries the
+        # instrument directly, double-check via TradesList if needed.
+        # But reason=TAKE_PROFIT_ORDER on ORDER_FILL already gives us the
+        # instrument.
+        # ── 从 TP close 时刻开始算 cooldown，不是从 refresh 时刻 ──
+        from datetime import timezone as _tz
+        _tx_time_str = tx.get("time", "")
+        try:
+            _close_ts = datetime.fromisoformat(
+                _tx_time_str.replace("Z", "+00:00")
+            ).timestamp() if _tx_time_str else time.time()
+        except Exception:
+            _close_ts = time.time()
+        _until_ts = _close_ts + cooldown_hours * 3600
+        _remain = _until_ts - time.time()
+        if _remain <= 0:
+            continue  # TP 后已超过 cooldown 窗口，跳过
+        # 若已有更近的 cooldown（更大的 until_ts），不覆盖
+        _prev = cooldown_state.get(inst)
+        if _prev and _prev[1] > _until_ts:
+            continue
+        cooldown_state[inst] = (Direction.NONE, _until_ts)
+        if inst not in new_locks:
+            new_locks.append(inst)
+            logger.info(
+                f"❄️  TP-COOLDOWN  {inst} locked for "
+                f"{cooldown_hours:.1f}h (trade {trade_id}, "
+                f"closes-in {_remain / 3600:.1f}h)"
+            )
+    return new_locks
 
 
 # ============================================================================

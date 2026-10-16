@@ -7,6 +7,7 @@ import contextlib
 import sys
 import os
 import subprocess
+import time
 from utils.logging_utils import get_logger
 import argparse
 from pathlib import Path
@@ -43,6 +44,9 @@ from data_pipeline import (
 from fx_trade_bot_utils_v1 import (
     pip_size,
     load_cooldown,
+    save_cooldown,
+    refresh_tp_cooldown_from_recent_tx,
+    check_and_record_tp_cooldown,
     get_open_position,
     has_open_trade_with_tags,
     list_open_trades,
@@ -1093,6 +1097,7 @@ MC_MAX_AGE_HOURS = cfg_bot("MC_MAX_AGE_HOURS", 24)
 SIMULATIONS = cfg_bot("MC_SIMULATIONS", 5000)
 CONFIDENCE = cfg_bot("MC_BAND_PCT", 90) / 100.0
 REMOVE_COOLDOWN = cfg_bot("REMOVE_COOLDOWN", False)
+COOLDOWN_HOURS_AFTER_TP = cfg_bot("COOLDOWN_HOURS_AFTER_TP", 0.0)
 if args.confluence is not None:
     MULTI_TF_CONFLUENCE = args.confluence
 
@@ -1133,7 +1138,18 @@ strat_engine = StrategyEngine(STRAT_CFG, model=None, feature_list=[])
 atr_mod = ATRModule(period=getattr(FEAT_CFG, "atr_period", cfg_bot("ATR_PERIOD", 14)))
 MODEL_PATH = BASE_DIR / "trade_model_xgb.pkl"
 model_wrapper = ModelWrapper(FEAT_CFG, model_path=MODEL_PATH)
-last_closed = [] if REMOVE_COOLDOWN else load_cooldown(COOLDOWN_FILE, Direction)
+last_closed = {} if REMOVE_COOLDOWN else load_cooldown(COOLDOWN_FILE, Direction)
+
+# ── 启动时从最近交易刷新 TP 触发的 cooldown ──
+if COOLDOWN_HOURS_AFTER_TP > 0 and not REMOVE_COOLDOWN:
+    try:
+        refresh_tp_cooldown_from_recent_tx(
+            api, OANDA_ACCOUNT_ID,
+            COOLDOWN_HOURS_AFTER_TP,
+            last_closed,
+        )
+    except Exception as _e:
+        logger.warning(f"TP-cooldown refresh failed: {_e!s}")
 
 
 # ─── HELPER: TOP-N STRENGTH PAIR BUILDER ─────────────────────────────────────
@@ -1742,10 +1758,12 @@ def main():
             continue
 
         if pair in last_closed:
-            d, r = last_closed[pair]
-            if r > 0:
-                last_closed[pair] = (d, r - 1)
-                logger.info(f"⏳ COOLDOWN {pair}: {r-1} runs remaining — SKIP")
+            _d, _until = last_closed[pair]
+            _remain = _until - datetime.now(timezone.utc).timestamp()
+            if _remain > 0:
+                logger.info(
+                    f"⏳ COOLDOWN {pair}: {_remain / 3600:.1f}h remaining — SKIP"
+                )
                 continue
             else:
                 del last_closed[pair]
@@ -2103,6 +2121,17 @@ def main():
     logger.info(
         f"✅ v6.8.3.3 {PROFILE_LABEL} Run Complete — {ACCOUNT_NAME} — TOP-N STRENGTH ACTIVE"
     )
+
+    # ── 持久化 cooldown 状态 ──
+    if not REMOVE_COOLDOWN and last_closed:
+        try:
+            save_cooldown(COOLDOWN_FILE, last_closed)
+            logger.info(
+                f"💾 Cooldown saved: {len(last_closed)} instrument(s) → "
+                f"{COOLDOWN_FILE.name}"
+            )
+        except Exception as _e:
+            logger.warning(f"save_cooldown failed: {_e!s}")
 
 
 if __name__ == "__main__":

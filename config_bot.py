@@ -176,6 +176,10 @@ def build_profile_cfg(profile_id: int) -> Dict:
         "ADX_BOOST_THRESHOLD": get_global("adx_logic.ADX_BOOST_THRESHOLD"),
         "ADX_BOOST_VALUE": get_global("adx_logic.ADX_BOOST_VALUE"),
         "ADX_SCALE_FACTOR": get_global("adx_logic.ADX_SCALE_FACTOR"),
+        "REMOVE_COOLDOWN": get_global("ranking_cooldown.REMOVE_COOLDOWN"),
+        "COOLDOWN_HOURS_AFTER_TP": get_global(
+            "ranking_cooldown.COOLDOWN_HOURS_AFTER_TP"
+        ),
     }
     return cfg
 
