@@ -226,17 +226,14 @@ def build_strength_matrix() -> Dict[str, float]:
 def format_strength_ranking(scores: Dict[str, float]) -> str:
     ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
     lines = ["  Currency Strength Ranking:"]
+    # 归一化：以当前周期最大分数为满格基准
+    max_abs = max(abs(s) for s in scores.values()) or 1.0
     for i, (currency, score) in enumerate(ranked, 1):
-        bar = "█" * min(int(abs(score) * 20), 40)
+        # 按比例缩放到0~40格，至少显示1格
+        filled = max(1, int(abs(score) / max_abs * 40))
+        bar = "█" * filled
         direction = "▲" if score > 0 else "▼"
         lines.append(f"  {i}. {currency}: {score:+.4f} {direction} {bar}")
-    gap = ranked[0][1] - ranked[-1][1]
-    lines.append(
-        f"\n  GLOBAL_MAX_GAP: {gap:.3f} "
-        f"({'STRONG' if gap > 1.5 else 'MODERATE' if gap > 0.5 else 'COILING'}) "
-        f"(max={ranked[0][0]:s} {ranked[0][1]:+.3f} minus min={ranked[-1][0]:s} {ranked[-1][1]:+.3f})"
-    )
-    return "\n".join(lines)
 
 
 def get_ma5_position(instrument: str, granularity: str) -> Optional[str]:
