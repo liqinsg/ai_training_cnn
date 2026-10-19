@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# utils/tp_cooldown_tracker.py
 """出场冷却追踪 — 主动记录版，适配市价/TP/SL所有出场方式"""
 
 import os

@@ -1,3 +1,4 @@
+# fx_trade_bot_utils_v1.py
 import json
 import os
 import time
@@ -20,6 +21,7 @@ from oandapyV20.endpoints.trades import OpenTrades, TradeCRCDO, TradesList
 from oandapyV20.endpoints.pricing import PricingInfo
 from oandapyV20.endpoints.transactions import (
     TransactionList,
+    TransactionDetails,
     TransactionsSinceID,
 )
 from oandapyV20.endpoints.accounts import AccountDetails
@@ -1466,3 +1468,100 @@ def build_trade_telegram(trade_lines, mc_summary=None):
     if mc_summary:
         lines += ["", "📊 MC Context:"] + [f"   {s}" for s in mc_summary]
     return "\n".join(lines)
+
+
+def fetch_weekly_ema100(oanda_instrument, api):
+    try:
+        resp = api.request(
+            InstrumentsCandles(
+                instrument=oanda_instrument,
+                params={"granularity": "W", "count": 105, "price": "M"},
+            )
+        )
+        candles = resp["candles"]
+        if len(candles) < 100:
+            return None
+        closes = [float(c["mid"]["c"]) for c in candles]
+        series = pd.Series(closes)
+        return series.ewm(span=100, adjust=False).mean().iloc[-1]
+    except Exception as e:
+        logger.warning(f"⚠️ Cannot fetch Weekly EMA100 for {oanda_instrument}: {e}")
+        return None
+
+
+def record_cooldown_from_closed_trades(
+    api,
+    oanda_account_id: str,
+    instruments: list,
+    owner_client_ext_id: str,
+    owner_client_ext_tag: str,
+    cooldown_hours: float,
+    remove_cooldown: bool,
+    cooldown_state: dict,
+    Direction,
+):
+    """Scan recently CLOSED owned trades and lock TP-closed instruments.
+
+    Operates directly on ``cooldown_state`` (same shape as load_cooldown output:
+    {key: (Direction, until_ts)}). When remove_cooldown=True it also strips
+    entries so the caller's state stays in sync.
+    """
+    if cooldown_hours <= 0 or remove_cooldown:
+        return
+    for oanda_inst in list(instruments):
+        try:
+            resp = api.request(
+                TradesList(
+                    oanda_account_id,
+                    params={"state": "CLOSED", "instrument": oanda_inst, "count": 5},
+                )
+            )
+        except Exception as e:
+            logger.warning(
+                f"⚠️ TP-cooldown TradesList failed for {oanda_inst}: {e!s}"
+            )
+            continue
+        closed = resp.get("trades", [])
+        if not closed:
+            continue
+        t = closed[0]
+        ce = t.get("clientExtensions", {}) or {}
+        if ce.get("id") != owner_client_ext_id and ce.get("tag") != owner_client_ext_tag:
+            continue
+        closing_ids = [str(x) for x in (t.get("closingTransactionIDs") or [])]
+        if not closing_ids:
+            continue
+        ctype = ""
+        try:
+            details = api.request(
+                TransactionDetails(
+                    oanda_account_id,
+                    params={"ids": ",".join(closing_ids)},
+                )
+            )
+            txs = details.get("transactions", [])
+            reasons = {tx.get("reason", "") for tx in txs}
+            if "TAKE_PROFIT_ORDER" in reasons:
+                ctype = "TP"
+            elif "STOP_LOSS_ORDER" in reasons:
+                ctype = "SL"
+            elif reasons:
+                ctype = "OTHER"
+        except Exception as e:
+            logger.warning(
+                f"⚠️ TP-cooldown TransactionDetails failed for {oanda_inst}: {e!s}"
+            )
+
+        if ctype == "TP":
+            expire_ts = datetime.now(timezone.utc).timestamp() + cooldown_hours * 3600
+            base, quote = oanda_inst.split("_")
+            cooldown_state[base] = (Direction.NONE, expire_ts)
+            cooldown_state[quote] = (Direction.NONE, expire_ts)
+            logger.info(
+                f"❄️  TP close detected on {oanda_inst} — cooldown applied "
+                f"({cooldown_hours}h)"
+            )
+        if remove_cooldown:
+            base, quote = oanda_inst.split("_")
+            for k in (base, quote, oanda_inst):
+                cooldown_state.pop(k, None)
