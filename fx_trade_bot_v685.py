@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 # ──────────────────────────────────────────────────────
-# FX Trade Bot v6.8.4 — 配置统一入口
+# FX Trade Bot v6.8.5 — 配置统一入口
 # 唯一来源: config_profile.json → config_bot.py
 # ──────────────────────────────────────────────────────
 import contextlib
 import sys
 import os
+import subprocess
+import time
 from utils.logging_utils import get_logger
 import argparse
 from pathlib import Path
@@ -31,6 +33,8 @@ from utils.strategy_config import (
 )
 from telegram_message import send_telegram_message
 from oandapyV20.endpoints.instruments import InstrumentsCandles
+from oandapyV20.endpoints.trades import TradesList
+from oandapyV20.endpoints.transactions import TransactionDetails
 from strategy_decision import StrategyConfig, StrategyEngine, FilterMode, Direction
 from data_pipeline import (
     FeatureConfig,
@@ -39,11 +43,15 @@ from data_pipeline import (
     DataFetcher,
     ATRModule,
 )
-from fx_trade_bot_utils import (
+from fx_trade_bot_utils_v1 import (
     pip_size,
     load_cooldown,
+    save_cooldown,
+    refresh_tp_cooldown_from_recent_tx,
+    check_and_record_tp_cooldown,
     get_open_position,
     has_open_trade_with_tags,
+    list_open_trades,
     close_position,
     fetch_candles,
     open_oanda_order_simple as open_oanda_order,
@@ -52,18 +60,17 @@ from fx_trade_bot_utils import (
     load_mc_bundle,
     get_mc_results_dir,
     PositionStatus,
-    REASON_TAKE_PROFIT,
-    REASON_TRAIL_STOP,
-    REASON_TIME_EXPIRY,
-    REASON_DIRECTION_FLIP,
-    REASON_SCORE_DROP,
-    REASON_MC_SHIFT,
-    REASON_MAX_DRAWDOWN,
-    REASON_REBALANCE,
-    REASON_USER_MANUAL,
-    REASON_OTHER,
+    # REASON_TAKE_PROFIT,
+    # REASON_TRAIL_STOP,
+    # REASON_TIME_EXPIRY,
+    # REASON_DIRECTION_FLIP,
+    # REASON_SCORE_DROP,
+    # REASON_MC_SHIFT,
+    # REASON_MAX_DRAWDOWN,
+    # REASON_REBALANCE,
+    # REASON_USER_MANUAL,
+    # REASON_OTHER,
 )
-from fx_trade_bot_mc import MCGenerator, MCConfig
 from fx_trade_bot_ml import ensure_model
 # from portfolio_balance import balance_from_config
 from sl_zone_hierarchy import compute_sl_zone
@@ -80,6 +87,7 @@ from config_oanda import (
     OANDA_ACCOUNT_ID_DEMO_4,
 )
 
+from utils.structured_logger import StructuredLogger
 # ─── BASE SETUP ──────────────────────────────────────────────────────────────
 BASE_DIR = Path(__file__).resolve().parent
 sys.path.extend([str(BASE_DIR), str(BASE_DIR / "utils")])
@@ -159,8 +167,8 @@ parser.add_argument(
     action="store_true",
     help="Skip the weekend/holiday guard and run the full pipeline (debug)",
 )
-# Optional bare positional profile number: `python fx_trade_bot_v684.py 2`.
-# nargs="?" keeps it optional so `python fx_trade_bot_v684.py` still works.
+# Optional bare positional profile number: `python fx_trade_bot_v685.py 2`.
+# nargs="?" keeps it optional so `python fx_trade_bot_v685.py` still works.
 parser.add_argument(
     "profile_pos",
     nargs="?",
@@ -171,8 +179,8 @@ parser.add_argument(
 args = parser.parse_args()
 
 # ===== 1. 选择运行的配置方案 =====
-# 命令行启动:  python fx_trade_bot_v684.py 1 → Profile1
-#             python fx_trade_bot_v684.py 2 → Profile2 (默认)
+# 命令行启动:  python fx_trade_bot_v685.py 1 → Profile1
+#             python fx_trade_bot_v685.py 2 → Profile2 (默认)
 # Resolution: -p N > --profile3 / --profile2 > first positional digit > default 2
 if args.profile is not None:
     PROFILE_ID = args.profile
@@ -193,17 +201,22 @@ profile_id = PROFILE_ID
 cfg = C.get_profile(PROFILE_ID)
 
 # ===== 3. 常用变量直接映射（复制/对照用）=====
-APP_VERSION = "684"
+# NOTE: APP_VERSION feeds OWNER_TAGS/OWNER_CLIENT_EXT_ID (the multi-account
+# ownership tag), so changing it makes this build stop recognising positions
+# opened by builds tagged "v685". Kept in sync with VERSION below instead.
+APP_VERSION = "685-cooldown"
 VERSION = cfg["VERSION"]
+PROFILE_NAME = f"profile{PROFILE_ID}"
+PROFILE_LABEL = cfg["PROFILE_LABEL"]
 OWNER_TAGS = ["fx_bot", f"v{APP_VERSION}", PROFILE_NAME]
 OWNER_COMMENT = f"fx_bot_v{APP_VERSION}_{PROFILE_NAME}_entry"
+OWNER_CLIENT_EXT_ID = f"fx_bot_v{APP_VERSION}_{PROFILE_NAME}"
+OWNER_CLIENT_EXT_TAG = f"fx_bot_v{APP_VERSION}_{PROFILE_NAME}_entry"
 # NOTE: two distinct names on purpose —
 #   PROFILE_NAME  : internal key used by _TREND_TP_CONFIG / TREND_TP_CONFIG lookups
 #                   ("profile1".."profile4"), so it MUST stay the lowercase
 #                   profile<n> form, not the friendly label.
 #   PROFILE_LABEL : the human-facing name from config_profile.json ("PF-B Balanced").
-PROFILE_NAME = f"profile{PROFILE_ID}"
-PROFILE_LABEL = cfg["PROFILE_LABEL"]
 
 # 权重
 W_S = cfg["W_S"]  # Strength
@@ -946,8 +959,23 @@ except ValueError as exc:
     parser.error(str(exc))
 
 _ENV_LABEL = "LIVE" if LIVE_MODE else "DEMO"
+_cfg_lot = cfg_bot("DEFAULT_LOT_SIZE", 10000)
+_lot_source = "config"
+DEFAULT_LOT_SIZE = _cfg_lot
+_env_lot_key = "LIVE_LOT_SIZE" if LIVE_MODE else "DEMO_LOT_SIZE"
+_env_lot_raw = os.getenv(_env_lot_key)
+if _env_lot_raw is not None:
+    try:
+        DEFAULT_LOT_SIZE = int(_env_lot_raw)
+        _lot_source = f"run.env [{_env_lot_key}]"
+    except ValueError:
+        pass
+if args.lots is not None:
+    DEFAULT_LOT_SIZE = args.lots
+    _lot_source = "CLI --lots"
 logger.info(f"⚙️ Profile: {PROFILE_ID}")
 logger.info(f"🔑 Account: {_account_source} → {OANDA_ACCOUNT_ID} [{_ENV_LABEL}]")
+logger.info(f"📦 Lot size: {DEFAULT_LOT_SIZE}  (source: {_lot_source})")
 
 _prof = get_oanda_profile("live" if LIVE_MODE else "practice")
 api = _prof["oanda_client"]
@@ -996,9 +1024,6 @@ if DRY_RUN_MODE:
 MAX_ENTRIES = args.max_entries if args.max_entries is not None else MAX_ENTRIES_THIS_RUN
 OANDA_GRANULARITY_MAP = {"15m": "M15", "1H": "H1", "H4": "H4", "D": "D"}
 OANDA_GRANULARITY = OANDA_GRANULARITY_MAP.get(TIMEFRAME, "H4")
-DEFAULT_LOT_SIZE = cfg_bot("DEFAULT_LOT_SIZE", 10000)
-if args.lots is not None:
-    DEFAULT_LOT_SIZE = args.lots
 
 # Build run mode banner from TWO INDEPENDENT AXES (account env × execution gate)
 _env_label = (
@@ -1017,6 +1042,8 @@ logger.info(
     f"🖥️  RUN MODE: {_run_mode_label} | MAX_OPEN={MAX_OPEN} | "
     f"MAX_ENTRIES_THIS_RUN={_max_entries_label}"
 )
+# ═════════════ 结构化日志初始化 ═════════════
+json_log = StructuredLogger(PROFILE_LABEL)
 
 ALL_PAIRS = cfg_bot(
     "ALL_PAIRS",
@@ -1075,38 +1102,13 @@ MC_MAX_AGE_HOURS = cfg_bot("MC_MAX_AGE_HOURS", 24)
 SIMULATIONS = cfg_bot("MC_SIMULATIONS", 5000)
 CONFIDENCE = cfg_bot("MC_BAND_PCT", 90) / 100.0
 REMOVE_COOLDOWN = cfg_bot("REMOVE_COOLDOWN", False)
+COOLDOWN_HOURS_AFTER_TP = cfg_bot("COOLDOWN_HOURS_AFTER_TP", 0.0)
+logger.info(
+    f"⏳ TP-COOLDOWN: hours={COOLDOWN_HOURS_AFTER_TP} "
+    f"REMOVE_COOLDOWN={REMOVE_COOLDOWN}"
+)
 if args.confluence is not None:
     MULTI_TF_CONFLUENCE = args.confluence
-
-# ─── MC TIMEFRAME CONFIG ─────────────────────────────────────────────────────
-if TIMEFRAME in ("H4", "1H", "15m"):
-    MCConfig.set_timeframe(
-        TIMEFRAME,
-        {
-            "YF_INTERVAL": cfg_bot("YF_INTERVAL", "4h"),
-            "YF_PERIOD_FULL": cfg_bot("YF_PERIOD_FULL", "30d"),
-            "YF_PERIOD_RESAMPLE": cfg_bot("YF_PERIOD_RESAMPLE", "60d"),
-            "MC_LOOKBACK": cfg_bot("H4_LOOKBACK", 90),
-            "MC_FORECAST": cfg_bot("H4_FORECAST", 8),
-            "PERIODS_YEAR": cfg_bot("PERIODS_YEAR", 252) * 6,
-            "MC_REPORT_TITLE": f"[{PROFILE_LABEL}] FX {TIMEFRAME} MONTE CARLO",
-            "RESULTS_DIR": RESULTS_DIR,
-        },
-    )
-else:
-    MCConfig.set_timeframe(
-        TIMEFRAME,
-        {
-            "YF_INTERVAL": cfg_bot("YF_INTERVAL_D", "1d"),
-            "YF_PERIOD_FULL": cfg_bot("YF_PERIOD_FULL_D", "120d"),
-            "YF_PERIOD_RESAMPLE": cfg_bot("YF_PERIOD_RESAMPLE_D", "180d"),
-            "MC_LOOKBACK": cfg_bot("DAILY_LOOKBACK", 90),
-            "MC_FORECAST": cfg_bot("DAILY_FORECAST", 5),
-            "PERIODS_YEAR": cfg_bot("PERIODS_YEAR_D", 252),
-            "MC_REPORT_TITLE": f"[{PROFILE_LABEL}] FX DAILY MONTE CARLO",
-            "RESULTS_DIR": RESULTS_DIR,
-        },
-    )
 
 # ─── PIPELINE & STRATEGY CONFIG ──────────────────────────────────────────────
 FEAT_CFG = FeatureConfig(
@@ -1145,7 +1147,168 @@ strat_engine = StrategyEngine(STRAT_CFG, model=None, feature_list=[])
 atr_mod = ATRModule(period=getattr(FEAT_CFG, "atr_period", cfg_bot("ATR_PERIOD", 14)))
 MODEL_PATH = BASE_DIR / "trade_model_xgb.pkl"
 model_wrapper = ModelWrapper(FEAT_CFG, model_path=MODEL_PATH)
-last_closed = [] if REMOVE_COOLDOWN else load_cooldown(COOLDOWN_FILE, Direction)
+last_closed = {} if REMOVE_COOLDOWN else load_cooldown(COOLDOWN_FILE, Direction)
+
+
+# ─── COOLDOWN HELPERS (v71-aligned) ──────────────────────────────────────────
+# State format is owned by fx_trade_bot_utils_v1: {key: (Direction, until_ts)}
+# with until_ts an ABSOLUTE UTC epoch (float). load_cooldown(), the TP-close
+# writer and refresh_tp_cooldown_from_recent_tx() all agree on that shape, so
+# the helpers below only ever read element [1] — never a bare float.
+def save_cooldown_state(state: dict):
+    """Persist the cooldown state (no-op when there is nothing to persist)."""
+    if REMOVE_COOLDOWN or not state:
+        return
+    try:
+        save_cooldown(COOLDOWN_FILE, state)
+        logger.info(
+            f"💾 Cooldown saved: {len(state)} instrument(s) → {COOLDOWN_FILE.name}"
+        )
+    except Exception as e:
+        logger.warning(f"⚠️ save_cooldown failed: {e!s}")
+
+
+def cooldown_key(pair: str, oanda_instrument: str) -> str:
+    """Resolve the state key for a pair: the OANDA instrument when present,
+    else the Yahoo symbol. load_cooldown writes OANDA keys while this bot also
+    writes bare currency codes, so both spellings must be probed."""
+    if oanda_instrument in last_closed:
+        return oanda_instrument
+    return pair
+
+
+def is_in_cooldown(pair: str, oanda_instrument: str):
+    """Return (in_cooldown, remaining_minutes) for a pair, auto-cleaning the
+    state entry once it expires so dead records never accumulate."""
+    key = cooldown_key(pair, oanda_instrument)
+    if key not in last_closed:
+        return False, 0.0
+    until_ts = last_closed[key][1]
+    remain_sec = until_ts - datetime.now(timezone.utc).timestamp()
+    if remain_sec > 0:
+        return True, round(remain_sec / 60.0, 1)
+    del last_closed[key]  # 过期自动清理
+    logger.debug(f"🧹 Expired cooldown removed: {key}")
+    return False, 0.0
+
+
+def set_cooldown(pair: str, oanda_instrument: str):
+    """Lock the pair's base AND quote currency for COOLDOWN_HOURS_AFTER_TP.
+
+    Keyed per CURRENCY (base+quote), not per pair, so a cooldown triggered by
+    one pair also covers its crosses — the v6.8.5 design, deliberately kept.
+    """
+    if COOLDOWN_HOURS_AFTER_TP <= 0 or REMOVE_COOLDOWN:
+        return
+    expire_ts = (
+        datetime.now(timezone.utc).timestamp() + COOLDOWN_HOURS_AFTER_TP * 3600
+    )
+    base, quote = oanda_instrument.split("_")
+    last_closed[base] = (Direction.NONE, expire_ts)
+    last_closed[quote] = (Direction.NONE, expire_ts)
+    logger.info(
+        f"⏳ COOLDOWN SET: {base}, {quote} locked until "
+        f"{datetime.fromtimestamp(expire_ts, tz=timezone.utc).strftime('%H:%M UTC')} "
+        f"({COOLDOWN_HOURS_AFTER_TP}h)"
+    )
+
+
+def clear_cooldown(pair: str, oanda_instrument: str):
+    """REMOVE_COOLDOWN=True branch: drop the pair's cooldown entries."""
+    base, quote = oanda_instrument.split("_")
+    removed = [
+        k for k in (base, quote, pair, oanda_instrument) if last_closed.pop(k, None)
+    ]
+    if removed:
+        logger.info(f"♻️ COOLDOWN REMOVED: {', '.join(removed)}")
+
+
+def record_cooldown_from_closed_trades(instruments):
+    """Scan recently CLOSED owned trades and lock TP-closed instruments.
+
+    `instruments` is the list of candidate OANDA instruments — passed in
+    explicitly because the owned-position map is a LOCAL of main() and is not
+    in scope here. The persisted entry stores Direction.NONE (see set_cooldown)
+    rather than the SELL-side position direction, keeping the writer shape
+    consistent with load_cooldown() and refresh_tp_cooldown_from_recent_tx().
+    """
+    if COOLDOWN_HOURS_AFTER_TP <= 0 or REMOVE_COOLDOWN:
+        return
+    for oanda_inst in list(instruments):
+        try:
+            resp = api.request(
+                TradesList(
+                    OANDA_ACCOUNT_ID,
+                    params={"state": "CLOSED", "instrument": oanda_inst, "count": 5},
+                )
+            )
+        except Exception as e:
+            logger.warning(f"⚠️ TP-cooldown TradesList failed for {oanda_inst}: {e!s}")
+            continue
+        closed = resp.get("trades", [])
+        if not closed:
+            continue
+        t = closed[0]
+        ce = t.get("clientExtensions", {}) or {}
+        if ce.get("id") != OWNER_CLIENT_EXT_ID and ce.get("tag") != OWNER_CLIENT_EXT_TAG:
+            continue  # not our trade
+        closing_ids = [str(x) for x in (t.get("closingTransactionIDs") or [])]
+        if not closing_ids:
+            continue
+        ctype = ""
+        try:
+            details = api.request(
+                TransactionDetails(
+                    OANDA_ACCOUNT_ID,
+                    params={"ids": ",".join(closing_ids)},
+                )
+            )
+            txs = details.get("transactions", [])
+            reasons = {tx.get("reason", "") for tx in txs}
+            if "TAKE_PROFIT_ORDER" in reasons:
+                ctype = "TP"
+            elif "STOP_LOSS_ORDER" in reasons:
+                ctype = "SL"
+            elif reasons:
+                ctype = "OTHER"
+        except Exception as e:
+            logger.warning(
+                f"⚠️ TP-cooldown TransactionDetails failed for {oanda_inst}: {e!s}"
+            )
+
+        if ctype == "TP":
+            set_cooldown(oanda_inst, oanda_inst)
+            logger.info(
+                f"❄️  TP close detected on {oanda_inst} — cooldown applied "
+                f"({COOLDOWN_HOURS_AFTER_TP}h)"
+            )
+        if REMOVE_COOLDOWN:
+            clear_cooldown(oanda_inst, oanda_inst)
+
+
+# ── 启动时加载持久化 + 从最近交易刷新 TP 触发的 cooldown ──
+if REMOVE_COOLDOWN:
+    logger.info(
+        "⏳ Cooldown load: SKIPPED — REMOVE_COOLDOWN=True (state starts empty)"
+    )
+elif COOLDOWN_HOURS_AFTER_TP > 0:
+    try:
+        _loaded_count = len(last_closed)
+        logger.info(f"📂 Cooldown loaded: {_loaded_count} persisted entries")
+        refresh_tp_cooldown_from_recent_tx(
+            api, OANDA_ACCOUNT_ID,
+            COOLDOWN_HOURS_AFTER_TP,
+            last_closed,
+        )
+        logger.info(
+            f"📂 Cooldown refreshed from recent trades: +{len(last_closed) - _loaded_count}"
+        )
+    except Exception as _e:
+        logger.warning(f"⚠️ Cooldown refresh failed: {_e!s}")
+else:
+    logger.info(
+        "⏳ Cooldown load: SKIPPED — COOLDOWN_HOURS_AFTER_TP=0 (feature off)"
+    )
 
 
 # ─── HELPER: TOP-N STRENGTH PAIR BUILDER ─────────────────────────────────────
@@ -1304,7 +1467,9 @@ def calc_weighted_score(
         A = adx_normalized
     A = max(0.0, min(100.0, A))
 
-    X = max(0.0, min(100.0, (xgb_prob or 0.0) * 100.0))
+    _xgb_p_up = xgb_prob or 0.0
+    _xgb_aligned = _xgb_p_up if direction == "BUY" else (1.0 - _xgb_p_up)
+    X = max(0.0, min(100.0, _xgb_aligned * 100.0))
     if X == 0.0:
         X = max(0.0, min(100.0, S * 0.3 + R * 0.3))
     M = max(0.0, min(100.0, mc_pct_up if mc_pct_up is not None else 50.0))
@@ -1349,9 +1514,9 @@ def main():
         else:
             why, reopen, day = market_reopen_hint()
             logger.info(
-                f"📅 Market closed ({why}) → exiting early. "
-                f"Forex reopens: {day} 06:00 UTC "
-                f"(= {reopen.strftime('%Y-%m-%d %H:%M')} UTC Sunday-open). "
+                f"📅 Market is CLOSED ({why}) → exits. "
+                f"Reopens: {day} 21:00 UTC "
+                f"(= {reopen.strftime('%Y-%m-%d %H:%M')} UTC). "
                 f"Use --ignore-market-closed to run the pipeline anyway."
             )
             return
@@ -1428,7 +1593,8 @@ def main():
                 f"📊 {pair}: {len(df)} bars | ATR={pair_data[pair]['atr']:.6f} | "
                 f"RSI={pair_data[pair]['rsi']:.1f} | ADX={pair_data[pair]['adx']:.1f}"
             )
-            weekly_ema_cache[oanda] = fetch_weekly_ema100(oanda, api)
+            if cfg_bot("WEEK_EMA100_FILTER_ENABLED", False):
+                weekly_ema_cache[oanda] = fetch_weekly_ema100(oanda, api)
         except Exception as e:
             logger.error(f"❌ Fetch failed {pair}: {e}")
 
@@ -1481,17 +1647,13 @@ def main():
     mc_weekly_cache = {}
 
     mc_results_dir = get_mc_results_dir()
-    mc_max_age = MC_MAX_AGE_HOURS
 
-    bundle_d_ok = False
-    bundle_w_ok = False
     if not args.skip_mc:
         logger.info(f"[STEP 3] Monte Carlo — loading pre-computed bundles from {mc_results_dir}...")
 
-        d_bundle, d_ok, d_name = load_mc_bundle(mc_results_dir, "D", mc_max_age)
+        d_bundle, d_ok, d_name = load_mc_bundle(mc_results_dir, "D")
         if d_ok:
             mc_cache = {p: d_bundle[p] for p in selected_pairs if p in d_bundle}
-            bundle_d_ok = True
             logger.info(
                 f"📦 MC DAILY bundle: {d_name} | "
                 f"loaded {len(mc_cache)}/{len(selected_pairs)} pairs"
@@ -1506,36 +1668,84 @@ def main():
                 else:
                     logger.info(f"⏭️ {p}: not found in D bundle — SKIP")
         else:
-            logger.info(f"ℹ️ No eligible D bundle in {mc_results_dir} (max_age={mc_max_age}h)")
+            logger.error(f"❌ No D bundle for today in {mc_results_dir}")
+            send_telegram_message(
+                f"🚨 FX BOT {PROFILE_LABEL}: 今日未找到 D 包\n"
+                f"📁 Dir: {mc_results_dir}\n"
+                f"⏰ 正在触发 run_fx_mc.sh ..."
+            )
+            mc_sh = Path.home() / "projects" / "fx_monte_carlo" / "run_fx_mc.sh"
+            try:
+                if mc_sh.exists():
+                    subprocess.Popen(
+                        ["bash", str(mc_sh)],
+                        cwd=str(mc_sh.parent),
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        start_new_session=True,
+                    )
+                    logger.info(f"✅ Launched {mc_sh}")
+                else:
+                    logger.error(f"❌ MC script not found: {mc_sh}")
+                    send_telegram_message(f"❌ FX BOT {PROFILE_LABEL}: run_fx_mc.sh 不存在 ({mc_sh})")
+            except Exception as e:
+                logger.error(f"❌ Failed to launch MC script: {e}")
+                send_telegram_message(f"❌ FX BOT {PROFILE_LABEL}: 启动 run_fx_mc.sh 失败 — {e}")
 
-        w_bundle, w_ok, w_name = load_mc_bundle(mc_results_dir, "W", mc_max_age * 2)
+            logger.warning("🛑 Aborting this run — D bundle required.")
+            send_telegram_message(
+                f"🛑 FX BOT {PROFILE_LABEL}: 本次运行已放弃，等待 MC 重新生成后重试"
+            )
+            return
+
+        w_bundle, w_ok, w_name = load_mc_bundle(mc_results_dir, "W")
         if w_ok:
             mc_weekly_cache = {p: w_bundle[p] for p in selected_pairs if p in w_bundle}
-            bundle_w_ok = True
             logger.info(
                 f"📦 MC WEEKLY bundle: {w_name} | "
                 f"loaded {len(mc_weekly_cache)}/{len(selected_pairs)} pairs"
             )
 
-        if not bundle_d_ok and not bundle_w_ok:
-            logger.info("[STEP 3] No pre-computed bundles — falling back to dynamic MCGenerator...")
-            mc_gen = MCGenerator(
-                fetcher, YAHOO_TO_OANDA, simulations=SIMULATIONS, confidence=CONFIDENCE
-            )
-            require_mc_momentum = cfg_bot("REQUIRE_STRONG_MOMENTUM", True)
-            for pair in selected_pairs:
-                if pair not in pair_data:
+        if PROFILE_ID == 2 and mc_weekly_cache:
+            logger.info("🧪 [PROFILE-2 EXPERIMENT] W+D MC blend enabled — fusing weekly into daily...")
+            for p, d in list(mc_cache.items()):
+                w = mc_weekly_cache.get(p)
+                if not w:
                     continue
-                mc_data, ok = mc_gen.run_for_pair(pair, df=pair_data[pair]["raw"])
-                if ok:
-                    regime = mc_data.get("regime", "")
-                    if require_mc_momentum and "STRONG MOMENTUM" not in regime:
-                        logger.info(f"⏭️ {pair}: MC regime={regime} — SKIP")
-                        continue
-                    mc_cache[pair] = mc_data
-                    logger.info(
-                        f"🎲 MC {pair}: {regime} | Band {mc_data['range_90']} | P_UP={mc_data['p_up']}%"
-                    )
+                w_up = w.get("p_up", 50.0)
+                d_up = d.get("p_up", 50.0)
+                deviation = abs(w_up - d_up) / 100.0
+                w_weight = min(0.65 + deviation * 0.6, 0.85)
+                d_weight = 1.0 - w_weight
+                fused_p_up = w_up * w_weight + d_up * d_weight
+                fused_p_down = 100.0 - fused_p_up
+                fused_ann_drift = w.get("ann_drift_pct", 0) * w_weight + d.get("ann_drift_pct", 0) * d_weight
+                w_lo, w_hi = w.get("range_90", [0, 0])
+                d_lo, d_hi = d.get("range_90", [0, 0])
+                fused_range_lo = w_lo + (d_lo - w_lo) * 0.3
+                fused_range_hi = w_hi + (d_hi - w_hi) * 0.3
+                d_regime = d.get("regime", "?")
+                w_regime = w.get("regime", "?")
+                d_blend = dict(d)
+                d_blend["p_up"] = round(fused_p_up, 1)
+                d_blend["p_down"] = round(fused_p_down, 1)
+                d_blend["p_up_pct"] = round(fused_p_up, 1)
+                d_blend["p_down_pct"] = round(fused_p_down, 1)
+                d_blend["ann_drift_pct"] = round(fused_ann_drift, 2)
+                d_blend["ann_vol_pct"] = w.get("ann_vol_pct", d.get("ann_vol_pct", 0))
+                d_blend["range_90"] = [round(fused_range_lo, 5), round(fused_range_hi, 5)]
+                d_blend["expected_price"] = d.get("expected_price", d.get("current_price", 0))
+                d_blend["regime"] = f"🧬 FUSED | D:{d_regime.split()[-1]} W:{w_regime.split()[-1]} | w_w={w_weight:.0%}"
+                d_blend["blend_source"] = {"D": d_name, "W": w_name, "w_weight": round(w_weight, 2)}
+                mc_cache[p] = d_blend
+                logger.info(
+                    f"🧬 FUSED {p}: P_UP D={d_up:.1f} W={w_up:.1f} → {fused_p_up:.1f}% "
+                    f"(w_w={w_weight:.0%}) | "
+                    f"range W={[round(w_lo,5), round(w_hi,5)]} D={[round(d_lo,5), round(d_hi,5)]} "
+                    f"→ [{round(fused_range_lo,5)}, {round(fused_range_hi,5)}]"
+                )
+        elif PROFILE_ID != 2:
+            logger.info(f"ℹ️ Profile {PROFILE_ID} — using pure D bundle (no W blend)")
     else:
         logger.info("[STEP 3] MC Skipped — loading legacy...")
         for pair in selected_pairs:
@@ -1592,6 +1802,7 @@ def main():
             dry_run=DRY_RUN_MODE,
             reason_code=reason_code,
             detail_msg=detail_msg,
+            json_log=json_log,
         )
 
     dyn_mgr = DynamicPositionManager(
@@ -1605,42 +1816,76 @@ def main():
         dynamic_tp=DYNAMIC_TP,
         tp_raise_thresh_pips=TP_RAISE_THRESHOLD_PIPS,
         telegram_send=send_telegram_message,
-        dry_run=DRY_RUN_MODE,  # v6.8.3.6: BE/Trailing SL + dynamic TP writes suppressed in DRY_RUN
+        dry_run=DRY_RUN_MODE,
+        json_log=json_log,
     )
     dyn_mgr.update_all(pair_data, close_wrap)
 
     # Step 6 — Scan Open Positions (OWNERSHIP-AWARE via OANDA tags)
     open_pos_by_oanda, open_pos_count = {}, 0
+    owned_positions_snapshot = []
     logger.info(
-        f"🔍 Checking open positions (owner_tags={OWNER_TAGS}, comment={OWNER_COMMENT})..."
+        f"🔍 Checking open positions (owner_client_ext_id={OWNER_CLIENT_EXT_ID}, tag={OWNER_CLIENT_EXT_TAG})..."
     )
     for pair in selected_pairs:
         oanda_inst = YAHOO_TO_OANDA.get(pair)
         if not oanda_inst:
             continue
-        # ── PRIMARY: tag-aware check — only blocks if *this profile* owns a trade
         found, trade = has_open_trade_with_tags(
-            api, OANDA_ACCOUNT_ID, oanda_inst, OWNER_TAGS
+            api, OANDA_ACCOUNT_ID, oanda_inst, OWNER_TAGS,
+            client_ext_id=OWNER_CLIENT_EXT_ID,
+            client_ext_tag=OWNER_CLIENT_EXT_TAG,
         )
         open_pos_by_oanda[oanda_inst] = found
         if found:
             open_pos_count += 1
+            sl_str = f"SL={trade['sl']}" if trade.get("sl") else "SL=NONE"
+            tp_str = f"TP={trade['tp']}" if trade.get("tp") else "TP=NONE"
+            ce = trade.get("client_ext", {})
             logger.info(
                 f"📌 OWNED POSITION: {pair} → {oanda_inst} | {trade['direction'].upper()} | "
                 f"units={trade['units']} | tradeID={trade['trade_id']} | "
-                f"tags={trade['tags']}"
+                f"{sl_str} | {tp_str} | client_ext={ce}"
             )
+            owned_positions_snapshot.append({
+                "pair": pair,
+                "oanda_instrument": oanda_inst,
+                "trade_id": trade["trade_id"],
+                "direction": trade["direction"],
+                "units": trade["units"],
+                "entry_price": trade.get("price"),
+                "sl": trade.get("sl"),
+                "tp": trade.get("tp"),
+                "client_ext": trade.get("client_ext"),
+            })
         else:
-            # ── BACKUP: coarse aggregate check — log but DON'T block
-            #    (allows other-profile trades on same instrument, which is legal,
-            #    but warn the operator)
             status, pos = get_open_position(api, OANDA_ACCOUNT_ID, oanda_inst)
             if status == PositionStatus.OPEN:
+                other_trades = list_open_trades(api, OANDA_ACCOUNT_ID, oanda_inst)
+                trade_summary = ", ".join(
+                    f"{t['trade_id']}(units={t['units']}, client_ext_id={t.get('client_ext_id','')})"
+                    for t in other_trades
+                ) or "(no per-trade data from OpenTrades)"
                 logger.warning(
                     f"⚠️  {pair}: INSTRUMENT has aggregate position but NO owned trade — "
-                    f"likely opened by another profile/process. "
-                    f"Will allow fresh entry (aggregate units={pos['units']}, side={pos['side']})."
+                    f"likely opened by another process / older bot version WITHOUT clientExtensions. "
+                    f"BLOCKING new entry to prevent position stacking "
+                    f"(aggregate units={pos['units']}, side={pos['side']})."
                 )
+                logger.warning(
+                    f"  🔍 OWNER_CLIENT_EXT_ID={OWNER_CLIENT_EXT_ID} | "
+                    f"existing trade(s) on {oanda_inst}: {trade_summary}"
+                )
+                open_pos_by_oanda[oanda_inst] = True
+    json_log.positions_snapshot(owned_positions_snapshot)
+
+    # ── TP 平仓检测 → 写冷却（必须在持久化之前，否则本次的 lock 不会落盘）──
+    # Runs BEFORE any new entry this cycle so freshly-locked instruments are
+    # covered by the Step 7 cooldown check below (no same-cycle re-entry).
+    record_cooldown_from_closed_trades(
+        [YAHOO_TO_OANDA[p] for p in selected_pairs if p in YAHOO_TO_OANDA]
+    )
+
     open_list = [o.replace("_", "/") for o, s in open_pos_by_oanda.items() if s]
     ready_list = [
         p.replace("=X", "")
@@ -1679,14 +1924,14 @@ def main():
             logger.info(f"🔒 {pair}: not in {PROFILE_LABEL} ALLOWED_PAIRS — SKIP")
             continue
 
-        if pair in last_closed:
-            d, r = last_closed[pair]
-            if r > 0:
-                last_closed[pair] = (d, r - 1)
-                logger.info(f"⏳ COOLDOWN {pair}: {r-1} runs remaining — SKIP")
-                continue
-            else:
-                del last_closed[pair]
+        # ✅ Cooldown check — file-based, auto-clean expired, show remaining
+        _in_cd, _remain_mins = is_in_cooldown(pair, oanda)
+        if _in_cd:
+            logger.info(
+                f"⏭️ {pair}: IN COOLDOWN — last entry within "
+                f"{COOLDOWN_HOURS_AFTER_TP}h | remaining={_remain_mins}min — SKIP"
+            )
+            continue
 
         if open_pos_by_oanda.get(oanda, False):
             logger.info(f"⏭️ {pair}: position already open — SKIP DUPLICATE")
@@ -1724,11 +1969,10 @@ def main():
             spread_pips,
         )
         prob_raw = (
-            getattr(sig, "probability", None)
-            or getattr(sig, "model_prob", None)
-            or getattr(sig, "prob", None)
-            or 0.0
-        )
+            getattr(sig, "model_p_up", None)
+            if sig
+            else None
+        ) or 0.0
         mc_pct_up = mc_cache.get(pair, {}).get("p_up", 50.0)
 
         direction, w = calc_weighted_score(
@@ -1821,11 +2065,8 @@ def main():
             D_GATE_DIRECTIONS.get(pair, D_GATE_BOTH) if D_GATE_ENABLED else "N/A"
         )
         xgb_score = (
-            getattr(sig, "probability", None)
-            or getattr(sig, "model_prob", None)
-            or getattr(sig, "prob", None)
-            or 0.0
-        )
+            getattr(sig, "model_p_up", None) if sig else None
+        ) or 0.0
         _open_reasons[pair] = (
             f"STRENGTH_GAP={abs(gap):.2f} | XGB_SCORE={xgb_score:.2f} | "
             f"MC_P_UP={mc_pct_up:.0f}% | D-GATE={d_gate_label} | "
@@ -1938,6 +2179,7 @@ def main():
                 f"✅ OPEN {pair} {direction} lots={DEFAULT_LOT_SIZE}\n"
                 f"└─ {_r}\n🧪 DRY-RUN (no real order)"
             )
+            set_cooldown(pair, oanda)
             entries_this_run += 1
             open_pos_count += 1
             executed_in_this_run.add(oanda)
@@ -1955,6 +2197,10 @@ def main():
                 dry_run=DRY_RUN_MODE,  # defence-in-depth (entry gate above already blocks)
                 tags=OWNER_TAGS,
                 comment=OWNER_COMMENT,
+                client_ext={
+                    "id": f"{OWNER_CLIENT_EXT_ID}_{oanda}",
+                    "tag": OWNER_CLIENT_EXT_TAG,
+                },
             )
             status = resp.get("status", "UNKNOWN")
             tid = resp.get("trade_id", "") or "?"
@@ -1971,10 +2217,23 @@ def main():
                     f"✅ {pair} {direction} Score={FINAL:.1f} | SL={sl_price} TP={tp_price}\n"
                     f"└─ {_r}"
                 )
+
+                json_log.bot_open(
+                    pair=pair,
+                    direction=direction,
+                    units=DEFAULT_LOT_SIZE,
+                    entry_price=float(current),
+                    trade_id=str(tid),
+                    sl=float(sl_price),
+                    tp=float(tp_price),
+                    score_final=float(FINAL),
+                )
+
                 send_telegram_message(
                     f"✅ OPEN {pair} {direction} lots={DEFAULT_LOT_SIZE} | TradeID={tid}\n"
                     f"└─ {_r}"
                 )
+                set_cooldown(pair, oanda)
                 entries_this_run += 1
                 open_pos_count += 1
                 executed_in_this_run.add(oanda)
@@ -1993,6 +2252,7 @@ def main():
                     f"✅ OPEN {pair} {direction} lots={DEFAULT_LOT_SIZE}\n"
                     f"└─ {_r}\n🧪 DRY-RUN (no real order)"
                 )
+                set_cooldown(pair, oanda)
                 entries_this_run += 1
                 open_pos_count += 1
                 executed_in_this_run.add(oanda)
@@ -2029,6 +2289,9 @@ def main():
     logger.info(
         f"✅ v6.8.3.3 {PROFILE_LABEL} Run Complete — {ACCOUNT_NAME} — TOP-N STRENGTH ACTIVE"
     )
+
+    # ── 持久化 cooldown 状态 ──
+    save_cooldown_state(last_closed)
 
 
 if __name__ == "__main__":
