@@ -298,12 +298,19 @@ def refresh_tp_cooldown_from_recent_tx(
     oanda_account_id: str,
     cooldown_hours: float,
     cooldown_state: dict,
+    Direction=None,
 ) -> list[str]:
     """Bulk scan of recent transactions — find any ORDER_FILL whose reason is
     TAKE_PROFIT_ORDER, extract the instrument from that trade, and add it to
-    cooldown_state.  Returns list of instrument names newly locked."""
+    cooldown_state.  Returns list of instrument names newly locked.
+
+    ``Direction`` is the caller-provided enum used to construct the state
+    tuples (same shape as ``load_cooldown`` and ``set_cooldown``).  When not
+    supplied, string ``"NONE"`` is used — load_cooldown() accepts both.
+    """
     if cooldown_hours <= 0:
         return []
+    _NONE = Direction.NONE if Direction is not None else "NONE"
     try:
         acct = api.request(AccountDetails(oanda_account_id))
         last_tid = int(acct["account"]["lastTransactionID"])
@@ -347,14 +354,15 @@ def refresh_tp_cooldown_from_recent_tx(
         _until_ts = _close_ts + cooldown_hours * 3600
         _remain = _until_ts - time.time()
         if _remain <= 0:
-            continue  # TP 后已超过 cooldown 窗口，跳过
-        # 若已有更近的 cooldown（更大的 until_ts），不覆盖
-        _prev = cooldown_state.get(inst)
-        if _prev and _prev[1] > _until_ts:
             continue
-        cooldown_state[inst] = (Direction.NONE, _until_ts)
-        if inst not in new_locks:
-            new_locks.append(inst)
+        base, _, quote = inst.partition("_")
+        if "_" not in inst or not base or not quote:
+            continue
+        _prev = cooldown_state.get(inst)
+        if not (_prev and _prev[1] > _until_ts):
+            cooldown_state[inst] = (_NONE, _until_ts)
+            if inst not in new_locks:
+                new_locks.append(inst)
             logger.info(
                 f"❄️  TP-COOLDOWN  {inst} locked for "
                 f"{cooldown_hours:.1f}h (trade {trade_id}, "
@@ -1506,7 +1514,7 @@ def record_cooldown_from_closed_trades(
     {key: (Direction, until_ts)}). When remove_cooldown=True it also strips
     entries so the caller's state stays in sync.
     """
-    if cooldown_hours <= 0 or remove_cooldown:
+    if cooldown_hours <= 0 and not remove_cooldown:
         return
     for oanda_inst in list(instruments):
         try:
@@ -1532,15 +1540,19 @@ def record_cooldown_from_closed_trades(
         if not closing_ids:
             continue
         ctype = ""
+        reasons = set()
         try:
-            details = api.request(
-                TransactionDetails(
-                    oanda_account_id,
-                    params={"ids": ",".join(closing_ids)},
-                )
-            )
-            txs = details.get("transactions", [])
-            reasons = {tx.get("reason", "") for tx in txs}
+            for cid in closing_ids:
+                try:
+                    td_resp = api.request(
+                        TransactionDetails(oanda_account_id, cid)
+                    )
+                    tx = td_resp.get("transaction", {})
+                    reasons.add(tx.get("reason", ""))
+                except Exception as inner_e:
+                    logger.debug(
+                        f"TransactionDetails({cid}) failed: {inner_e!s}"
+                    )
             if "TAKE_PROFIT_ORDER" in reasons:
                 ctype = "TP"
             elif "STOP_LOSS_ORDER" in reasons:
@@ -1549,19 +1561,15 @@ def record_cooldown_from_closed_trades(
                 ctype = "OTHER"
         except Exception as e:
             logger.warning(
-                f"⚠️ TP-cooldown TransactionDetails failed for {oanda_inst}: {e!s}"
+                f"⚠️ TP-cooldown transaction lookup failed for {oanda_inst}: {e!s}"
             )
 
-        if ctype == "TP":
+        if ctype == "TP" and not remove_cooldown:
             expire_ts = datetime.now(timezone.utc).timestamp() + cooldown_hours * 3600
-            base, quote = oanda_inst.split("_")
-            cooldown_state[base] = (Direction.NONE, expire_ts)
-            cooldown_state[quote] = (Direction.NONE, expire_ts)
+            cooldown_state[oanda_inst] = (Direction.NONE, expire_ts)
             logger.info(
                 f"❄️  TP close detected on {oanda_inst} — cooldown applied "
                 f"({cooldown_hours}h)"
             )
         if remove_cooldown:
-            base, quote = oanda_inst.split("_")
-            for k in (base, quote, oanda_inst):
-                cooldown_state.pop(k, None)
+            cooldown_state.pop(oanda_inst, None)

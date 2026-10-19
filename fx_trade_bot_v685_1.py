@@ -10,6 +10,7 @@ import os
 import subprocess
 import time
 from utils.logging_utils import get_logger
+log = get_logger(__name__)
 import argparse
 from pathlib import Path
 from datetime import datetime, timezone
@@ -392,7 +393,7 @@ def resolve_min_slope(profile_cfg, profile_name):
     if rung is None:
         return profile_cfg["min_slope"]
     if rung not in MIN_SLOPE_LADDER:
-        logger.warning(
+        log.warning(
             f"⚠️ {profile_name}: min_slope_rung={rung} is not a ladder rung "
             f"{MIN_SLOPE_LADDER} — using {MIN_SLOPE_LADDER[-1]} instead"
         )
@@ -462,7 +463,7 @@ def d_gate_compute_direction(
     n = len(daily_closes)
     min_bars = max(ema_slow_period + confirm_bars + 2, 42)
     if n < min_bars:
-        logger.info(f"🧭 D-GATE: BOTH (insufficient bars: {n} < min={min_bars})")
+        log.info(f"🧭 D-GATE: BOTH (insufficient bars: {n} < min={min_bars})")
         return D_GATE_BOTH
 
     ema_fast = calculate_ema(daily_closes, ema_fast_period)
@@ -471,7 +472,7 @@ def d_gate_compute_direction(
 
     tail = diff_pct.iloc[-confirm_bars:].tolist()
     if any(pd.isna(x) for x in tail):
-        logger.info("🧭 D-GATE: BOTH (NaN in EMA tail)")
+        log.info("🧭 D-GATE: BOTH (NaN in EMA tail)")
         return D_GATE_BOTH
 
     close_last = float(daily_closes.iloc[-1])
@@ -490,7 +491,7 @@ def d_gate_compute_direction(
     else:
         result = D_GATE_BOTH
 
-    logger.info(
+    log.info(
         f"🧭 D-GATE DIAG | Close={close_last:.4f} | "
         f"EMA{ema_fast_period}={e20_last:.4f} | EMA{ema_slow_period}={e50_last:.4f} | "
         f"Gap={dist_pct:+.4f}% (buf±{min_buffer_pct*100:.2f}%) | "
@@ -503,15 +504,15 @@ def d_gate_fetch_h1(fetcher, pair: str, oanda: str, count: int = 500):
     try:
         raw = fetcher.fetch(pair, oanda, count=count, granularity="H1")
         if raw is None or raw.empty:
-            logger.info(f"ℹ️  D-Gate H1 fetch empty (gran=H1): {pair}")
+            log.info(f"ℹ️  D-Gate H1 fetch empty (gran=H1): {pair}")
             return None
         closes = raw["Close"].dropna()
         if len(closes) < 100:
-            logger.info(f"ℹ️  D-Gate H1 fetch too few bars ({len(closes)}<100): {pair}")
+            log.info(f"ℹ️  D-Gate H1 fetch too few bars ({len(closes)}<100): {pair}")
             return None
         return closes.reset_index(drop=True)
     except TypeError as te:
-        logger.warning(
+        log.warning(
             f"🚨 D-GATE FETCH API BUG: fetcher.fetch() rejected granularity=H1 "
             f"with TypeError ({te}). Falling back — this fetcher may not support "
             f"H1 granularity natively. Verify data_pipeline.py::DataFetcher.fetch "
@@ -524,10 +525,10 @@ def d_gate_fetch_h1(fetcher, pair: str, oanda: str, count: int = 500):
             closes2 = raw2["Close"].dropna()
             return closes2.reset_index(drop=True) if len(closes2) >= 100 else None
         except Exception as e2:
-            logger.info(f"ℹ️  D-Gate H1 fetch fallthrough {pair}: {e2}")
+            log.info(f"ℹ️  D-Gate H1 fetch fallthrough {pair}: {e2}")
             return None
     except Exception as e:
-        logger.info(f"ℹ️  D-Gate H1 fetch {pair}: {type(e).__name__}: {e}")
+        log.info(f"ℹ️  D-Gate H1 fetch {pair}: {type(e).__name__}: {e}")
         return None
 
 
@@ -603,7 +604,7 @@ def evaluate_trend_and_tp(
     base_pips = TREND_TP_CONFIG["base_tp_pips"]
     mc_momentum = mc_pct_up / 100.0
     ema_cross_filter = cfg_bot("TREND_FILTER_ENABLED", False)
-    logger.info(
+    log.info(
         f"🔍 {timeframe} TREND FILTER: ema_cross_filter={ema_cross_filter} | profile={profile_name}"
     )
 
@@ -649,7 +650,7 @@ def evaluate_trend_and_tp(
         #                 These are the exact rows the tightening ladder needs.
         sensitive = slope_ok_loose and not slope_ok_strict
         would_flip = price_ok and sensitive
-        logger.info(
+        log.info(
             f"📊 SLOPE DIAG: profile={profile_name} dir={direction} tf={timeframe} "
             f"slope={slope:.6f} min_slope={min_slope:.6f} "
             f"price_ok={price_ok} "
@@ -672,7 +673,7 @@ def evaluate_trend_and_tp(
                 if not slope_ok:
                     failed.append(f"slope {slope:.6f} < min_slope {min_slope:.6f}")
                 reason = f"{timeframe} TREND MISALIGNED — " + " AND ".join(failed)
-                logger.info(f"⏭️ SKIP BUY: {reason}")
+                log.info(f"⏭️ SKIP BUY: {reason}")
                 return False, 0.0, reason
         else:
             filter_slope = slope <= -min_slope
@@ -687,17 +688,17 @@ def evaluate_trend_and_tp(
                 if not slope_ok:
                     failed.append(f"slope {slope:.6f} > -min_slope {-min_slope:.6f}")
                 reason = f"{timeframe} TREND MISALIGNED — " + " AND ".join(failed)
-                logger.info(f"⏭️ SKIP SELL: {reason}")
+                log.info(f"⏭️ SKIP SELL: {reason}")
                 return False, 0.0, reason
 
     if weekly_ema100:
         if direction == "BUY" and current_price < weekly_ema100:
             reason = f"COUNTER-TREND vs WEEKLY EMA100 — Price below {weekly_ema100:.5f}"
-            logger.info(f"⏭️ SKIP BUY: {reason}")
+            log.info(f"⏭️ SKIP BUY: {reason}")
             return False, 0.0, reason
         if direction == "SELL" and current_price > weekly_ema100:
             reason = f"COUNTER-TREND vs WEEKLY EMA100 — Price above {weekly_ema100:.5f}"
-            logger.info(f"⏭️ SKIP SELL: {reason}")
+            log.info(f"⏭️ SKIP SELL: {reason}")
             return False, 0.0, reason
 
     # Smart TP — UNIFORM across ALL profiles (P2=P3, Core Strategy Identical).
@@ -732,7 +733,7 @@ def evaluate_trend_and_tp(
             tp_pips = _price_to_pips(entry_price, tp_price, pip_value)
             tp_mode += f" | 📌 TP shifted away from Weekly EMA100 → {tp_pips:.1f}p"
 
-    logger.info(tp_mode)
+    log.info(tp_mode)
     return True, round(tp_pips, 1), tp_mode
 
 
@@ -750,7 +751,7 @@ def cfg(name, default):
 # ─── INIT FOLDERS & LOGGING ──────────────────────────────────────────────────
 RESULTS_DIR.mkdir(exist_ok=True)
 TODAY_STR = datetime.now(timezone.utc).strftime("%Y%m%d")
-logger = get_logger(f"fx_trade_bot_v{APP_VERSION}")
+# logger = get_logger(...)  # DEAD — superseded by top-level log = get_logger(__name__)
 
 # ─── CONSOLIDATED STRATEGY CONSTANTS ─────────────────────────────────────────
 TREND_TP_CONFIG = cfg("TREND_TP_CONFIG", _TREND_TP_CONFIG)
@@ -763,7 +764,7 @@ _profile_slope_cfg = TREND_TP_CONFIG.setdefault(PROFILE_NAME, {})
 _profile_slope_cfg.pop("min_slope_rung", None)
 _profile_slope_cfg["min_slope"] = MIN_SLOPE
 ACTIVE_MIN_SLOPE = resolve_min_slope(_profile_slope_cfg, PROFILE_NAME)
-logger.info(
+log.info(
     f"🪜 MIN_SLOPE LADDER: active rung={ACTIVE_MIN_SLOPE} "
     f"(ladder {MIN_SLOPE_LADDER}, widest first; last entry = original strictest)"
 )
@@ -785,12 +786,12 @@ D_GATE_MIN_BUFFER_PCT = D_GATE_BUFFER_PCT / 100.0
 D_GATE_DIRECTIONS: dict[str, str] = {}  # populated in main(), keyed by yahoo pair
 if D_GATE_ENABLED:
     mode = "SHADOW (log-only)" if D_GATE_SHADOW else "ACTIVE"
-    logger.info(
+    log.info(
         f"🧭 D-GATE: {mode} | EMA{D_GATE_EMA_FAST}×EMA{D_GATE_EMA_SLOW} | "
         f"confirm={D_GATE_CONFIRM} | buffer={D_GATE_BUFFER_PCT:.2f}%"
     )
 else:
-    logger.info("🧭 D-GATE: DISABLED — skipped entirely per profile config")
+    log.info("🧭 D-GATE: DISABLED — skipped entirely per profile config")
 REQUIRE_DIRECTION_CONSENSUS = cfg_bot("REQUIRE_DIRECTION_CONSENSUS", True)
 CONSENSUS_THRESHOLD = cfg_bot("CONSENSUS_THRESHOLD", 2)
 XGB_BULLISH_THRESHOLD = cfg_bot("XGB_BULLISH_THRESHOLD", 0.55)
@@ -809,10 +810,10 @@ W_X = cfg_bot("WEIGHT_XGB", 0.20)
 W_M = cfg_bot("WEIGHT_MC", 0.10)
 _WEIGHT_SUM = W_S + W_R + W_A + W_X + W_M
 if abs(_WEIGHT_SUM - 1.00) > 0.001:
-    logger.warning(f"⚠️ Weight sum = {_WEIGHT_SUM:.4f} ≠ 1.00 — normalizing")
+    log.warning(f"⚠️ Weight sum = {_WEIGHT_SUM:.4f} ≠ 1.00 — normalizing")
     weights = [w / _WEIGHT_SUM for w in [W_S, W_R, W_A, W_X, W_M]]
     W_S, W_R, W_A, W_X, W_M = weights
-logger.info(
+log.info(
     f"⚖️  {PROFILE_LABEL} WEIGHTS: S={W_S:.2f} R={W_R:.2f} A={W_A:.2f} X={W_X:.2f} M={W_M:.2f}"
 )
 
@@ -954,9 +955,9 @@ if _env_lot_raw is not None:
 if args.lots is not None:
     DEFAULT_LOT_SIZE = args.lots
     _lot_source = "CLI --lots"
-logger.info(f"⚙️ Profile: {PROFILE_ID}")
-logger.info(f"🔑 Account: {_account_source} → {OANDA_ACCOUNT_ID} [{_ENV_LABEL}]")
-logger.info(f"📦 Lot size: {DEFAULT_LOT_SIZE}  (source: {_lot_source})")
+log.info(f"⚙️ Profile: {PROFILE_ID}")
+log.info(f"🔑 Account: {_account_source} → {OANDA_ACCOUNT_ID} [{_ENV_LABEL}]")
+log.info(f"📦 Lot size: {DEFAULT_LOT_SIZE}  (source: {_lot_source})")
 
 _prof = get_oanda_profile("live" if LIVE_MODE else "practice")
 api = _prof["oanda_client"]
@@ -969,7 +970,7 @@ ACCOUNT_NAME = f"{_ENV_LABEL} Account {_ACCT_SUFFIX}"
 # // FIX-2026-10-10: single consolidated replacement for the 6 chatter lines the
 # third-party logger used to emit (and which always claimed "practice"). This
 # line reports the environment actually in use, so --live is never mislabelled.
-logger.info(
+log.info(
     f"🌐 OANDA API client: environment={_prof['env']} | "
     f"account={OANDA_ACCOUNT_ID} | ({_ENV_LABEL})"
 )
@@ -990,12 +991,12 @@ if args.dry_run is None:
 else:
     DRY_RUN_MODE = bool(args.dry_run)  # CLI wins in BOTH directions
     _dry_run_source = "CLI --dry-run" if args.dry_run else "CLI --no-dry-run"
-logger.info(
+log.info(
     f"🚦 EXECUTION GATE: DRY_RUN={DRY_RUN_MODE} (source: {_dry_run_source}) | "
     f"account env selected solely by --live={'ON' if args.live else 'OFF'}"
 )
 if DRY_RUN_MODE:
-    logger.info(
+    log.info(
         "🧪 DRY_RUN MODE | Full pipeline will run; ONLY "
         "mutating OANDA calls (Open/Close/SL/TP update) are suppressed; "
         "ALL read-only calls (positions, prices, candles, account info) "
@@ -1019,7 +1020,7 @@ _exec_label = (
 )
 _run_mode_label = f"{_env_label} | {_exec_label}"
 _max_entries_label = f"{MAX_ENTRIES}" if MAX_ENTRIES else "unlimited (within MAX_OPEN)"
-logger.info(
+log.info(
     f"🖥️  RUN MODE: {_run_mode_label} | MAX_OPEN={MAX_OPEN} | "
     f"MAX_ENTRIES_THIS_RUN={_max_entries_label}"
 )
@@ -1052,7 +1053,7 @@ _YAHOO_TO_OANDA_DEFAULT = {
 YAHOO_TO_OANDA = cfg_bot("YAHOO_TO_OANDA", _YAHOO_TO_OANDA_DEFAULT.copy())
 for _sym, _oanda in _YAHOO_TO_OANDA_DEFAULT.items():
     YAHOO_TO_OANDA.setdefault(_sym, _oanda)
-logger.info(f"✅ Pair mappings loaded: {len(YAHOO_TO_OANDA)} entries")
+log.info(f"✅ Pair mappings loaded: {len(YAHOO_TO_OANDA)} entries")
 
 # ─── PAIR WHITELIST + DISJOINT SAFETY LOCK ───────────────────────────────────
 # Whitelist (Ownership Tag) comes from the unified PROFILE dict. Profiles now
@@ -1065,17 +1066,17 @@ if ALLOWED_PAIRS is not None:
     _known = set(YAHOO_TO_OANDA.keys())
     _invalid = [p for p in ALLOWED_PAIRS if p not in _known]
     if _invalid:
-        logger.warning(
+        log.warning(
             f"⚠️  ALLOWED_PAIRS contains unknown symbols (will be ignored): {_invalid} "
             f"— valid set: {sorted(_known)}"
         )
     ALLOWED_PAIRS = [p for p in ALLOWED_PAIRS if p in _known]
-    logger.info(
+    log.info(
         f"🔒 WHITELIST [{PROFILE_LABEL}] active = {len(ALLOWED_PAIRS)} pairs | "
         f"ALLOWED: {ALLOWED_PAIRS}"
     )
 else:
-    logger.info(
+    log.info(
         "ℹ️  No ALLOWED_PAIRS set — full 8-pair pool enabled (no whitelist filter)"
     )
 
@@ -1084,7 +1085,7 @@ SIMULATIONS = cfg_bot("MC_SIMULATIONS", 5000)
 CONFIDENCE = cfg_bot("MC_BAND_PCT", 90) / 100.0
 REMOVE_COOLDOWN = cfg_bot("REMOVE_COOLDOWN", False)
 COOLDOWN_HOURS_AFTER_TP = cfg_bot("COOLDOWN_HOURS_AFTER_TP", 0.0)
-logger.info(
+log.info(
     f"⏳ TP-COOLDOWN: hours={COOLDOWN_HOURS_AFTER_TP} "
     f"REMOVE_COOLDOWN={REMOVE_COOLDOWN}"
 )
@@ -1142,53 +1143,87 @@ def save_cooldown_state(state: dict):
         return
     try:
         save_cooldown(COOLDOWN_FILE, state)
-        logger.info(
+        log.info(
             f"💾 Cooldown saved: {len(state)} instrument(s) → {COOLDOWN_FILE.name}"
         )
     except Exception as e:
-        logger.warning(f"⚠️ save_cooldown failed: {e!s}")
+        log.warning(f"⚠️ save_cooldown failed: {e!s}")
+
+
+def _cooldown_probe_keys(pair: str, oanda_instrument: str) -> list[str]:
+    """Keys to probe for cooldown — pair-level only.
+
+    Canonical key is ``oanda_instrument`` (e.g. ``EUR_USD``).  ``pair``
+    (Yahoo symbol, e.g. ``EURUSD=X``) is probed as a secondary alias so
+    persisted state from older pair-level writes still works.
+
+    Bare ISO currency keys (``EUR``, ``USD``) are intentionally excluded.
+    A TP close on ``EUR_USD`` must never block ``EUR_GBP`` or ``GBP_USD``.
+    """
+    keys: list[str] = [oanda_instrument, pair]
+    seen: set[str] = set()
+    out: list[str] = []
+    for k in keys:
+        if k and k not in seen:
+            seen.add(k)
+            out.append(k)
+    return out
 
 
 def cooldown_key(pair: str, oanda_instrument: str) -> str:
-    """Resolve the state key for a pair: the OANDA instrument when present,
-    else the Yahoo symbol. load_cooldown writes OANDA keys while this bot also
-    writes bare currency codes, so both spellings must be probed."""
-    if oanda_instrument in last_closed:
-        return oanda_instrument
-    return pair
+    """Return the canonical cooldown key (oanda_instrument).
+
+    Kept for API compatibility with any external callers.  The canonical
+    pair-level key (e.g. ``EUR_USD``) is always returned."""
+    return oanda_instrument
 
 
 def is_in_cooldown(pair: str, oanda_instrument: str):
-    """Return (in_cooldown, remaining_minutes) for a pair, auto-cleaning the
-    state entry once it expires so dead records never accumulate."""
-    key = cooldown_key(pair, oanda_instrument)
-    if key not in last_closed:
-        return False, 0.0
-    until_ts = last_closed[key][1]
-    remain_sec = until_ts - datetime.now(timezone.utc).timestamp()
-    if remain_sec > 0:
-        return True, round(remain_sec / 60.0, 1)
-    del last_closed[key]  # 过期自动清理
-    logger.debug(f"🧹 Expired cooldown removed: {key}")
+    """Return (in_cooldown, remaining_minutes).
+
+    Probes pair-level canonical key (oanda_instrument) only.  Bare
+    currency keys are intentionally not probed — a TP close on ``EUR_USD``
+    must not block ``EUR_GBP``.  Auto-cleans expired entries and legacy
+    bare-currency keys from the old implementation.
+    """
+    now_ts = datetime.now(timezone.utc).timestamp()
+    best_key, best_remain = None, float("inf")
+    for key in _cooldown_probe_keys(pair, oanda_instrument):
+        if key not in last_closed:
+            continue
+        until_ts = last_closed[key][1]
+        remain_sec = until_ts - now_ts
+        if remain_sec > 0:
+            if remain_sec < best_remain:
+                best_remain = remain_sec
+                best_key = key
+        else:
+            del last_closed[key]
+            log.debug(f"🧹 Expired cooldown removed: {key}")
+    for _k in list(last_closed.keys()):
+        if "_" not in _k and len(_k) == 3 and _k.isalpha():
+            del last_closed[_k]
+            log.debug(f"🧹 Legacy bare-currency cooldown cleaned: {_k}")
+    if best_key is not None:
+        return True, round(best_remain / 60.0, 1)
     return False, 0.0
 
 
 def set_cooldown(pair: str, oanda_instrument: str):
-    """Lock the pair's base AND quote currency for COOLDOWN_HOURS_AFTER_TP.
+    """Lock the pair (OANDA instrument key) for COOLDOWN_HOURS_AFTER_TP.
 
-    Keyed per CURRENCY (base+quote), not per pair, so a cooldown triggered by
-    one pair also covers its crosses — the v6.8.5 design, deliberately kept.
+    Keyed per PAIR (e.g. ``EUR_USD``).  A TP close on one instrument blocks
+    only that instrument.  Crosses sharing a currency remain independently
+    eligible under their own entry rules.
     """
     if COOLDOWN_HOURS_AFTER_TP <= 0 or REMOVE_COOLDOWN:
         return
     expire_ts = (
         datetime.now(timezone.utc).timestamp() + COOLDOWN_HOURS_AFTER_TP * 3600
     )
-    base, quote = oanda_instrument.split("_")
-    last_closed[base] = (Direction.NONE, expire_ts)
-    last_closed[quote] = (Direction.NONE, expire_ts)
-    logger.info(
-        f"⏳ COOLDOWN SET: {base}, {quote} locked until "
+    last_closed[oanda_instrument] = (Direction.NONE, expire_ts)
+    log.info(
+        f"⏳ COOLDOWN SET: {oanda_instrument} locked until "
         f"{datetime.fromtimestamp(expire_ts, tz=timezone.utc).strftime('%H:%M UTC')} "
         f"({COOLDOWN_HOURS_AFTER_TP}h)"
     )
@@ -1196,35 +1231,35 @@ def set_cooldown(pair: str, oanda_instrument: str):
 
 def clear_cooldown(pair: str, oanda_instrument: str):
     """REMOVE_COOLDOWN=True branch: drop the pair's cooldown entries."""
-    base, quote = oanda_instrument.split("_")
     removed = [
-        k for k in (base, quote, pair, oanda_instrument) if last_closed.pop(k, None)
+        k for k in (oanda_instrument, pair) if last_closed.pop(k, None)
     ]
     if removed:
-        logger.info(f"♻️ COOLDOWN REMOVED: {', '.join(removed)}")
+        log.info(f"♻️ COOLDOWN REMOVED: {', '.join(removed)}")
 
 
 # ── 启动时加载持久化 + 从最近交易刷新 TP 触发的 cooldown ──
 if REMOVE_COOLDOWN:
-    logger.info(
+    log.info(
         "⏳ Cooldown load: SKIPPED — REMOVE_COOLDOWN=True (state starts empty)"
     )
 elif COOLDOWN_HOURS_AFTER_TP > 0:
     try:
         _loaded_count = len(last_closed)
-        logger.info(f"📂 Cooldown loaded: {_loaded_count} persisted entries")
+        log.info(f"📂 Cooldown loaded: {_loaded_count} persisted entries")
         refresh_tp_cooldown_from_recent_tx(
             api, OANDA_ACCOUNT_ID,
             COOLDOWN_HOURS_AFTER_TP,
             last_closed,
+            Direction=Direction,
         )
-        logger.info(
+        log.info(
             f"📂 Cooldown refreshed from recent trades: +{len(last_closed) - _loaded_count}"
         )
     except Exception as _e:
-        logger.warning(f"⚠️ Cooldown refresh failed: {_e!s}")
+        log.warning(f"⚠️ Cooldown refresh failed: {_e!s}")
 else:
-    logger.info(
+    log.info(
         "⏳ Cooldown load: SKIPPED — COOLDOWN_HOURS_AFTER_TP=0 (feature off)"
     )
 
@@ -1242,8 +1277,8 @@ def build_top_pairs(
     strongest = [ccy for ccy, _ in ranked[:top_n]]
     weakest = [ccy for ccy, _ in ranked[-top_n:]]
 
-    logger.info(f"🏆 STRONGEST {top_n}: {strongest}")
-    logger.info(f"📉 WEAKEST  {top_n}: {weakest}")
+    log.info(f"🏆 STRONGEST {top_n}: {strongest}")
+    log.info(f"📉 WEAKEST  {top_n}: {weakest}")
 
     candidates = []
     seen = set()
@@ -1273,10 +1308,10 @@ def build_top_pairs(
     candidates.sort(key=lambda x: x["gap_abs"], reverse=True)
     selected = [c["pair"] for c in candidates]
 
-    logger.info(f"🎯 Top-{top_n} matrix → {len(selected)} qualified pairs")
+    log.info(f"🎯 Top-{top_n} matrix → {len(selected)} qualified pairs")
     for c in candidates[:6]:
         dir_s = "BUY" if c["gap"] > 0 else "SELL"
-        logger.info(f"   {c['pair']}: gap={c['gap']:+.3f} → {dir_s}")
+        log.info(f"   {c['pair']}: gap={c['gap']:+.3f} → {dir_s}")
 
     return selected, candidates
 
@@ -1302,7 +1337,7 @@ def calc_weighted_score(
     # sell_votes = sum(1 for d in (strength_dir, xgb_dir, mc_dir) if d == "SELL")
     sell_votes = sum(bool(d == "SELL") for d in (strength_dir, xgb_dir, mc_dir))
 
-    logger.info(
+    log.info(
         f"🤝 {pair}: Strength={strength_dir} | XGB={xgb_dir} | MC={mc_dir} | BUY={buy_votes}/3"
     )
 
@@ -1310,17 +1345,17 @@ def calc_weighted_score(
         if buy_votes >= CONSENSUS_THRESHOLD:
             direction = "BUY"
             votes_unanimous = buy_votes == 3
-            logger.info(
+            log.info(
                 f"✅ {pair}: BUY consensus ({buy_votes}/3, unanimous={votes_unanimous})"
             )
         elif sell_votes >= CONSENSUS_THRESHOLD:
             direction = "SELL"
             votes_unanimous = sell_votes == 3
-            logger.info(
+            log.info(
                 f"✅ {pair}: SELL consensus ({sell_votes}/3, unanimous={votes_unanimous})"
             )
         else:
-            logger.info(f"⏭️  {pair}: NO CONSENSUS → SKIP")
+            log.info(f"⏭️  {pair}: NO CONSENSUS → SKIP")
             return None, None
 
         # ─── Gemini P1 advice + Gemini-audit P0-6 upgrade: Dynamic Position
@@ -1354,7 +1389,7 @@ def calc_weighted_score(
                 disagreed = "MC"
                 detail = f"Strength={strength_dir}, XGB={xgb_dir}, MC={mc_dir} (vs winner {winner_dir})"
 
-            logger.info(
+            log.info(
                 f"📊 VOTE SIZE DIAG [{pair}]: 2:1 split consensus "
                 f"(BUY={buy_votes}, SELL={sell_votes}) | "
                 f"Disagreed: {disagreed} ({detail}) -> would_halve=True "
@@ -1362,7 +1397,7 @@ def calc_weighted_score(
             )
     else:
         direction = "BUY" if gap > 0 else "SELL"
-        logger.info(f"ℹ️  Consensus OFF — using Strength only: {direction}")
+        log.info(f"ℹ️  Consensus OFF — using Strength only: {direction}")
 
     S = max(0.0, min(100.0, abs(gap) / 3.5 * 100.0))
     rsi = max(0.0, min(100.0, rsi_val))
@@ -1408,30 +1443,30 @@ def calc_weighted_score(
 # ─── MAIN TRADING FLOW ───────────────────────────────────────────────────────
 def main():
     global model_wrapper, strat_engine
-    logger.info(
+    log.info(
         f"\n🤖 RUN v6.8.3.3 {PROFILE_LABEL} — {ACCOUNT_NAME} | TREND+TP+TOP-N | "
         f"{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')} | "
         f"MAX_OPEN={MAX_OPEN} | MIN_GAP={MIN_STRENGTH_GAP} | TOP_N={TOP_PAIRS_COUNT}"
     )
-    logger.info(
+    log.info(
         f"🧭 STRENGTH POOL: {len(CURRENCIES)} currencies "
         f"[{' '.join(CURRENCIES)}] | "
         f"TOP_N={TOP_N_CURRENCIES} (strongest × weakest) | "
         f"USE_TOP_PAIRS_ONLY={USE_TOP_PAIRS_ONLY} | "
         f"TOP_PAIRS_MIN_GAP={TOP_PAIRS_MIN_GAP}"
     )
-    logger.info(f"🔑 OANDA Account ID: {OANDA_ACCOUNT_ID}")
+    log.info(f"🔑 OANDA Account ID: {OANDA_ACCOUNT_ID}")
 
     # // FIX-2026-10-10: report the reason + next open instead of a silent return.
     if forex_market_closed():
         if args.ignore_market_closed:
-            logger.warning(
+            log.warning(
                 "📅 Market is CLOSED (weekend/holiday) but --ignore-market-closed "
                 "was given → continuing full pipeline (debug mode)."
             )
         else:
             why, reopen, day = market_reopen_hint()
-            logger.info(
+            log.info(
                 f"📅 Market is CLOSED ({why}) → exits. "
                 f"Reopens: {day} 21:00 UTC "
                 f"(= {reopen.strftime('%Y-%m-%d %H:%M')} UTC). "
@@ -1452,9 +1487,9 @@ def main():
     )
 
     # Step 1 — Currency Strength + Top-N Filter
-    logger.info("[STEP 1] Currency Strength Matrix...")
+    log.info("[STEP 1] Currency Strength Matrix...")
     strength_scores = build_strength_matrix()
-    logger.info(format_strength_ranking(strength_scores))
+    log.info(format_strength_ranking(strength_scores))
 
     if USE_TOP_PAIRS_ONLY:
         selected_pairs, _ = build_top_pairs(
@@ -1465,14 +1500,14 @@ def main():
             min_gap=TOP_PAIRS_MIN_GAP,
         )
         if not selected_pairs:
-            logger.warning("⚠️ No high-gap pairs found — falling back to full scan")
+            log.warning("⚠️ No high-gap pairs found — falling back to full scan")
             selected_pairs = ALL_PAIRS[:]
-        logger.info(
+        log.info(
             f"🎯 MODE: Top-{TOP_PAIRS_COUNT} strength active → {len(selected_pairs)} candidates"
         )
     else:
         selected_pairs = ALL_PAIRS[:]
-        logger.info(f"📋 MODE: Full scan — {len(selected_pairs)} pairs")
+        log.info(f"📋 MODE: Full scan — {len(selected_pairs)} pairs")
 
     # Step 2 — Fetch Data
     pair_data = {}
@@ -1480,7 +1515,7 @@ def main():
     for pair in selected_pairs:
         oanda = YAHOO_TO_OANDA.get(pair)
         if not oanda:
-            logger.warning(f"⚠️ No OANDA mapping for {pair} — skipping")
+            log.warning(f"⚠️ No OANDA mapping for {pair} — skipping")
             continue
         try:
             raw = fetcher.fetch(pair, oanda, count=200)
@@ -1504,32 +1539,32 @@ def main():
                 "adx": df.iloc[-1].get("adx", -1.0),
             }
             if pair_data[pair]["adx"] < 10:
-                logger.info(
+                log.info(
                     f"⚠️ ADX {pair} = {pair_data[pair]['adx']:.1f} — possibly flat market"
                 )
-            logger.info(
+            log.info(
                 f"📊 {pair}: {len(df)} bars | ATR={pair_data[pair]['atr']:.6f} | "
                 f"RSI={pair_data[pair]['rsi']:.1f} | ADX={pair_data[pair]['adx']:.1f}"
             )
             if cfg_bot("WEEK_EMA100_FILTER_ENABLED", False):
                 weekly_ema_cache[oanda] = fetch_weekly_ema100(oanda, api)
         except Exception as e:
-            logger.error(f"❌ Fetch failed {pair}: {e}")
+            log.error(f"❌ Fetch failed {pair}: {e}")
 
     if not pair_data:
-        logger.error("No pairs have usable data. Aborting.")
+        log.error("No pairs have usable data. Aborting.")
         send_telegram_message(f"❌ FX BOT {PROFILE_LABEL}: No usable data")
         return
 
     # Step 2.5 — D-Gate: compute H1-EMA20 × H1-EMA50 direction for ALL pool pairs
     D_GATE_DIRECTIONS.clear()
     if not D_GATE_ENABLED:
-        logger.info("🧭 D-GATE: DISABLED — skipped entirely per profile config")
+        log.info("🧭 D-GATE: DISABLED — skipped entirely per profile config")
         D_GATE_DIRECTIONS.update({inst: D_GATE_BOTH for inst in ALL_PAIRS})
         SKIP_DGATE = True
     else:
         SKIP_DGATE = False
-        logger.info("[STEP 2.5] D-GATE — H1 Direction Locks...")
+        log.info("[STEP 2.5] D-GATE — H1 Direction Locks...")
         # Need ALL_PAIRS (not just selected) because WhiteList filter happens
         # later, and USD-group majority works better if we see the whole pool.
         for pair in ALL_PAIRS:
@@ -1551,12 +1586,12 @@ def main():
         long_n = sum(1 for v in D_GATE_DIRECTIONS.values() if v == D_GATE_LONG)
         short_n = sum(1 for v in D_GATE_DIRECTIONS.values() if v == D_GATE_SHORT)
         both_n = sum(1 for v in D_GATE_DIRECTIONS.values() if v == D_GATE_BOTH)
-        logger.info(
+        log.info(
             f"🧭 D-GATE SUMMARY: LONG={long_n} SHORT={short_n} BOTH={both_n} | "
             f"SHADOW={D_GATE_SHADOW} (log-only, no block)"
         )
         for pair in sorted(D_GATE_DIRECTIONS.keys()):
-            logger.info(f"   {pair}: {D_GATE_DIRECTIONS[pair]}")
+            log.info(f"   {pair}: {D_GATE_DIRECTIONS[pair]}")
 
     # Step 3 — Monte Carlo
     if cfg_bot("SKIP_MC", False):
@@ -1567,26 +1602,26 @@ def main():
     mc_results_dir = get_mc_results_dir()
 
     if not args.skip_mc:
-        logger.info(f"[STEP 3] Monte Carlo — loading pre-computed bundles from {mc_results_dir}...")
+        log.info(f"[STEP 3] Monte Carlo — loading pre-computed bundles from {mc_results_dir}...")
 
         d_bundle, d_ok, d_name = load_mc_bundle(mc_results_dir, "D")
         if d_ok:
             mc_cache = {p: d_bundle[p] for p in selected_pairs if p in d_bundle}
-            logger.info(
+            log.info(
                 f"📦 MC DAILY bundle: {d_name} | "
                 f"loaded {len(mc_cache)}/{len(selected_pairs)} pairs"
             )
             for p in selected_pairs:
                 if p in mc_cache:
                     m = mc_cache[p]
-                    logger.info(
+                    log.info(
                         f"🎲 MC {p}: {m.get('regime', '?')} | "
                         f"Band {m.get('range_90', '?')} | P_UP={m.get('p_up', '?')}%"
                     )
                 else:
-                    logger.info(f"⏭️ {p}: not found in D bundle — SKIP")
+                    log.info(f"⏭️ {p}: not found in D bundle — SKIP")
         else:
-            logger.error(f"❌ No D bundle for today in {mc_results_dir}")
+            log.error(f"❌ No D bundle for today in {mc_results_dir}")
             send_telegram_message(
                 f"🚨 FX BOT {PROFILE_LABEL}: 今日未找到 D 包\n"
                 f"📁 Dir: {mc_results_dir}\n"
@@ -1602,15 +1637,15 @@ def main():
                         stderr=subprocess.DEVNULL,
                         start_new_session=True,
                     )
-                    logger.info(f"✅ Launched {mc_sh}")
+                    log.info(f"✅ Launched {mc_sh}")
                 else:
-                    logger.error(f"❌ MC script not found: {mc_sh}")
+                    log.error(f"❌ MC script not found: {mc_sh}")
                     send_telegram_message(f"❌ FX BOT {PROFILE_LABEL}: run_fx_mc.sh 不存在 ({mc_sh})")
             except Exception as e:
-                logger.error(f"❌ Failed to launch MC script: {e}")
+                log.error(f"❌ Failed to launch MC script: {e}")
                 send_telegram_message(f"❌ FX BOT {PROFILE_LABEL}: 启动 run_fx_mc.sh 失败 — {e}")
 
-            logger.warning("🛑 Aborting this run — D bundle required.")
+            log.warning("🛑 Aborting this run — D bundle required.")
             send_telegram_message(
                 f"🛑 FX BOT {PROFILE_LABEL}: 本次运行已放弃，等待 MC 重新生成后重试"
             )
@@ -1619,13 +1654,13 @@ def main():
         w_bundle, w_ok, w_name = load_mc_bundle(mc_results_dir, "W")
         if w_ok:
             mc_weekly_cache = {p: w_bundle[p] for p in selected_pairs if p in w_bundle}
-            logger.info(
+            log.info(
                 f"📦 MC WEEKLY bundle: {w_name} | "
                 f"loaded {len(mc_weekly_cache)}/{len(selected_pairs)} pairs"
             )
 
         if PROFILE_ID == 2 and mc_weekly_cache:
-            logger.info("🧪 [PROFILE-2 EXPERIMENT] W+D MC blend enabled — fusing weekly into daily...")
+            log.info("🧪 [PROFILE-2 EXPERIMENT] W+D MC blend enabled — fusing weekly into daily...")
             for p, d in list(mc_cache.items()):
                 w = mc_weekly_cache.get(p)
                 if not w:
@@ -1656,16 +1691,16 @@ def main():
                 d_blend["regime"] = f"🧬 FUSED | D:{d_regime.split()[-1]} W:{w_regime.split()[-1]} | w_w={w_weight:.0%}"
                 d_blend["blend_source"] = {"D": d_name, "W": w_name, "w_weight": round(w_weight, 2)}
                 mc_cache[p] = d_blend
-                logger.info(
+                log.info(
                     f"🧬 FUSED {p}: P_UP D={d_up:.1f} W={w_up:.1f} → {fused_p_up:.1f}% "
                     f"(w_w={w_weight:.0%}) | "
                     f"range W={[round(w_lo,5), round(w_hi,5)]} D={[round(d_lo,5), round(d_hi,5)]} "
                     f"→ [{round(fused_range_lo,5)}, {round(fused_range_hi,5)}]"
                 )
         elif PROFILE_ID != 2:
-            logger.info(f"ℹ️ Profile {PROFILE_ID} — using pure D bundle (no W blend)")
+            log.info(f"ℹ️ Profile {PROFILE_ID} — using pure D bundle (no W blend)")
     else:
-        logger.info("[STEP 3] MC Skipped — loading legacy...")
+        log.info("[STEP 3] MC Skipped — loading legacy...")
         for pair in selected_pairs:
             mc_data, ok = load_mc_legacy(pair, RESULTS_DIR, TODAY_STR, MC_MAX_AGE_HOURS)
             if ok:
@@ -1677,7 +1712,7 @@ def main():
     # Step 4 — Multi-Timeframe Confluence
     tf_confluence = {}
     if MULTI_TF_CONFLUENCE:
-        logger.info("[STEP 4] Multi-Timeframe Confluence...")
+        log.info("[STEP 4] Multi-Timeframe Confluence...")
         TF_GRAN = {"H4": "H4", "1H": "H1", "15m": "M15"}
         for pair in selected_pairs:
             if pair not in pair_data:
@@ -1704,12 +1739,12 @@ def main():
                 buy_c >= CONFLUENCE_REQUIRED_TFS or sell_c >= CONFLUENCE_REQUIRED_TFS
             )
             tf_confluence[pair] = {"buy": buy_c, "sell": sell_c, "passes": passes}
-            logger.info(
+            log.info(
                 f"🔗 CONFLUENCE {pair}: BUY={buy_c} SELL={sell_c} → {'✅ PASS' if passes else '❌ BLOCK'}"
             )
 
     # Step 5 — Dynamic Exit Manager
-    logger.info("[STEP 5] Dynamic Exit Manager...")
+    log.info("[STEP 5] Dynamic Exit Manager...")
 
     def close_wrap(instr, reason_code=None, detail_msg=""):
         return close_position(
@@ -1742,7 +1777,7 @@ def main():
     # Step 6 — Scan Open Positions (OWNERSHIP-AWARE via OANDA tags)
     open_pos_by_oanda, open_pos_count = {}, 0
     owned_positions_snapshot = []
-    logger.info(
+    log.info(
         f"🔍 Checking open positions (owner_client_ext_id={OWNER_CLIENT_EXT_ID}, tag={OWNER_CLIENT_EXT_TAG})..."
     )
     for pair in selected_pairs:
@@ -1760,7 +1795,7 @@ def main():
             sl_str = f"SL={trade['sl']}" if trade.get("sl") else "SL=NONE"
             tp_str = f"TP={trade['tp']}" if trade.get("tp") else "TP=NONE"
             ce = trade.get("client_ext", {})
-            logger.info(
+            log.info(
                 f"📌 OWNED POSITION: {pair} → {oanda_inst} | {trade['direction'].upper()} | "
                 f"units={trade['units']} | tradeID={trade['trade_id']} | "
                 f"{sl_str} | {tp_str} | client_ext={ce}"
@@ -1784,13 +1819,13 @@ def main():
                     f"{t['trade_id']}(units={t['units']}, client_ext_id={t.get('client_ext_id','')})"
                     for t in other_trades
                 ) or "(no per-trade data from OpenTrades)"
-                logger.warning(
+                log.warning(
                     f"⚠️  {pair}: INSTRUMENT has aggregate position but NO owned trade — "
                     f"likely opened by another process / older bot version WITHOUT clientExtensions. "
                     f"BLOCKING new entry to prevent position stacking "
                     f"(aggregate units={pos['units']}, side={pos['side']})."
                 )
-                logger.warning(
+                log.warning(
                     f"  🔍 OWNER_CLIENT_EXT_ID={OWNER_CLIENT_EXT_ID} | "
                     f"existing trade(s) on {oanda_inst}: {trade_summary}"
                 )
@@ -1814,12 +1849,12 @@ def main():
         for p in selected_pairs
         if not open_pos_by_oanda.get(YAHOO_TO_OANDA.get(p), False)
     ]
-    logger.info(
+    log.info(
         f"📊 Open positions: {open_pos_count}/{MAX_OPEN} | OPEN: {', '.join(open_list) or 'None'} | READY: {', '.join(ready_list) or 'None'}"
     )
 
     # Step 7 — Score, Trend Filter, Smart TP & Execute
-    logger.info("[STEP 7] Scoring + TREND FILTER + SMART TP...")
+    log.info("[STEP 7] Scoring + TREND FILTER + SMART TP...")
     min_sl_pips_jpy, min_sl_pips_std = cfg_bot("MIN_SL_PIPS_JPY", 35), cfg_bot(
         "MIN_SL_PIPS", 25
     )
@@ -1843,20 +1878,20 @@ def main():
 
         # ─── Whitelist filter (Ownership Tag) — enforce disjoint pools for multi-account isolation
         if ALLOWED_PAIRS is not None and pair not in ALLOWED_PAIRS:
-            logger.info(f"🔒 {pair}: not in {PROFILE_LABEL} ALLOWED_PAIRS — SKIP")
+            log.info(f"🔒 {pair}: not in {PROFILE_LABEL} ALLOWED_PAIRS — SKIP")
             continue
 
         # ✅ Cooldown check — file-based, auto-clean expired, show remaining
         _in_cd, _remain_mins = is_in_cooldown(pair, oanda)
         if _in_cd:
-            logger.info(
+            log.info(
                 f"⏭️ {pair}: IN COOLDOWN — last entry within "
                 f"{COOLDOWN_HOURS_AFTER_TP}h | remaining={_remain_mins}min — SKIP"
             )
             continue
 
         if open_pos_by_oanda.get(oanda, False):
-            logger.info(f"⏭️ {pair}: position already open — SKIP DUPLICATE")
+            log.info(f"⏭️ {pair}: position already open — SKIP DUPLICATE")
             continue
 
         try:
@@ -1873,12 +1908,12 @@ def main():
         base, quote = pair_parts[pair]
         gap = strength_scores.get(base, 0) - strength_scores.get(quote, 0)
         if abs(gap) < MIN_STRENGTH_GAP:
-            logger.info(f"⏭️ {pair}: gap={abs(gap):.2f} < MIN={MIN_STRENGTH_GAP} — SKIP")
+            log.info(f"⏭️ {pair}: gap={abs(gap):.2f} < MIN={MIN_STRENGTH_GAP} — SKIP")
             continue
-        logger.info(f"📈 {pair}: gap={abs(gap):.2f} ≥ {MIN_STRENGTH_GAP} — QUALIFIED")
+        log.info(f"📈 {pair}: gap={abs(gap):.2f} ≥ {MIN_STRENGTH_GAP} — QUALIFIED")
 
         if MULTI_TF_CONFLUENCE and not tf_confluence.get(pair, {}).get("passes", True):
-            logger.info(f"🚫 {pair}: confluence fail — SKIP")
+            log.info(f"🚫 {pair}: confluence fail — SKIP")
             continue
 
         sig = strat_engine.generate_signal(
@@ -1902,7 +1937,7 @@ def main():
         )
         if direction and w:
             tag = "✅" if w["PASS"] else "❌"
-            logger.info(
+            log.info(
                 f"{tag} SCORE {pair} {direction} | "
                 f"S={w['S']:5.1f}×{W_S:.2f}={w['S']*W_S:4.1f}  "
                 f"R={w['R']:5.1f}×{W_R:.2f}={w['R']*W_R:4.1f}  "
@@ -1913,7 +1948,7 @@ def main():
 
         if not (direction and w and w["PASS"]):
             if w and not w["PASS"]:
-                logger.info(
+                log.info(
                     f"➖ REASON: FINAL {w['FINAL']:.2f} < MIN_CONVICTION={min_conv:.2f}"
                 )
             continue
@@ -1926,20 +1961,20 @@ def main():
                 if D_GATE_SHADOW:
                     # Phase 0: DIAGNOSTIC ONLY — record that we WOULD block here
                     # but let the order go through so we can collect outcomes.
-                    logger.warning(
+                    log.warning(
                         f"🧭 D-GATE SHADOW DIAG {pair}: D-dir={pair_gate} but "
                         f"15m-wants {direction} — would_block=YES (SHADOW=True, "
                         f"NO action taken yet)"
                     )
                 else:
-                    logger.warning(
+                    log.warning(
                         f"🚫 D-GATE ENFORCED: {pair} {direction} BLOCKED "
                         f"(D-dir={pair_gate})"
                     )
                     continue
             else:
                 # Always log the allow case, so evidence chain knows gate was OK
-                logger.info(
+                log.info(
                     f"🧭 D-GATE: {pair} {direction} ALLOWED (D-dir={pair_gate})"
                 )
 
@@ -2028,7 +2063,7 @@ def main():
         if has_buy and has_sell:
             for d, pair, score, i in entries:
                 conflict_idx.add(i)
-            logger.warning(
+            log.warning(
                 f"⚔️  CONFLICT: quote={quote} has both BUY and SELL — "
                 f"skipping ALL {len(entries)} candidates: "
                 f"{[(p, d) for d, p, _, _ in entries]}"
@@ -2039,7 +2074,7 @@ def main():
         all_candidates = [
             c for i, c in enumerate(all_candidates) if i not in conflict_idx
         ]
-        logger.info(
+        log.info(
             f"⚔️  After conflict resolution: {len(all_candidates)}/{before} remain "
             f"({before - len(all_candidates)} skipped)"
         )
@@ -2047,7 +2082,7 @@ def main():
     # Execute Top Candidates
     _cap = MAX_ENTRIES or MAX_OPEN
     _rank_limit = min(MAX_OPEN - open_pos_count, _cap, len(all_candidates))
-    logger.info(
+    log.info(
         f"🏆 RANKED: {len(all_candidates)} passed → opening top "
         f"{max(0, _rank_limit)} (MAX_OPEN={MAX_OPEN}, existing={open_pos_count}, "
         f"MAX_ENTRIES={MAX_ENTRIES or 'unlimited'})"
@@ -2055,7 +2090,7 @@ def main():
     for i, (_, score, pair, _, dir, _, _, _, _, tp_pips) in enumerate(
         all_candidates, 1
     ):
-        logger.info(f"   #{i} — {pair} {dir} SCORE={score:.1f} SMART-TP={tp_pips:.1f}p")
+        log.info(f"   #{i} — {pair} {dir} SCORE={score:.1f} SMART-TP={tp_pips:.1f}p")
 
     executed_in_this_run = set()
     entries_this_run = 0
@@ -2072,24 +2107,24 @@ def main():
         _,
     ) in all_candidates:
         if open_pos_by_oanda.get(oanda, False):
-            logger.info(f"⏭️ {pair} ({oanda}): already open — SKIP DUPLICATE")
+            log.info(f"⏭️ {pair} ({oanda}): already open — SKIP DUPLICATE")
             continue
         if oanda in executed_in_this_run:
-            logger.info(f"⏭️ {pair} ({oanda}): selected in this run — SKIP DUPLICATE")
+            log.info(f"⏭️ {pair} ({oanda}): selected in this run — SKIP DUPLICATE")
             continue
         if open_pos_count >= MAX_OPEN:
-            logger.info(f"⏭️ {pair}: MAX_OPEN={MAX_OPEN} reached — SKIP")
+            log.info(f"⏭️ {pair}: MAX_OPEN={MAX_OPEN} reached — SKIP")
             continue
         if MAX_ENTRIES and entries_this_run >= MAX_ENTRIES:
-            logger.info(
+            log.info(
                 f"⏭️ {pair}: MAX_ENTRIES this run = {MAX_ENTRIES} reached — SKIP"
             )
             continue
 
         if DRY_RUN_MODE:
             _r = _open_reasons.get(pair, "UNKNOWN")
-            logger.info(f"✅ OPEN {pair} {direction} lots={DEFAULT_LOT_SIZE} → {_r}")
-            logger.info(
+            log.info(f"✅ OPEN {pair} {direction} lots={DEFAULT_LOT_SIZE} → {_r}")
+            log.info(
                 f"🧪 [DRY-RUN] SIGNAL {pair} {direction} | "
                 f"SL={sl_price} | TP={tp_price} | Score={FINAL:.1f} — NO ORDER SENT"
             )
@@ -2129,10 +2164,10 @@ def main():
             _r = _open_reasons.get(pair, "UNKNOWN")
 
             if status == "OK":
-                logger.info(
+                log.info(
                     f"✅ EXECUTED {pair} {direction} | SL={sl_price} | TP={tp_price} | TradeID={tid}"
                 )
-                logger.info(
+                log.info(
                     f"✅ OPEN {pair} {direction} lots={DEFAULT_LOT_SIZE} → {_r}"
                 )
                 trade_lines[pair] = (
@@ -2160,10 +2195,10 @@ def main():
                 open_pos_count += 1
                 executed_in_this_run.add(oanda)
             elif status == "DRY_RUN":
-                logger.info(
+                log.info(
                     f"✅ OPEN {pair} {direction} lots={DEFAULT_LOT_SIZE} → {_r}"
                 )
-                logger.info(
+                log.info(
                     f"🧪 DRY_RUN {pair} {direction} | SL={sl_price} | TP={tp_price} — validated, no API call"
                 )
                 trade_lines[pair] = (
@@ -2179,7 +2214,7 @@ def main():
                 open_pos_count += 1
                 executed_in_this_run.add(oanda)
             elif status == "REDUCED":
-                logger.warning(
+                log.warning(
                     f"⚠️ {pair} {direction} — fill REDUCED existing pos, no new trade opened"
                 )
                 trade_lines[pair] = (
@@ -2187,14 +2222,14 @@ def main():
                 )
             else:
                 reason = resp.get("message") or resp.get("reason") or status
-                logger.error(
+                log.error(
                     f"❌ ORDER FAILED {pair} {direction} — status={status} | {reason}"
                 )
                 trade_lines[pair] = (
                     f"❌ [FAILED {status}] {pair} {direction} Score={FINAL:.1f} — {reason}"
                 )
         except Exception as e:
-            logger.error(f"❌ ORDER FAILED {pair}: {type(e).__name__}: {e}")
+            log.error(f"❌ ORDER FAILED {pair}: {type(e).__name__}: {e}")
             trade_lines[pair] = (
                 f"❌ [EXCEPTION] {pair} {direction} Score={FINAL:.1f} — {type(e).__name__}: {e}"
             )
@@ -2206,9 +2241,9 @@ def main():
         )
         send_telegram_message(summary)
     else:
-        logger.info("📋 No signals passed all filters")
+        log.info("📋 No signals passed all filters")
 
-    logger.info(
+    log.info(
         f"✅ v6.8.3.3 {PROFILE_LABEL} Run Complete — {ACCOUNT_NAME} — TOP-N STRENGTH ACTIVE"
     )
 
@@ -2223,6 +2258,6 @@ if __name__ == "__main__":
         apply_jitter(1.0, 10.0)
         main()
     except Exception as e:
-        logger.exception(f"Fatal error in {PROFILE_LABEL} main loop")
+        log.exception(f"Fatal error in {PROFILE_LABEL} main loop")
         send_telegram_message(f"❌ FX BOT {PROFILE_LABEL} FATAL ERROR: {e}")
         raise

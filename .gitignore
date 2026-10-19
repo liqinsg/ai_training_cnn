@@ -1,31 +1,50 @@
-# Python
+# === Python 缓存 ===
 __pycache__/
 *.py[cod]
+*.pyc
+*.pyo
 *.so
 *.egg-info/
 dist/
 build/
+.pytest_cache/
 
-# 模型/运行输出（不上传）
+# === 模型/数据文件 ===
 scaler.joblib
 scaler_bak_*.joblib
 trade_model_xgb.json
 trade_model_xgb.features.json
 trade_model_xgb_*bak*.json
 trade_model_xgb_*bak*.pkl
-mc_results
+mc_results/
 *.joblib
 *.pkl
 
-# 日志/环境/临时目录
+# === 日志/运行时输出 ===
 *.log
+*.jsonl
 logs/
+daily_results/
+attribution_v2/reports/
+
+# === 临时/测试脚本 ===
+fix_*.py
+test_*.py
+*_fixture.py
+
+# === 环境/配置/敏感 ===
 .env
 .fxbot.env
 fx_bot/.env
-.vscode/
+auth/
+Wallet_*/
 certbot/
 conf.d/
-Wallet_*/
-attribution_v2/reports/
-auth/
+
+# === IDE/系统 ===
+.vscode/
+.*.swp
+.*.swo
+.DS_Store
+archives/
+
