@@ -1095,10 +1095,18 @@ SIMULATIONS = cfg_bot("MC_SIMULATIONS", 5000)
 CONFIDENCE = cfg_bot("MC_BAND_PCT", 90) / 100.0
 REMOVE_COOLDOWN = cfg_bot("REMOVE_COOLDOWN", False)
 COOLDOWN_HOURS_AFTER_TP = cfg_bot("COOLDOWN_HOURS_AFTER_TP", 0.0)
+COOLDOWN_SCOPE = os.environ.get("COOLDOWN_SCOPE", cfg_bot("COOLDOWN_SCOPE", "currency"))
 log.info(
     f"⏳ TP-COOLDOWN: hours={COOLDOWN_HOURS_AFTER_TP} "
-    f"REMOVE_COOLDOWN={REMOVE_COOLDOWN}"
+    f"REMOVE_COOLDOWN={REMOVE_COOLDOWN} scope={COOLDOWN_SCOPE}"
 )
+if COOLDOWN_SCOPE == "currency":
+    log.warning(
+        "⚠️  COOLDOWN_SCOPE=currency (default) — cooldown matches on bare 3-letter "
+        "currency codes (e.g. JPY), which blocks ALL JPY pairs after any TP. "
+        "If you want cooldown to be pair-specific (recommended), set "
+        "COOLDOWN_SCOPE=pair in config_profile.json or env."
+    )
 if args.confluence is not None:
     MULTI_TF_CONFLUENCE = args.confluence
 
@@ -1189,7 +1197,7 @@ def cooldown_key(pair: str, oanda_instrument: str) -> str:
 
 
 def is_in_cooldown(pair: str, oanda_instrument: str):
-    """Return (in_cooldown, remaining_minutes).
+    """Return (in_cooldown, remaining_minutes, matched_key).
 
     Probes pair-level canonical key (oanda_instrument) only.  Bare
     currency keys are intentionally not probed — a TP close on ``EUR_USD``
@@ -1215,8 +1223,8 @@ def is_in_cooldown(pair: str, oanda_instrument: str):
             del last_closed[_k]
             log.debug(f"🧹 Legacy bare-currency cooldown cleaned: {_k}")
     if best_key is not None:
-        return True, round(best_remain / 60.0, 1)
-    return False, 0.0
+        return True, round(best_remain / 60.0, 1), best_key
+    return False, 0.0, None
 
 
 def set_cooldown(pair: str, oanda_instrument: str):
@@ -1340,15 +1348,20 @@ def calc_weighted_score(
         if gap >= MIN_STRENGTH_GAP
         else "SELL" if gap <= -MIN_STRENGTH_GAP else "NEUTRAL"
     )
-    xgb_dir = "BUY" if (xgb_prob or 0.0) >= XGB_BULLISH_THRESHOLD else "SELL"
-    mc_dir = "BUY" if (mc_pct_up or 50.0) >= MC_BULLISH_THRESHOLD else "SELL"
+    xgb_prob = xgb_prob or 0.0
+    mc_pct_up = mc_pct_up if mc_pct_up is not None else 50.0
+    xgb_dir = "BUY" if xgb_prob >= XGB_BULLISH_THRESHOLD else "SELL"
+    mc_dir = "BUY" if mc_pct_up >= MC_BULLISH_THRESHOLD else "SELL"
     # buy_votes = sum(1 for d in (strength_dir, xgb_dir, mc_dir) if d == "BUY")
     buy_votes = sum(bool(d == "BUY") for d in (strength_dir, xgb_dir, mc_dir))
     # sell_votes = sum(1 for d in (strength_dir, xgb_dir, mc_dir) if d == "SELL")
     sell_votes = sum(bool(d == "SELL") for d in (strength_dir, xgb_dir, mc_dir))
-
     log.info(
-        f"🤝 {pair}: Strength={strength_dir} | XGB={xgb_dir} | MC={mc_dir} | BUY={buy_votes}/3"
+        f"🤝 {pair}: "
+        f"Strength={strength_dir} (gap={gap:+.3f}, ±thr=±{MIN_STRENGTH_GAP}) | "
+        f"XGB={xgb_dir} (prob_buy={xgb_prob:.3f}, thr={XGB_BULLISH_THRESHOLD}) | "
+        f"MC={mc_dir} (P_UP={mc_pct_up:.1f}%, thr={MC_BULLISH_THRESHOLD}%) | "
+        f"BUY={buy_votes}/3"
     )
 
     if REQUIRE_DIRECTION_CONSENSUS:
@@ -1495,6 +1508,117 @@ def main():
         YAHOO_TO_OANDA,
         cfg_bot,
     )
+
+    # ── MAX_OPEN EARLY-GATE: quick pre-scan of owned positions BEFORE running
+    #    Strength Matrix, D-Gate, MC bundle, scoring, or Step-7 candidate eval.
+    #    If we are already at/over MAX_OPEN we skip all signal-generation work
+    #    entirely but STILL run Dynamic Exit Manager (Step 5) so existing
+    #    positions continue to be managed normally.
+    _early_open_count = 0
+    for _p in ALL_PAIRS:
+        _o = YAHOO_TO_OANDA.get(_p)
+        if not _o:
+            continue
+        _f, _ = has_open_trade_with_tags(
+            api, OANDA_ACCOUNT_ID, _o, OWNER_TAGS,
+            client_ext_id=OWNER_CLIENT_EXT_ID,
+            client_ext_tag=OWNER_CLIENT_EXT_TAG,
+        )
+        if _f:
+            _early_open_count += 1
+    _skip_signal_generation = _early_open_count >= MAX_OPEN
+    log.info(
+        f"🔍 MAX_OPEN EARLY-GATE: {_early_open_count}/{MAX_OPEN} owned positions "
+        f"→ {'SKIP signal generation' if _skip_signal_generation else 'proceed'}"
+    )
+
+    if _skip_signal_generation:
+        # ── Minimal Step 6 snapshot so Step 5 (Dynamic Exit) has pair_data ──
+        log.info("⏭️ MAX_OPEN reached — skipping Steps 1-4 (Strength/MC/D-Gate/Scoring)")
+        pair_data_minimal = {}
+        for _p in ALL_PAIRS:
+            _o = YAHOO_TO_OANDA.get(_p)
+            if not _o:
+                continue
+            _f, _ = has_open_trade_with_tags(
+                api, OANDA_ACCOUNT_ID, _o, OWNER_TAGS,
+                client_ext_id=OWNER_CLIENT_EXT_ID,
+                client_ext_tag=OWNER_CLIENT_EXT_TAG,
+            )
+            if not _f:
+                continue
+            try:
+                _raw = fetcher.fetch(_p, _o, count=200)
+                if _raw is None or _raw.empty:
+                    continue
+                _df = (
+                    feat_engine.build(_raw)
+                    .replace([np.inf, -np.inf], np.nan)
+                    .ffill()
+                    .bfill()
+                    .fillna(0)
+                )
+                if len(_df) < 5:
+                    continue
+                pair_data_minimal[_p] = {
+                    "df": _df,
+                    "oanda": _o,
+                    "raw": _raw,
+                    "atr": _df.iloc[-1].get("atr", 0.0),
+                    "rsi": _df.iloc[-1].get("rsi", 50.0),
+                    "adx": _df.iloc[-1].get("adx", -1.0),
+                }
+            except Exception as _e:
+                log.error(f"❌ MINIMAL fetch failed {_p}: {_e}")
+
+        # ── Dynamic Exit + Full Position Snapshot ──
+        log.info("[STEP 5] Dynamic Exit Manager...")
+        dyn_mgr = DynamicPositionManager(
+            api, OANDA_ACCOUNT_ID, TIMEFRAME,
+            cfg_bot("BE_TRIGGER_ATR_MULT", 1.5),
+            cfg_bot("TRAIL_TRIGGER_ATR_MULT", 2.5),
+            cfg_bot("TRAIL_ATR_MULT", 1.5),
+            cfg_bot("MAX_HOLD_BARS", 12),
+            dynamic_tp=DYNAMIC_TP,
+            tp_raise_thresh_pips=TP_RAISE_THRESHOLD_PIPS,
+            telegram_send=send_telegram_message,
+            dry_run=DRY_RUN_MODE,
+            json_log=json_log,
+        )
+        dyn_mgr.update_all(pair_data_minimal)
+
+        # ── Full Step 6 snapshot ──
+        selected_pairs = [p for p in ALL_PAIRS if YAHOO_TO_OANDA.get(p)]
+        open_pos_by_oanda = {}
+        open_pos_count = 0
+        for pair in selected_pairs:
+            oanda_inst = YAHOO_TO_OANDA.get(pair)
+            found, trade = has_open_trade_with_tags(
+                api, OANDA_ACCOUNT_ID, oanda_inst, OWNER_TAGS,
+                client_ext_id=OWNER_CLIENT_EXT_ID,
+                client_ext_tag=OWNER_CLIENT_EXT_TAG,
+            )
+            open_pos_by_oanda[oanda_inst] = found
+            if found:
+                open_pos_count += 1
+                ce = trade.get("client_ext", {})
+                log.info(
+                    f"📌 OWNED POSITION: {pair} → {oanda_inst} | {trade['direction'].upper()} | "
+                    f"units={trade['units']} | tradeID={trade['trade_id']} | "
+                    f"client_ext={ce}"
+                )
+        open_list = [o.replace("_", "/") for o, s in open_pos_by_oanda.items() if s]
+        log.info(
+            f"📊 Open positions (MAX_OPEN EARLY-GATE): {open_pos_count}/{MAX_OPEN} | OPEN: {', '.join(open_list) or 'None'}"
+        )
+
+        # ── Persist cooldown + finish ──
+        save_cooldown_state(last_closed)
+        log.info(
+            f"✅ MAX_OPEN EARLY-GATE run complete — EXIT MGR ran, signal generation skipped. "
+            f"{open_pos_count} positions still under management."
+        )
+        return
 
     # Step 1 — Currency Strength + Top-N Filter
     log.info("[STEP 1] Currency Strength Matrix...")
@@ -1892,11 +2016,12 @@ def main():
             continue
 
         # ✅ Cooldown check — file-based, auto-clean expired, show remaining
-        _in_cd, _remain_mins = is_in_cooldown(pair, oanda)
+        _in_cd, _remain_mins, _matched_key = is_in_cooldown(pair, oanda)
         if _in_cd:
             log.info(
-                f"⏭️ {pair}: IN COOLDOWN — last entry within "
-                f"{COOLDOWN_HOURS_AFTER_TP}h | remaining={_remain_mins}min — SKIP"
+                f"⏭️ {oanda} IN COOLDOWN scope=pair "
+                f"matched_key={_matched_key} "
+                f"remaining={_remain_mins}min — SKIP"
             )
             continue
 

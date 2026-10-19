@@ -192,13 +192,25 @@ def load_cooldown(cooldown_file: Path, Direction):
                 raw = json.load(f)
             now_ts = datetime.now(timezone.utc).timestamp()
             result = {}
+            legacy_keys = []
             for k, v in raw.items():
                 if isinstance(v, dict) and "until_ts" in v:
                     if v["until_ts"] > now_ts:
                         result[k] = (Direction(v["direction"]), v["until_ts"])
+                        if "_" not in k and len(k) == 3 and k.isalpha():
+                            legacy_keys.append(k)
                 elif isinstance(v, list) and len(v) == 2:
                     if isinstance(v[1], (int, float)) and v[1] > 0:
                         result[k] = (Direction(v[0]), v[1])
+                        if "_" not in k and len(k) == 3 and k.isalpha():
+                            legacy_keys.append(k)
+            if legacy_keys:
+                logger.warning(
+                    f"⚠️ Legacy bare-currency cooldown keys detected in {cooldown_file.name}: "
+                    f"{legacy_keys} — these are CURRENCY-level, not pair-level, and will "
+                    f"be cleaned on next save. Recommend migrating to OANDA pair keys "
+                    f"(e.g. EUR_USD)."
+                )
             logger.info(f"✅ Cooldown loaded: {len(result)} entries from {cooldown_file.name}")
             return result
         except Exception as e:
@@ -1223,6 +1235,10 @@ class DynamicPositionManager:
                 if bars_held >= self.max_hold:
                     detail = f"held {bars_held:.1f} bars >= max_hold={self.max_hold}"
                     logger.info(f"⏰ TIME EXIT {pair} #{tid}: {detail}")
+                    logger.info(
+                        f"🚪 EXIT_DECISION: CLOSE_FULL pair={pair} oanda={instrument} "
+                        f"side={side} profit={profit_pips:.1f}p reason=TIME_EXPIRY"
+                    )
                     if close_position_fn:
                         try:
                             close_position_fn(
@@ -1233,6 +1249,10 @@ class DynamicPositionManager:
                         except TypeError:
                             close_position_fn(instrument)
                     continue
+
+                tp_updated_this_cycle = False
+                sl_updated_this_cycle = False
+
                 if self.dynamic_tp:
                     atr_mult_tp = 3.0
                     if side == "long":
@@ -1240,6 +1260,16 @@ class DynamicPositionManager:
                         if current_tp is None or new_tp > current_tp + (
                             self.tp_thresh_pips * pip
                         ):
+                            old_tp_str = (
+                                f"{current_tp:.{decimals}f}"
+                                if current_tp is not None
+                                else "None"
+                            )
+                            logger.info(
+                                f"🚪 EXIT_DECISION: UPDATE_TP pair={pair} oanda={instrument} "
+                                f"old={old_tp_str} new={new_tp:.{decimals}f} "
+                                f"reason=DYNAMIC_TP_LONG"
+                            )
                             update_order_tp(
                                 self.api,
                                 self.account_id,
@@ -1252,11 +1282,22 @@ class DynamicPositionManager:
                                 update_reason=f"DYNAMIC_TP LONG (profit={profit_pips:.1f}p)",
                                 json_log=self.json_log,
                             )
+                            tp_updated_this_cycle = True
                     else:
                         new_tp = current_price - (atr_mult_tp * atr_val)
                         if current_tp is None or new_tp < current_tp - (
                             self.tp_thresh_pips * pip
                         ):
+                            old_tp_str = (
+                                f"{current_tp:.{decimals}f}"
+                                if current_tp is not None
+                                else "None"
+                            )
+                            logger.info(
+                                f"🚪 EXIT_DECISION: UPDATE_TP pair={pair} oanda={instrument} "
+                                f"old={old_tp_str} new={new_tp:.{decimals}f} "
+                                f"reason=DYNAMIC_TP_SHORT"
+                            )
                             update_order_tp(
                                 self.api,
                                 self.account_id,
@@ -1269,6 +1310,8 @@ class DynamicPositionManager:
                                 update_reason=f"DYNAMIC_TP SHORT (profit={profit_pips:.1f}p)",
                                 json_log=self.json_log,
                             )
+                            tp_updated_this_cycle = True
+
                 be_pips = self.be_trigger * atr_val / pip
                 trail_pips = self.trail_trigger * atr_val / pip
                 new_sl = action = None
@@ -1295,7 +1338,22 @@ class DynamicPositionManager:
                         (side == "long" and new_sl < current_sl)
                         or (side == "short" and new_sl > current_sl)
                     ):
+                        logger.info(
+                            f"🚪 EXIT_DECISION: HOLD pair={pair} oanda={instrument} "
+                            f"side={side} profit={profit_pips:.1f}p reason=SL_REGRESSION_BLOCKED "
+                            f"(proposed={action} SL moves backward → keep {current_sl:.{decimals}f})"
+                        )
                         continue
+                    old_sl_str = (
+                        f"{current_sl:.{decimals}f}"
+                        if current_sl is not None
+                        else "None"
+                    )
+                    logger.info(
+                        f"🚪 EXIT_DECISION: UPDATE_SL pair={pair} oanda={instrument} "
+                        f"side={side} profit={profit_pips:.1f}p "
+                        f"old={old_sl_str} new={new_sl:.{decimals}f} reason={action}"
+                    )
                     self._update_trade_sl(
                         tid,
                         new_sl,
@@ -1303,6 +1361,20 @@ class DynamicPositionManager:
                         old_sl=current_sl,
                         pair=pair,
                         sl_action=f"{action} (profit={profit_pips:.1f}p)",
+                    )
+                    sl_updated_this_cycle = True
+
+                if not tp_updated_this_cycle and not sl_updated_this_cycle:
+                    reason = "UNDERWATER" if profit_pips < 0 else (
+                        "BE_TRIGGER_WAIT" if profit_pips < be_pips else
+                        "TRAIL_TRIGGER_WAIT" if profit_pips < trail_pips else
+                        "NO_IMPROVEMENT"
+                    )
+                    logger.info(
+                        f"🚪 EXIT_DECISION: HOLD pair={pair} oanda={instrument} "
+                        f"side={side} bars_held={bars_held:.1f}/{self.max_hold} "
+                        f"profit={profit_pips:.1f}p be={be_pips:.1f}p trail={trail_pips:.1f}p "
+                        f"reason={reason}"
                     )
 
 
