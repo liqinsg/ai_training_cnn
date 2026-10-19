@@ -251,3 +251,89 @@ def to_float(value, default: float | None = None) -> float | None:
 #
 #  ④ 切片 → 永远走 safe_tail，禁止手写 .iloc[-20:]
 #       tail = safe_tail(diff_pct, confirm_bars, context=pair)
+
+
+# ─── 6) 未闭合 K 线防护 (Look-ahead / incomplete candle audit) ────────────────
+# 解决的问题：OANDA / 多数 K 线 API 返回的最新一根 K 线**永远是正在形成中
+# 的**（未闭合）。如果直接拿 .iloc[-1] 来算 EMA/RSI/斜率 → 等于把「半截数据」
+# 塞进指标 → 回测好看、实盘信号跳（前视偏差 / 未来信息泄露）。
+#
+# 本模块在**数据源层**统一切掉最后一根未闭合 K 线，一处改、全局覆盖。
+# 下游所有 .iloc[-1] 取值自动安全。
+
+# OANDA granularity → interval_minutes 映射表
+# 参考 OANDA docs: https://developer.oanda.com/rest-live-v20/instrument-datatypes/#Granularity
+GRANULARITY_MINUTES: dict[str, int] = {
+    "S5": 5 / 60, "S10": 10 / 60, "S15": 15 / 60, "S30": 30 / 60,
+    "M1": 1, "M2": 2, "M3": 3, "M4": 4, "M5": 5, "M10": 10, "M15": 15,
+    "M30": 30, "H1": 60, "H2": 120, "H3": 180, "H4": 240, "H6": 360,
+    "H8": 480, "H12": 720, "D": 1440, "W": 10080, "M": 43200,
+}
+
+# 默认容错：允许 K 线结束后少量漂移（API 时间戳与本机时钟的微小偏差）
+CANDLE_CLOSE_TOLERANCE_SECONDS: int = 30
+
+
+def granularity_to_minutes(granularity: str) -> float:
+    return GRANULARITY_MINUTES.get(str(granularity).upper(), 60)
+
+
+def is_latest_candle_closed(
+    df: pd.DataFrame | pd.Series,
+    granularity: str | None = None,
+    interval_minutes: float | None = None,
+) -> bool:
+    if df is None or _length(df) < 2:
+        return False
+
+    if interval_minutes is None:
+        if granularity is None:
+            logger.warning(
+                "is_latest_candle_closed: 未指定 granularity / interval_minutes "
+                "→ 保守返回 False（视为未闭合）"
+            )
+            return False
+        interval_minutes = granularity_to_minutes(granularity)
+
+    last_time = df.index[-1] if isinstance(df, pd.DataFrame) else df.index[-1]
+    if not isinstance(last_time, pd.Timestamp):
+        last_time = pd.to_datetime(last_time)
+
+    if last_time.tz is None:
+        last_time = last_time.tz_localize("UTC")
+    now = pd.Timestamp.now(tz=last_time.tz)
+
+    elapsed = now - last_time
+    required = pd.Timedelta(minutes=float(interval_minutes))
+    tolerance = pd.Timedelta(seconds=CANDLE_CLOSE_TOLERANCE_SECONDS)
+
+    return elapsed >= (required - tolerance)
+
+
+def trim_to_closed_candles(
+    df: pd.DataFrame,
+    granularity: str | None = None,
+    interval_minutes: float | None = None,
+    context: str = "",
+) -> pd.DataFrame:
+    """在 DataFrame **入口处**调用：如果最后一根 K 线未闭合，切掉它。
+
+    用法（数据源 fetch 函数末尾）：
+        df = trim_to_closed_candles(df, granularity=g, context=instrument)
+        return df
+    """
+    if df is None or df.empty:
+        return df
+
+    if not is_latest_candle_closed(df, granularity=granularity, interval_minutes=interval_minutes):
+        last_ts = df.index[-1]
+        before = len(df)
+        df = df.iloc[:-1].copy()
+        after = len(df)
+        label = f" [{context}]" if context else ""
+        gran_label = granularity or (f"{interval_minutes}min" if interval_minutes else "?")
+        logger.warning(
+            f"🔒 CANDLE_INCOMPLETE{label} — dropped latest; "
+            f"gran={gran_label} last_ts={last_ts} rows {before}→{after}"
+        )
+    return df

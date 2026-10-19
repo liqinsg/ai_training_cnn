@@ -8,7 +8,7 @@ from datetime import datetime, timezone, timedelta
 from enum import Enum
 import numpy as np
 import pandas as pd
-from data_guard import get_safe_series, safe_last
+from data_guard import get_safe_series, safe_last, trim_to_closed_candles
 # from telegram_message import send_telegram_message
 from utils.strategy_helpers import get_live_prices
 from utils.logging_utils import get_logger
@@ -1309,7 +1309,7 @@ def fetch_candles(api, oanda_instrument: str, gran: str, count: int = 100):
             params={"granularity": gran, "count": count, "price": "M"},
         )
     )
-    return pd.DataFrame(
+    df = pd.DataFrame(
         [
             {
                 "Time": c["time"],
@@ -1321,6 +1321,8 @@ def fetch_candles(api, oanda_instrument: str, gran: str, count: int = 100):
             for c in resp["candles"]
         ]
     ).set_index("Time")
+    df = trim_to_closed_candles(df, granularity=gran, context=oanda_instrument)
+    return df
 
 
 def should_close_by_strength(
@@ -1490,7 +1492,17 @@ def fetch_weekly_ema100(oanda_instrument, api):
         if len(candles) < 100:
             return None
         closes = [float(c["mid"]["c"]) for c in candles]
-        series = pd.Series(closes)
+
+        df = pd.DataFrame(
+            [{"Time": c["time"], "Close": float(c["mid"]["c"])} for c in candles]
+        ).set_index("Time")
+        df = trim_to_closed_candles(df, granularity="W", context=oanda_instrument)
+        if df.empty:
+            return None
+
+        series = df["Close"]
+        if len(series) < 100:
+            return None
         return series.ewm(span=100, adjust=False).mean().iloc[-1]
     except Exception as e:
         logger.warning(f"⚠️ Cannot fetch Weekly EMA100 for {oanda_instrument}: {e}")

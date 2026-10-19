@@ -16,6 +16,8 @@ from datetime import datetime, timezone
 import numpy as np
 import pandas as pd
 
+from data_guard import trim_to_closed_candles
+
 
 xgboost_available = False
 try:
@@ -611,6 +613,7 @@ class DataFetcher:
                 "Volume": float,
             }
         )
+        df = trim_to_closed_candles(df, granularity=g, context=instrument)
         return df
 
     def _from_yfinance(
