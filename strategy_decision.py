@@ -14,6 +14,7 @@ from data_guard import has_min_bars
 class Direction(Enum):
     LONG = "LONG"
     SHORT = "SHORT"
+    NONE = "NONE"
 
 
 class FilterMode(Enum):

@@ -610,8 +610,18 @@ def evaluate_trend_and_tp(
 
     ema10 = calculate_ema(df_h1["Close"], cfg["ema_period"])
     slope, ema_level = calculate_ema_slope(ema10, cfg["slope_lookback"])
-    min_slope = resolve_min_slope(cfg, profile_name)
+    abs_slope = abs(slope)
+    base_min_slope = resolve_min_slope(cfg, profile_name)
+    min_slope = next(
+        (s for s in sorted(MIN_SLOPE_LADDER) if abs_slope >= s),
+        base_min_slope,
+    )
     current_price = entry_price
+    log.info(
+        f"📐 SLOPE LADDER: abs_slope={abs_slope:.6f} "
+        f"→ base={base_min_slope:.6f} → selected={min_slope:.6f} "
+        f"({'dynamic' if min_slope != base_min_slope else 'profile-default'})"
+    )
 
     if SLOPE_DIAG:
         # Mirror the filter's own branch so the diagnostic reports the real

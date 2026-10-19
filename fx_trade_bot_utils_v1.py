@@ -199,9 +199,16 @@ def load_cooldown(cooldown_file: Path, Direction):
                 elif isinstance(v, list) and len(v) == 2:
                     if isinstance(v[1], (int, float)) and v[1] > 0:
                         result[k] = (Direction(v[0]), v[1])
+            logger.info(f"✅ Cooldown loaded: {len(result)} entries from {cooldown_file.name}")
             return result
         except Exception as e:
-            logger.warning(f"⚠️ load_cooldown failed ({cooldown_file.name}): {e}")
+            logger.warning(
+                f"⚠️ load_cooldown FAILED ({cooldown_file.name}): {e} — "
+                f"returning empty state. If this recurs, delete the file so "
+                f"it rebuilds cleanly, or check Direction enum compatibility."
+            )
+    else:
+        logger.info(f"📭 No cooldown file at {cooldown_file.name} — starting fresh")
     return {}
 
 
