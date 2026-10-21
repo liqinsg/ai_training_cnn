@@ -10,7 +10,6 @@ import os
 import subprocess
 import time
 from utils.logging_utils import get_logger
-log = get_logger(__name__)
 import argparse
 from pathlib import Path
 from datetime import datetime, timezone
@@ -76,7 +75,7 @@ from fx_trade_bot_ml import ensure_model
 # from portfolio_balance import balance_from_config
 from sl_zone_hierarchy import compute_sl_zone
 from config_oanda import (
-    api,
+    # api,
     get_oanda_profile,
     OANDA_ACCOUNT_ID_1_LIVE,
     OANDA_ACCOUNT_ID_2_LIVE,
@@ -89,6 +88,9 @@ from config_oanda import (
 )
 
 from utils.structured_logger import StructuredLogger
+
+log = get_logger(__name__)
+
 # ─── BASE SETUP ──────────────────────────────────────────────────────────────
 BASE_DIR = Path(__file__).resolve().parent
 sys.path.extend([str(BASE_DIR), str(BASE_DIR / "utils")])

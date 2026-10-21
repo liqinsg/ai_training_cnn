@@ -168,7 +168,8 @@
       "TOP_N": 3,
       "ACCOUNT_SUFFIX": "002",
       "account_id_demo": "101-003-39389016-002",
-      "account_id_live": "001-003-21515688-002"
+      "account_id_live": "001-003-21515688-002",
+      "TRAILING_TP": false
     },
     "3": {
       "NAME": "PF-C Conservative",

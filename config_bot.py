@@ -161,8 +161,8 @@ def build_profile_cfg(profile_id: int) -> Dict:
         "SL_MIN_PIPS": get_global("risk_trade.SL_MIN_PIPS"),
         "SL_MIN_PIPS_JPY": get_global("risk_trade.SL_MIN_PIPS_JPY"),
         # tp_trailing
-        "DYNAMIC_TP": get_global("tp_trailing.DYNAMIC_TP"),
-        "TRAILING_TP": get_global("tp_trailing.TRAILING_TP"),
+        "DYNAMIC_TP": p.get("DYNAMIC_TP", get_global("tp_trailing.DYNAMIC_TP")),
+        "TRAILING_TP": p.get("TRAILING_TP", get_global("tp_trailing.TRAILING_TP")),
         "TP_RAISE_THRESHOLD_PIPS": get_global("tp_trailing.TP_RAISE_THRESHOLD_PIPS"),
         "TRAIL_ATR_MULT": get_global("tp_trailing.TRAIL_ATR_MULT"),
         # confluence

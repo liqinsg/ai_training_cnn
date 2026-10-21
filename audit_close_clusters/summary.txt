@@ -1,0 +1,20 @@
+READ-ONLY OANDA CLOSE CLUSTER AUDIT
+Account: 101-003-39389016-002
+Window UTC: 2026-10-07T02:25:47+00:00 -> 2026-10-21T02:25:47+00:00
+Closed trades in window: 247
+Trade/closing-tx rows: 247
+Unique closing transaction IDs requested: 208
+Unique transaction details retrieved: 208
+Transaction lookup errors: 0
+Time clusters: 130
+
+IMPORTANT: rows are not independent close decisions. A single OANDA transaction
+may affect multiple trades. Time proximity does not prove common cause or actor.
+POSITION_CLOSEOUT classification is descriptive; verify full transaction/account
+details and bot logs before assigning a cause.
+
+Files:
+  audit_close_clusters/trade_close_rows.csv
+  audit_close_clusters/unique_close_transactions.csv
+  audit_close_clusters/close_clusters.csv
+  audit_close_clusters/transaction_lookup_errors.csv

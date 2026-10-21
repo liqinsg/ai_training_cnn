@@ -1815,6 +1815,7 @@ def main():
         cfg_bot("MAX_HOLD_BARS", 12),
         dynamic_tp=DYNAMIC_TP,
         tp_raise_thresh_pips=TP_RAISE_THRESHOLD_PIPS,
+        enabled=TRAILING_TP,
         telegram_send=send_telegram_message,
         dry_run=DRY_RUN_MODE,
         json_log=json_log,

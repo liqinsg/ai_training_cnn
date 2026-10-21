@@ -1312,68 +1312,77 @@ class DynamicPositionManager:
                             )
                             tp_updated_this_cycle = True
 
-                be_pips = self.be_trigger * atr_val / pip
-                trail_pips = self.trail_trigger * atr_val / pip
-                new_sl = action = None
-                if profit_pips >= be_pips:
-                    be_sl = entry - pip if side == "long" else entry + pip
-                    if current_sl is None or (
-                        (side == "long" and be_sl > current_sl)
-                        or (side == "short" and be_sl < current_sl)
-                    ):
-                        new_sl, action = be_sl, "BREAKEVEN"
-                if profit_pips >= trail_pips:
-                    trail_sl = (
-                        current_price - self.trail_mult * atr_val
-                        if side == "long"
-                        else current_price + self.trail_mult * atr_val
-                    )
-                    if current_sl is None or (
-                        (side == "long" and trail_sl > current_sl)
-                        or (side == "short" and trail_sl < current_sl)
-                    ):
-                        new_sl, action = trail_sl, "TRAIL_STOP"
-                if new_sl and action:
-                    if current_sl and (
-                        (side == "long" and new_sl < current_sl)
-                        or (side == "short" and new_sl > current_sl)
-                    ):
-                        logger.info(
-                            f"🚪 EXIT_DECISION: HOLD pair={pair} oanda={instrument} "
-                            f"side={side} profit={profit_pips:.1f}p reason=SL_REGRESSION_BLOCKED "
-                            f"(proposed={action} SL moves backward → keep {current_sl:.{decimals}f})"
+                if self.enabled:
+                    be_pips = self.be_trigger * atr_val / pip
+                    trail_pips = self.trail_trigger * atr_val / pip
+                    new_sl = action = None
+                    if profit_pips >= be_pips:
+                        be_sl = entry - pip if side == "long" else entry + pip
+                        if current_sl is None or (
+                            (side == "long" and be_sl > current_sl)
+                            or (side == "short" and be_sl < current_sl)
+                        ):
+                            new_sl, action = be_sl, "BREAKEVEN"
+                    if profit_pips >= trail_pips:
+                        trail_sl = (
+                            current_price - self.trail_mult * atr_val
+                            if side == "long"
+                            else current_price + self.trail_mult * atr_val
                         )
-                        continue
-                    old_sl_str = (
-                        f"{current_sl:.{decimals}f}"
-                        if current_sl is not None
-                        else "None"
-                    )
-                    logger.info(
-                        f"🚪 EXIT_DECISION: UPDATE_SL pair={pair} oanda={instrument} "
-                        f"side={side} profit={profit_pips:.1f}p "
-                        f"old={old_sl_str} new={new_sl:.{decimals}f} reason={action}"
-                    )
-                    self._update_trade_sl(
-                        tid,
-                        new_sl,
-                        decimals,
-                        old_sl=current_sl,
-                        pair=pair,
-                        sl_action=f"{action} (profit={profit_pips:.1f}p)",
-                    )
-                    sl_updated_this_cycle = True
+                        if current_sl is None or (
+                            (side == "long" and trail_sl > current_sl)
+                            or (side == "short" and trail_sl < current_sl)
+                        ):
+                            new_sl, action = trail_sl, "TRAIL_STOP"
+                    if new_sl and action:
+                        if current_sl and (
+                            (side == "long" and new_sl < current_sl)
+                            or (side == "short" and new_sl > current_sl)
+                        ):
+                            logger.info(
+                                f"🚪 EXIT_DECISION: HOLD pair={pair} oanda={instrument} "
+                                f"side={side} profit={profit_pips:.1f}p reason=SL_REGRESSION_BLOCKED "
+                                f"(proposed={action} SL moves backward → keep {current_sl:.{decimals}f})"
+                            )
+                            continue
+                        old_sl_str = (
+                            f"{current_sl:.{decimals}f}"
+                            if current_sl is not None
+                            else "None"
+                        )
+                        logger.info(
+                            f"🚪 EXIT_DECISION: UPDATE_SL pair={pair} oanda={instrument} "
+                            f"side={side} profit={profit_pips:.1f}p "
+                            f"old={old_sl_str} new={new_sl:.{decimals}f} reason={action}"
+                        )
+                        self._update_trade_sl(
+                            tid,
+                            new_sl,
+                            decimals,
+                            old_sl=current_sl,
+                            pair=pair,
+                            sl_action=f"{action} (profit={profit_pips:.1f}p)",
+                        )
+                        sl_updated_this_cycle = True
 
                 if not tp_updated_this_cycle and not sl_updated_this_cycle:
-                    reason = "UNDERWATER" if profit_pips < 0 else (
-                        "BE_TRIGGER_WAIT" if profit_pips < be_pips else
-                        "TRAIL_TRIGGER_WAIT" if profit_pips < trail_pips else
-                        "NO_IMPROVEMENT"
-                    )
+                    if self.enabled:
+                        be_pips = self.be_trigger * atr_val / pip
+                        trail_pips = self.trail_trigger * atr_val / pip
+                        reason = (
+                            "UNDERWATER" if profit_pips < 0 else
+                            "BE_TRIGGER_WAIT" if profit_pips < be_pips else
+                            "TRAIL_TRIGGER_WAIT" if profit_pips < trail_pips else
+                            "NO_IMPROVEMENT"
+                        )
+                        hold_extra = f" be={be_pips:.1f}p trail={trail_pips:.1f}p"
+                    else:
+                        reason = "UNDERWATER" if profit_pips < 0 else "TRAILING_DISABLED"
+                        hold_extra = ""
                     logger.info(
                         f"🚪 EXIT_DECISION: HOLD pair={pair} oanda={instrument} "
                         f"side={side} bars_held={bars_held:.1f}/{self.max_hold} "
-                        f"profit={profit_pips:.1f}p be={be_pips:.1f}p trail={trail_pips:.1f}p "
+                        f"profit={profit_pips:.1f}p{hold_extra} "
                         f"reason={reason}"
                     )
 
