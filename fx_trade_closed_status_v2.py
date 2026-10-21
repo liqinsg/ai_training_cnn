@@ -140,9 +140,6 @@ def print_report(stats, profile=None):
     print("  ✅ 单笔风险 ≤1% | TP1=1:1平30-50% 保本上移入场价")
     print("  ✅ SL后24h不重开同品种 | 日开仓≤6笔 亏3%停手")
 
-# --------------------------
-# 入口
-# --------------------------
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="FX交易报告")
     parser.add_argument("--profile", "-p", help="指定Profile编号，显示在报告头部")
@@ -156,10 +153,13 @@ if __name__ == "__main__":
         with open(args.input, "r", encoding="utf-8") as f:
             lines = f.read().splitlines()
     else:
+        # 检查是否有管道输入
+        if sys.stdin.isatty():
+            print("⚠️  请提供输入：-i 文件.csv 或 管道数据 | 用 -h 看帮助")
+            sys.exit(1)
         lines = sys.stdin.read().splitlines()
 
     records = parse_records(lines)
-
     # 日期过滤
     if args.date_from or args.date_to:
         filtered = []

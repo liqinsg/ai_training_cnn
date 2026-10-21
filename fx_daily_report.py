@@ -1,3 +1,4 @@
+# fx_daily_report.py
 #!/usr/bin/env python3
 """
 每日交易报告 — 每日运行一次，评估前一日/全周期表现
