@@ -1,3 +1,4 @@
+# fx_trade_closed_status-v2.py
 #!/usr/bin/env python3
 import sys
 import re

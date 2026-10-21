@@ -1,3 +1,4 @@
+# fx_trade_closed_status-v2.py
 #!/usr/bin/env python3
 """
 OANDA 已平仓交易分析模块
