@@ -64,7 +64,8 @@
     },
     "tp_trailing": {
       "DYNAMIC_TP": false,
-      "TRAILING_TP": true,
+      "TRAILING_TP": false,
+      "TRAILING_SL": false,
       "TP_RAISE_THRESHOLD_PIPS": 15,
       "BE_TRIGGER_ATR_MULT": 1.5,
       "TRAIL_TRIGGER_ATR_MULT": 2.5,

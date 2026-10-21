@@ -1084,6 +1084,7 @@ class DynamicPositionManager:
         telegram_send=None,
         dry_run: bool = False,
         json_log=None,
+        enabled: bool = False,
     ):
         self.api = api
         self.account_id = account_id
@@ -1097,7 +1098,7 @@ class DynamicPositionManager:
         self.telegram = telegram_send
         self.dry_run = dry_run
         self.json_log = json_log
-        self.enabled = True
+        self.enabled = enabled
 
     def _get_open_trades(self, instrument: str):
         try:

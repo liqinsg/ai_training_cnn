@@ -493,7 +493,8 @@ MIN_STRENGTH_GAP = MIN_GAP or cfg_bot("MIN_STRENGTH_GAP", STRATEGY_MIN_STRENGTH_
 
 MAX_SIMULTANEOUS_TRADES = MAX_OPEN
 TRAILING_TP = cfg_bot("TRAILING_TP", False)
-DYNAMIC_TP = cfg_bot("DYNAMIC_TP", True)
+TRAILING_SL = cfg_bot("TRAILING_SL", False)
+DYNAMIC_TP = cfg_bot("DYNAMIC_TP", False)
 MULTI_TF_CONFLUENCE = (
     args.confluence
     if args.confluence is not None
@@ -839,6 +840,7 @@ def main():
         tp_raise_thresh_pips=TP_RAISE_THRESHOLD_PIPS,
         telegram_send=send_telegram_message,
         dry_run=DRY_RUN_MODE,
+        enabled=TRAILING_SL,
     )
     dyn_mgr.update_all(pair_data, close_wrap)
 

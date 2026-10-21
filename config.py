@@ -325,7 +325,7 @@ MIN_SL_PIPS_JPY = MIN_SL_PIPS + 10  # 15 for JPY pairs
 COOLDOWN_RUNS = 0
 REMOVE_COOLDOWN = True
 
-TRAILING_TP = True  # OANDA server-side trailing TP
+TRAILING_TP = False  # OANDA server-side trailing TP
 DYNAMIC_TP = False  # ✅ Bot actively RAISES TP as price trends
 
 TP_RAISE_THRESHOLD_PIPS = 15  # Only raise TP when ≥15 pips higher (prevents noise)

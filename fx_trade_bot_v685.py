@@ -883,7 +883,8 @@ SLOPE_DIAG = SLOPE_DIAG if SLOPE_DIAG is not None else cfg_bot("SLOPE_DIAG", Fal
 
 MAX_SIMULTANEOUS_TRADES = MAX_OPEN  # from unified PROFILE (config_bot.PROFILES)
 TRAILING_TP = cfg_bot("TRAILING_TP", False)
-DYNAMIC_TP = cfg_bot("DYNAMIC_TP", True)
+TRAILING_SL = cfg_bot("TRAILING_SL", False)
+DYNAMIC_TP = cfg_bot("DYNAMIC_TP", False)
 MULTI_TF_CONFLUENCE = cfg_bot("MULTI_TF_CONFLUENCE", False)
 CONFLUENCE_REQUIRED_TFS = cfg_bot("CONFLUENCE_REQUIRED_TFS", 2)
 TP_RAISE_THRESHOLD_PIPS = cfg_bot("TP_RAISE_THRESHOLD_PIPS", 15)
@@ -1815,7 +1816,7 @@ def main():
         cfg_bot("MAX_HOLD_BARS", 12),
         dynamic_tp=DYNAMIC_TP,
         tp_raise_thresh_pips=TP_RAISE_THRESHOLD_PIPS,
-        enabled=TRAILING_TP,
+        enabled=TRAILING_SL,
         telegram_send=send_telegram_message,
         dry_run=DRY_RUN_MODE,
         json_log=json_log,
