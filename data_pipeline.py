@@ -331,11 +331,16 @@ class FeatureEngine:
                 ) / df["Close"]
 
         # 9. Volume
-        if "Volume" in df.columns and df["Volume"].sum() > 0 and n > 24:
-            df["vol_sma_ratio"] = (
-                df["Volume"] / df["Volume"].rolling(24, min_periods=1).mean()
-            )
-            df["vol_trend"] = np.where(df["Volume"] > df["Volume"].shift(1), 1, -1)
+        if n > 24:
+            if "Volume" in df.columns and df["Volume"].sum() > 0:
+                vol = df["Volume"].astype(float)
+            else:
+                vol = (df["High"] - df["Low"]) * df["Close"].abs()
+                logger.info("ℹ️ Volume 为 0，使用 HL*Close 代理 Volume")
+            vol_ma = vol.rolling(24, min_periods=1).mean()
+            df["vol_sma_ratio"] = vol / vol_ma.replace(0, np.nan)
+            df["vol_sma_ratio"] = df["vol_sma_ratio"].fillna(1.0)
+            df["vol_trend"] = np.where(vol > vol.shift(1), 1, -1)
 
         # 10. Time features
         if isinstance(df.index, pd.DatetimeIndex):
