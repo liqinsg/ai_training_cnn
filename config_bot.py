@@ -87,19 +87,20 @@ def build_profile_cfg(profile_id: int) -> Dict:
         "WEIGHTS": p["WEIGHTS"],
         "W_S": p["WEIGHTS"]["S"],
         "W_R": p["WEIGHTS"]["R"],
+        "W_G": p["WEIGHTS"].get("G", 0.0),
         "W_A": p["WEIGHTS"]["A"],
         "W_X": p["WEIGHTS"]["X"],
         "W_M": p["WEIGHTS"]["M"],
-        # Canonical WEIGHT_* names — the bot scores via cfg_bot("WEIGHT_XGB", ...),
-        # which consults P first. Without these keys the lookup fell through to
-        # config.py / hard-coded defaults (S=0.40 X=0.20) and silently ignored
-        # the profile's real weights.
         "WEIGHT_STRENGTH": p["WEIGHTS"]["S"],
         "WEIGHT_RSI": p["WEIGHTS"]["R"],
+        "WEIGHT_TREND": p["WEIGHTS"].get("G", 0.0),
+        "WEIGHT_G": p["WEIGHTS"].get("G", 0.0),
         "WEIGHT_ADX": p["WEIGHTS"]["A"],
         "WEIGHT_XGB": p["WEIGHTS"]["X"],
         "WEIGHT_XGBOOST": p["WEIGHTS"]["X"],
         "WEIGHT_MC": p["WEIGHTS"]["M"],
+        "TREND_G_ENABLED": p.get("TREND_G_ENABLED", False),
+        "TREND_G_ADX_MODULATION": p.get("TREND_G_ADX_MODULATION", False),
         "MIN_CONVICTION": p["MIN_CONVICTION"],
         "MIN_GAP": p.get("MIN_GAP", d["MIN_GAP"]),
         "MIN_STRENGTH_GAP": p.get("MIN_GAP", d["MIN_GAP"]),
@@ -245,7 +246,7 @@ def self_test():
     print("\n[2/4] Global Validation")
     print("─" * 36)
     global_weights = {
-        k: v for k, v in {"S": 0.50, "R": 0.15, "A": 0.15, "X": 0.12, "M": 0.08}.items()
+        k: v for k, v in {"S": 0.50, "R": 0.15, "G": 0.00, "A": 0.15, "X": 0.12, "M": 0.08}.items()
     }
     validate_weights(global_weights, "Global defaults")
 
@@ -266,7 +267,8 @@ def self_test():
             f"  Profile{pid} ✅ {cfg['PROFILE_LABEL']} | "
             f"min_conv={cfg['MIN_CONVICTION']} | "
             f"dgate={cfg['D_GATE_ENABLED']} | "
-            f"sum={cfg['W_S']+cfg['W_R']+cfg['W_A']+cfg['W_X']+cfg['W_M']:.4f}"
+            f"trend_g={cfg['TREND_G_ENABLED']} | "
+            f"sum={cfg['W_S']+cfg['W_R']+cfg['W_G']+cfg['W_A']+cfg['W_X']+cfg['W_M']:.4f}"
         )
 
     print("=" * 60)

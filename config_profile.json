@@ -1,8 +1,8 @@
 {
   "version": "6.8.4",
   "meta": {
-    "note": "Consolidated config: global defaults + profile overrides",
-    "source": "profiles_config.json + config_bot.py shared constants"
+    "note": "Consolidated config: global defaults + profile overrides | Updated Profile4 with Trend-G (Scheme A)",
+    "source": "profiles_config.json + config_bot.py shared constants + G-factor integration"
   },
   "global": {
     "feature_settings": {
@@ -108,10 +108,6 @@
       "USE_TOP_PAIRS_ONLY": false,
       "TOP_PAIRS_COUNT": 5,
       "TOP_PAIRS_MIN_GAP": 1.5,
-      "MIN_SCORE_GAP": 0.50,
-      "TOP_N_CURRENCIES": 3,
-      "BASE_MIN_EDGE": 0.50,
-      "BASE_MIN_EDGE_ALT": 0.51,
       "MIN_CONVICTION_SCORE_FALLBACK": 30.0,
       "MIN_CONVICTION_SCORE_ALT": 45.0,
       "COOLDOWN_HOURS_AFTER_TP": 2.0
@@ -134,17 +130,20 @@
     "1": {
       "NAME": "PF-A Trend-Focused",
       "WEIGHTS": {
-        "S": 0.60,
+        "S": 0.55,
         "R": 0.10,
-        "A": 0.10,
+        "G": 0.10,
+        "A": 0.05,
         "X": 0.12,
         "M": 0.08
       },
+      "TREND_G_ENABLED": true,
+      "TREND_G_ADX_MODULATION": false,
       "SKIP_MC": false,
       "MIN_CONVICTION": 50.0,
       "MIN_GAP": 0.25,
       "MIN_SLOPE": 0.0010,
-      "D_GATE_ENABLED": false,
+      "D_GATE_ENABLED": true,
       "MAX_OPEN": 3,
       "TOP_N": 3,
       "ACCOUNT_SUFFIX": "001",
@@ -154,17 +153,20 @@
     "2": {
       "NAME": "PF-B Balanced",
       "WEIGHTS": {
-        "S": 0.50,
+        "S": 0.45,
         "R": 0.15,
-        "A": 0.15,
+        "G": 0.10,
+        "A": 0.10,
         "X": 0.12,
         "M": 0.08
       },
+      "TREND_G_ENABLED": true,
+      "TREND_G_ADX_MODULATION": true,
       "SKIP_MC": false,
       "MIN_CONVICTION": 45.0,
       "MIN_GAP": 0.25,
       "MIN_SLOPE": 0.0007,
-      "D_GATE_ENABLED": false,
+      "D_GATE_ENABLED": true,
       "MAX_OPEN": 3,
       "TOP_N": 3,
       "ACCOUNT_SUFFIX": "002",
@@ -175,12 +177,15 @@
     "3": {
       "NAME": "PF-C Conservative",
       "WEIGHTS": {
-        "S": 0.40,
+        "S": 0.35,
         "R": 0.20,
-        "A": 0.20,
+        "G": 0.08,
+        "A": 0.17,
         "X": 0.12,
         "M": 0.08
       },
+      "TREND_G_ENABLED": true,
+      "TREND_G_ADX_MODULATION": true,
       "SKIP_MC": false,
       "MIN_CONVICTION": 55.0,
       "MIN_GAP": 0.25,
@@ -195,15 +200,17 @@
       "account_id_live": "001-003-21515688-003"
     },
     "4": {
-      "NAME": "PF-D Structure/D-Gate",
+      "NAME": "PF-D Structure/D-Gate + G-A",
       "WEIGHTS": {
-        "S": 0.45,
+        "S": 0.35,
         "R": 0.10,
-        "A": 0.15,
+        "G": 0.15,
+        "A": 0.10,
         "X": 0.20,
         "M": 0.10
       },
-      "SKIP_MC": false,
+      "TREND_G_ENABLED": true,
+      "TREND_G_ADX_MODULATION": true,
       "MIN_CONVICTION": 42.0,
       "MIN_GAP": 0.25,
       "MIN_SLOPE": 0.0003,

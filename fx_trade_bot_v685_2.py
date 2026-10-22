@@ -213,9 +213,16 @@ OWNER_CLIENT_EXT_TAG = f"fx_bot_v{APP_VERSION}_{PROFILE_NAME}_entry"
 # weight factors
 W_S = cfg["W_S"]  # Strength
 W_R = cfg["W_R"]  # RSI
+W_G = cfg.get("W_G", 0.0)  # Trend direction (EMA fast/slow alignment)
 W_A = cfg["W_A"]  # ADX
 W_X = cfg["W_X"]  # XGB
 W_M = cfg["W_M"]  # MonteCarlo
+
+TREND_G_ENABLED = cfg.get("TREND_G_ENABLED", False)
+TREND_G_ADX_MODULATION = cfg.get("TREND_G_ADX_MODULATION", False)
+
+if not TREND_G_ENABLED:
+    W_G = 0.0
 
 # decision thresholds
 MIN_CONVICTION = cfg["MIN_CONVICTION"]  # 最低置信分
@@ -236,7 +243,8 @@ ADX_MIN = cfg["ADX_MIN_SCORE"]
 # ===== 4. Startup Confirmation Log =====
 print("=" * 50)
 print(f"🚀 FX Bot v{VERSION} | {PROFILE_NAME}")
-print(f"⚖️  Weight: S={W_S:.2f} R={W_R:.2f} A={W_A:.2f} X={W_X:.2f} M={W_M:.2f}")
+print(f"⚖️  Weight: S={W_S:.2f} R={W_R:.2f} G={W_G:.2f} A={W_A:.2f} X={W_X:.2f} M={W_M:.2f}")
+print(f"🧭 Trend-G={TREND_G_ENABLED} | ADX-Mod={TREND_G_ADX_MODULATION}")
 print(f"🔧 D-Gate={D_GATE_ENABLED} | 最低置信={MIN_CONVICTION} | 斜率门槛={MIN_SLOPE}")
 print(f"✅ Params Data Source: config_profile.json — Profile{PROFILE_ID}")
 print("=" * 50)
@@ -826,16 +834,24 @@ ADX_BOOST_VALUE = cfg_bot("ADX_BOOST_VALUE", 10.0)
 
 W_S = cfg_bot("WEIGHT_STRENGTH", 0.40)
 W_R = cfg_bot("WEIGHT_RSI", 0.15)
+W_G = cfg_bot("WEIGHT_TREND", cfg_bot("WEIGHT_G", 0.0))
 W_A = cfg_bot("WEIGHT_ADX", 0.15)
 W_X = cfg_bot("WEIGHT_XGB", 0.20)
 W_M = cfg_bot("WEIGHT_MC", 0.10)
-_WEIGHT_SUM = W_S + W_R + W_A + W_X + W_M
+
+_TREND_G_ON = cfg_bot("TREND_G_ENABLED", False)
+_TREND_G_ADX_MOD = cfg_bot("TREND_G_ADX_MODULATION", False)
+if not _TREND_G_ON:
+    W_G = 0.0
+
+_WEIGHT_SUM = W_S + W_R + W_G + W_A + W_X + W_M
 if abs(_WEIGHT_SUM - 1.00) > 0.001:
     log.warning(f"⚠️ Weight sum = {_WEIGHT_SUM:.4f} ≠ 1.00 — normalizing")
-    weights = [w / _WEIGHT_SUM for w in [W_S, W_R, W_A, W_X, W_M]]
-    W_S, W_R, W_A, W_X, W_M = weights
+    weights = [w / _WEIGHT_SUM for w in [W_S, W_R, W_G, W_A, W_X, W_M]]
+    W_S, W_R, W_G, W_A, W_X, W_M = weights
 log.info(
-    f"⚖️  {PROFILE_LABEL} WEIGHTS: S={W_S:.2f} R={W_R:.2f} A={W_A:.2f} X={W_X:.2f} M={W_M:.2f}"
+    f"⚖️  {PROFILE_LABEL} WEIGHTS: S={W_S:.2f} R={W_R:.2f} G={W_G:.2f} A={W_A:.2f} X={W_X:.2f} M={W_M:.2f} | "
+    f"TREND_G={_TREND_G_ON} ADX_MOD={_TREND_G_ADX_MOD}"
 )
 
 # ===== TOP-N STRENGTH — CONFIG-RESOLVED =====
@@ -1362,6 +1378,7 @@ def calc_weighted_score(
     adx_val: float,
     xgb_prob: float,
     mc_pct_up: float,
+    closes=None,
 ):
     MIN_FINAL_SCORE = min_conv
     strength_dir = (
@@ -1478,10 +1495,27 @@ def calc_weighted_score(
         X = max(0.0, min(100.0, S * 0.3 + R * 0.3))
     M = max(0.0, min(100.0, mc_pct_up if mc_pct_up is not None else 50.0))
 
-    FINAL = S * W_S + R * W_R + A * W_A + X * W_X + M * W_M
+    G = 0.0
+    if W_G > 0.0 and closes is not None and len(closes) >= 55:
+        _ema_fast = calculate_ema(closes, D_GATE_EMA_FAST)
+        _ema_slow = calculate_ema(closes, D_GATE_EMA_SLOW)
+        _diff = (_ema_fast - _ema_slow).iloc[-1] / _ema_slow.iloc[-1] if _ema_slow.iloc[-1] != 0 else 0.0
+        _align = 1.0 if _diff > 0.0005 else (-1.0 if _diff < -0.0005 else 0.0)
+        _trend_dir = "BUY" if _align > 0 else ("SELL" if _align < 0 else "NEUTRAL")
+        _aligned = (_trend_dir == direction)
+        _raw = abs(_diff) * 500.0
+        _raw = max(0.0, min(100.0, _raw))
+        G = _raw if _aligned else _raw * 0.2
+        if TREND_G_ADX_MODULATION:
+            _adx_mod = max(0.2, min(1.0, adx_val / 50.0)) if adx_val else 0.2
+            G = G * _adx_mod
+        G = round(max(0.0, min(100.0, G)), 1)
+
+    FINAL = S * W_S + R * W_R + G * W_G + A * W_A + X * W_X + M * W_M
     return direction, {
         "S": round(S, 1),
         "R": round(R, 1),
+        "G": round(G, 1),
         "A": round(A, 1),
         "X": round(X, 1),
         "M": round(M, 1),
@@ -2228,8 +2262,9 @@ def main():
                 f"treating XGB as NEUTRAL (OPT_XGB_MISSING_NEUTRAL)"
             )
 
+        _df_closes = pair_data[pair]["df"]["Close"].dropna().reset_index(drop=True)
         direction, w = calc_weighted_score(
-            pair, gap, rsi_val, adx_val, prob_raw, mc_pct_up
+            pair, gap, rsi_val, adx_val, prob_raw, mc_pct_up, closes=_df_closes
         )
         if direction and w:
             tag = "✅" if w["PASS"] else "❌"
@@ -2237,6 +2272,7 @@ def main():
                 f"{tag} SCORE {pair} {direction} | "
                 f"S={w['S']:5.1f}×{W_S:.2f}={w['S']*W_S:4.1f}  "
                 f"R={w['R']:5.1f}×{W_R:.2f}={w['R']*W_R:4.1f}  "
+                f"G={w['G']:5.1f}×{W_G:.2f}={w['G']*W_G:4.1f}  "
                 f"A={w['A']:5.1f}×{W_A:.2f}={w['A']*W_A:4.1f}  "
                 f"X={w['X']:5.1f}×{W_X:.2f}={w['X']*W_X:4.1f}  "
                 f"M={w['M']:5.1f}×{W_M:.2f}={w['M']*W_M:4.1f}  | FINAL={w['FINAL']:.2f}"
