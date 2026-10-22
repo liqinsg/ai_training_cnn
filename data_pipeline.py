@@ -389,19 +389,23 @@ class FeatureEngine:
 # ──────────────────────────────────────────────────────────────────
 class DataFetcher:
     """Data fetching helper — preserved for backward compatibility."""
+
     def __init__(self, **kwargs):
         # Accept ALL keyword args (use_oanda, config, etc.) without complaining
         self.config = kwargs
-        self.use_oanda = kwargs.get('use_oanda', False)
-        self.api_config = kwargs.get('api_config', None)
+        self.use_oanda = kwargs.get("use_oanda", False)
+        self.api_config = kwargs.get("api_config", None)
 
     def get_candles(self, instrument, granularity, count):
         import pandas as pd
+
         return pd.DataFrame()
 
     def fetch(self, *args, **kwargs):
         import pandas as pd
+
         return pd.DataFrame()
+
 
 # ──────────────────────────────────────────────────────────────────
 # Compatibility stubs — preserved for production imports
@@ -417,93 +421,3 @@ class ATRModule:
 
     def transform(self, df):
         return df
-
-
-class DataFetcher:
-    """Data fetching helper — preserved for backward compatibility."""
-
-    def __init__(self, config=None):
-        self.config = config
-
-    def fetch(self, *args, **kwargs):
-        import pandas as pd
-
-        return pd.DataFrame()
-
-    def get_candles(self, instrument, granularity, count):
-        import pandas as pd
-
-        return pd.DataFrame()
-
-
-class FeatureEngine:
-    """Feature engineering pipeline — preserved for backward compatibility."""
-
-    def __init__(self, config=None):
-        self.config = config
-
-    def fit_transform(self, df):
-        return df
-
-    def transform(self, df):
-        return df
-
-
-# ──────────────────────────────────────────────────────────────────
-# Compatibility Layer — Restore all production imports
-# Covers: FeatureConfig, FeatureEngine, DataFetcher, ATRModule
-# ──────────────────────────────────────────────────────────────────
-
-
-# 1. FeatureConfig
-class FeatureConfig:
-    """Feature configuration — preserved for backward compatibility."""
-
-    def __init__(self, **kwargs):
-        self.__dict__.update(kwargs)
-
-
-# 2. FeatureEngine
-class FeatureEngine:
-    """Feature engineering pipeline — preserved for backward compatibility."""
-
-    def __init__(self, config=None):
-        self.config = config
-
-    def fit_transform(self, df):
-        return df.copy()
-
-    def transform(self, df):
-        return df.copy()
-
-
-# 3. DataFetcher
-class DataFetcher:
-    """Data fetching helper — preserved for backward compatibility."""
-
-    def __init__(self, config=None):
-        self.config = config
-
-    def get_candles(self, instrument, granularity, count):
-        import pandas as pd
-
-        return pd.DataFrame()
-
-    def fetch(self, *args, **kwargs):
-        import pandas as pd
-
-        return pd.DataFrame()
-
-
-# 4. ATRModule
-class ATRModule:
-    """ATR indicator module — preserved for backward compatibility."""
-
-    def __init__(self, config=None):
-        self.config = config
-
-    def fit_transform(self, df):
-        return df.copy()
-
-    def transform(self, df):
-        return df.copy()
