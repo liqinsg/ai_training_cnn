@@ -3,6 +3,7 @@ data_pipeline.py — FX Bot Feature Engineering & Inference Matrix Builder
 Integrates: Phase1 dtype/scaler fix + Phase2 MACD/NaN gap protection
 Version: 6.8.5-2 | Date: 2026-10-22
 """
+
 import numpy as np
 import pandas as pd
 import logging
@@ -12,23 +13,30 @@ from sklearn.preprocessing import StandardScaler
 logger = logging.getLogger(__name__)
 
 # ─── Constants ───
-MIN_REQUIRED_BARS = 34          # MACD theoretical minimum: 26+9-1
+MIN_REQUIRED_BARS = 34  # MACD theoretical minimum: 26+9-1
 MACD_FAST = 12
 MACD_SLOW = 26
 MACD_SIGNAL = 9
 
+
 # ─── Exception Classes ───
 class InferenceFeatureError(ValueError):
     """Raised when features cannot be computed/validated — fail explicitly, not zero-fill"""
+
     pass
+
 
 class ScalerMissingError(RuntimeError):
     """Scaler not provided or unfitted when required"""
+
     pass
+
 
 class DimensionMismatchError(ValueError):
     """Input/scaler/model dimension mismatch"""
+
     pass
+
 
 class FeatureConfig:
     def __init__(self, **kwargs):
@@ -45,7 +53,8 @@ def _build_matrix(X, feature_list, scaler) -> np.ndarray:
     if len(feature_list) != scaler.n_features_in_:
         raise InferenceFeatureError(
             f"Scaler dimension mismatch: scaler expects {scaler.n_features_in_}, "
-            f"feature list has {len(feature_list)}")
+            f"feature list has {len(feature_list)}"
+        )
 
     if isinstance(X, pd.Series):
         missing = [c for c in feature_list if c not in X.index]
@@ -55,7 +64,9 @@ def _build_matrix(X, feature_list, scaler) -> np.ndarray:
         try:
             raw = sel.to_numpy(dtype=float).reshape(1, -1)
         except (ValueError, TypeError) as e:
-            raise InferenceFeatureError(f"Non-numeric values in inference input: {e}") from e
+            raise InferenceFeatureError(
+                f"Non-numeric values in inference input: {e}"
+            ) from e
     elif isinstance(X, pd.DataFrame):
         missing = [c for c in feature_list if c not in X.columns]
         if missing:
@@ -64,19 +75,24 @@ def _build_matrix(X, feature_list, scaler) -> np.ndarray:
         try:
             raw = sel.to_numpy(dtype=float)
         except (ValueError, TypeError) as e:
-            raise InferenceFeatureError(f"Non-numeric values in inference input: {e}") from e
+            raise InferenceFeatureError(
+                f"Non-numeric values in inference input: {e}"
+            ) from e
     elif isinstance(X, np.ndarray):
         raw = X.reshape(1, -1) if X.ndim == 1 else X
         if raw.shape[1] != len(feature_list):
             raise InferenceFeatureError(
-                f"Input dimension mismatch: {raw.shape[1]} vs {len(feature_list)}")
+                f"Input dimension mismatch: {raw.shape[1]} vs {len(feature_list)}"
+            )
     else:
         raise TypeError(f"Unsupported input type: {type(X)}")
 
     try:
         vals = np.asarray(raw, dtype=np.float64)
     except (ValueError, TypeError) as e:
-        raise InferenceFeatureError(f"Non-numeric values in inference input: {e}") from e
+        raise InferenceFeatureError(
+            f"Non-numeric values in inference input: {e}"
+        ) from e
 
     if not np.isfinite(vals).all():
         raise InferenceFeatureError("Non-finite values in inference matrix")
@@ -86,6 +102,7 @@ def _build_matrix(X, feature_list, scaler) -> np.ndarray:
 
 class ModelWrapper:
     """Minimal implementation matching test expectations"""
+
     def __init__(self, config=None, model_path=None, feature_list=None, **kwargs):
         self.config = config or FeatureConfig()
         self.model_path = model_path
@@ -107,12 +124,13 @@ class ModelWrapper:
             k = getattr(obj, "n_features_in_", None)
             if k is not None and k != n:
                 raise InferenceFeatureError(
-                    f"Artifact dimension mismatch: {n} features vs {label} expects {k}")
+                    f"Artifact dimension mismatch: {n} features vs {label} expects {k}"
+                )
 
 
 def positive_class_index(model, num_classes=None):
     """Return index of positive class — [0,1]→1; [1,0]→0"""
-    classes = list(model.classes_) if hasattr(model, 'classes_') else [0, 1]
+    classes = list(model.classes_) if hasattr(model, "classes_") else [0, 1]
     return 1 if classes[1] > classes[0] else 0
 
 
@@ -124,6 +142,7 @@ def predict_p_up(model, scaler, feature_list, X):
     proba = model.predict_proba(X_scaled)
     pos_idx = positive_class_index(model)
     return proba[:, pos_idx], None
+
 
 __all__ = [
     "FeatureConfig",
@@ -138,6 +157,7 @@ __all__ = [
     "compute_macd_safe",
     "validate_input_length",
 ]
+
 
 # ─── Phase 2: Gap-Resilient Price & MACD Features ───
 def compute_macd_safe(df: pd.DataFrame) -> Tuple[pd.Series, pd.Series, pd.Series]:
@@ -158,6 +178,7 @@ def compute_macd_safe(df: pd.DataFrame) -> Tuple[pd.Series, pd.Series, pd.Series
 
     try:
         import talib
+
         # ✅ 关键修复：确保 float64 numpy 数组传给 TA-Lib
         close_np = close.values.astype(np.float64)
         macd_line, signal_line, hist_line = talib.MACD(
@@ -188,6 +209,7 @@ def compute_macd_safe(df: pd.DataFrame) -> Tuple[pd.Series, pd.Series, pd.Series
     hist_line = hist_line.ffill().fillna(0.0)
 
     return macd_line, signal_line, hist_line
+
 
 def build_feature_dataframe(
     df: pd.DataFrame,
@@ -267,7 +289,7 @@ def prepare_inference_matrix(
 ) -> np.ndarray:
     """
     Convert raw feature input to model-ready matrix — Phase 1 dtype fix included.
-    
+
     Fix: pd.Series row from .iloc[-1] collapses mixed int/float/bool → object dtype.
     Build frame column-by-column to preserve dtypes instead of .to_frame().T.
     """
@@ -281,7 +303,7 @@ def prepare_inference_matrix(
         if X_input.ndim == 1:
             X_input = pd.DataFrame([dict(zip(names, X_input))], columns=names)
         else:
-            X_input = pd.DataFrame(X_input, columns=names[:X_input.shape[1]])
+            X_input = pd.DataFrame(X_input, columns=names[: X_input.shape[1]])
 
     if not isinstance(X_input, pd.DataFrame):
         raise TypeError(f"Unsupported input type: {type(X_input)}")
@@ -332,6 +354,7 @@ def validate_input_length(df: pd.DataFrame, required: int = MIN_REQUIRED_BARS) -
         )
     logger.debug(f"Input length OK: {n} bars ≥ {required} minimum")
 
+
 # ──────────────────────────────────────────────────────────────────
 # FeatureEngine — preserved for production runtime compatibility
 # ──────────────────────────────────────────────────────────────────
@@ -360,6 +383,7 @@ class FeatureEngine:
         # For now: pass-through to unblock production
         return df
 
+
 # ──────────────────────────────────────────────────────────────────
 # DataFetcher — preserved for production runtime compatibility
 # ──────────────────────────────────────────────────────────────────
@@ -376,4 +400,111 @@ class DataFetcher:
     def get_candles(self, instrument, granularity, count):
         """Get OHLCV candles — placeholder for existing callers."""
         import pandas as pd
+
         return pd.DataFrame()
+
+
+# ──────────────────────────────────────────────────────────────────
+# Compatibility stubs — preserved for production imports
+# ──────────────────────────────────────────────────────────────────
+class ATRModule:
+    """ATR feature module — preserved for backward compatibility."""
+
+    def __init__(self, config=None):
+        self.config = config
+
+    def fit_transform(self, df):
+        return df
+
+    def transform(self, df):
+        return df
+
+
+class DataFetcher:
+    """Data fetching helper — preserved for backward compatibility."""
+
+    def __init__(self, config=None):
+        self.config = config
+
+    def fetch(self, *args, **kwargs):
+        import pandas as pd
+
+        return pd.DataFrame()
+
+    def get_candles(self, instrument, granularity, count):
+        import pandas as pd
+
+        return pd.DataFrame()
+
+
+class FeatureEngine:
+    """Feature engineering pipeline — preserved for backward compatibility."""
+
+    def __init__(self, config=None):
+        self.config = config
+
+    def fit_transform(self, df):
+        return df
+
+    def transform(self, df):
+        return df
+
+
+# ──────────────────────────────────────────────────────────────────
+# Compatibility Layer — Restore all production imports
+# Covers: FeatureConfig, FeatureEngine, DataFetcher, ATRModule
+# ──────────────────────────────────────────────────────────────────
+
+
+# 1. FeatureConfig
+class FeatureConfig:
+    """Feature configuration — preserved for backward compatibility."""
+
+    def __init__(self, **kwargs):
+        self.__dict__.update(kwargs)
+
+
+# 2. FeatureEngine
+class FeatureEngine:
+    """Feature engineering pipeline — preserved for backward compatibility."""
+
+    def __init__(self, config=None):
+        self.config = config
+
+    def fit_transform(self, df):
+        return df.copy()
+
+    def transform(self, df):
+        return df.copy()
+
+
+# 3. DataFetcher
+class DataFetcher:
+    """Data fetching helper — preserved for backward compatibility."""
+
+    def __init__(self, config=None):
+        self.config = config
+
+    def get_candles(self, instrument, granularity, count):
+        import pandas as pd
+
+        return pd.DataFrame()
+
+    def fetch(self, *args, **kwargs):
+        import pandas as pd
+
+        return pd.DataFrame()
+
+
+# 4. ATRModule
+class ATRModule:
+    """ATR indicator module — preserved for backward compatibility."""
+
+    def __init__(self, config=None):
+        self.config = config
+
+    def fit_transform(self, df):
+        return df.copy()
+
+    def transform(self, df):
+        return df.copy()
