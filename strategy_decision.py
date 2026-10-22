@@ -2,12 +2,15 @@
 strategy_decision.py — v3.0 Defensive
 """
 
+import logging
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Tuple
 from enum import Enum
 import numpy as np
 import pandas as pd
 from config import MAX_TOTAL_TRADES, MAX_PER_USD_GROUP, MAX_PER_JPY_GROUP
+
+logger = logging.getLogger(__name__)
 from data_guard import has_min_bars
 
 
@@ -115,6 +118,9 @@ class StrategyEngine:
 
         # ── 数据边界保护：下面立刻 `df.iloc[-1]`，数据不足时打日志并优雅返回 ──
         if not has_min_bars(df, 5, context="StrategyEngine.generate_signal"):
+            logger.warning(
+                f"[XGB-MISS] {pair}: insufficient bars ({len(df)}) — generate_signal returning None"
+            )
             return None
 
         latest = df.iloc[-1]
@@ -123,6 +129,10 @@ class StrategyEngine:
             p_up = self._predict(latest)
         except Exception as e:
             notes.append(f"Model predict failed: {e}")
+            logger.warning(
+                f"[XGB-MISS] {pair}: model predict failed — {e} — "
+                f"generate_signal returning None"
+            )
             return None
 
         p_down = 1 - p_up
@@ -140,6 +150,9 @@ class StrategyEngine:
         )
         if raw_prob < min_prob:
             notes.append(f"Raw prob {raw_prob:.2%} < min {min_prob:.2%}")
+            logger.info(
+                f"[XGB-MISS] {pair}: raw_prob={raw_prob:.4f} < min={min_prob:.4f} — skipping"
+            )
             return None
 
         score = self.cfg.base_score
@@ -200,6 +213,9 @@ class StrategyEngine:
 
         if score < self.cfg.min_conviction_score:
             notes.append(f"Score {score:.1f} < min {self.cfg.min_conviction_score}")
+            logger.info(
+                f"[XGB-MISS] {pair}: score={score:.1f} < min_conviction={self.cfg.min_conviction_score} — skipping"
+            )
             return None
 
         sl, tp = self._build_sl_tp(

@@ -9,7 +9,6 @@ import sys
 import os
 import subprocess
 
-# import time
 from utils.logging_utils import get_logger
 import argparse
 from pathlib import Path
@@ -47,7 +46,6 @@ from fx_trade_bot_utils_v1 import (
     load_cooldown,
     save_cooldown,
     refresh_tp_cooldown_from_recent_tx,
-    # check_and_record_tp_cooldown,
     get_open_position,
     has_open_trade_with_tags,
     list_open_trades,
@@ -61,16 +59,6 @@ from fx_trade_bot_utils_v1 import (
     load_mc_bundle,
     get_mc_results_dir,
     PositionStatus,
-    # REASON_TAKE_PROFIT,
-    # REASON_TRAIL_STOP,
-    # REASON_TIME_EXPIRY,
-    # REASON_DIRECTION_FLIP,
-    # REASON_SCORE_DROP,
-    # REASON_MC_SHIFT,
-    # REASON_MAX_DRAWDOWN,
-    # REASON_REBALANCE,
-    # REASON_USER_MANUAL,
-    # REASON_OTHER,
 )
 from fx_trade_bot_ml import ensure_model
 
@@ -165,8 +153,7 @@ parser.add_argument(
     default=None,
     help="Override lot size / units per trade (overrides DEFAULT_LOT_SIZE from config)",
 )
-# // FIX-2026-10-10: debug/dev escape hatch — run the full pipeline even when
-# the weekend/holiday guard says the market is closed.
+
 parser.add_argument(
     "--ignore-market-closed",
     action="store_true",
@@ -209,7 +196,7 @@ cfg = C.get_profile(PROFILE_ID)
 # NOTE: APP_VERSION feeds OWNER_TAGS/OWNER_CLIENT_EXT_ID (the multi-account
 # ownership tag), so changing it makes this build stop recognising positions
 # opened by builds tagged "v685". Kept in sync with VERSION below instead.
-APP_VERSION = "685-cooldown"
+APP_VERSION = "685-2"
 VERSION = cfg["VERSION"]
 PROFILE_NAME = f"profile{PROFILE_ID}"
 PROFILE_LABEL = cfg["PROFILE_LABEL"]
@@ -223,30 +210,30 @@ OWNER_CLIENT_EXT_TAG = f"fx_bot_v{APP_VERSION}_{PROFILE_NAME}_entry"
 #                   profile<n> form, not the friendly label.
 #   PROFILE_LABEL : the human-facing name from config_profile.json ("PF-B Balanced").
 
-# 权重
+# weight factors
 W_S = cfg["W_S"]  # Strength
 W_R = cfg["W_R"]  # RSI
 W_A = cfg["W_A"]  # ADX
 W_X = cfg["W_X"]  # XGB
 W_M = cfg["W_M"]  # MonteCarlo
 
-# 判定阈值
+# decision thresholds
 MIN_CONVICTION = cfg["MIN_CONVICTION"]  # 最低置信分
 MIN_SLOPE = cfg["MIN_SLOPE"]  # 趋势斜率门槛
 D_GATE_ENABLED = cfg["D_GATE_ENABLED"]  # 是否启用D-Gate
 MAX_OPEN_POS = cfg["MAX_OPEN"]  # 同时最大持仓
 TOP_N = cfg["TOP_N"]  # 选前N个交易对
 
-# 风控
+# risk management
 SL_MIN_PIPS = cfg["SL_MIN_PIPS"]  # 普通货币对最小止损
 SL_MIN_PIPS_JPY = cfg["SL_MIN_PIPS_JPY"]  # 日元对最小止损
 DEFAULT_LOT = cfg["DEFAULT_LOT_SIZE"]  # 手数
 
-# 信号门槛
+# signal thresholds
 XGB_THRESHOLD = cfg["XGB_BULLISH_THRESHOLD"]
 ADX_MIN = cfg["ADX_MIN_SCORE"]
 
-# ===== 4. 启动确认日志 =====
+# ===== 4. Startup Confirmation Log =====
 print("=" * 50)
 print(f"🚀 FX Bot v{VERSION} | {PROFILE_NAME}")
 print(f"⚖️  Weight: S={W_S:.2f} R={W_R:.2f} A={W_A:.2f} X={W_X:.2f} M={W_M:.2f}")
@@ -1037,7 +1024,9 @@ if (
     and _opt("REQUIRE_LIVE_CONFIRM", False)
     and os.getenv("CONFIRM_LIVE") != "YES"
 ):
-    parser.error("LIVE + EXECUTE blocked: set CONFIRM_LIVE=YES (OPT_REQUIRE_LIVE_CONFIRM is on)")
+    parser.error(
+        "LIVE + EXECUTE blocked: set CONFIRM_LIVE=YES (OPT_REQUIRE_LIVE_CONFIRM is on)"
+    )
 if DRY_RUN_MODE:
     log.info(
         "🧪 DRY_RUN MODE | Full pipeline will run; ONLY "
@@ -1380,11 +1369,11 @@ def calc_weighted_score(
         if gap >= MIN_STRENGTH_GAP
         else "SELL" if gap <= -MIN_STRENGTH_GAP else "NEUTRAL"
     )
-    xgb_prob = xgb_prob or 0.0
+    # [OPT-9] Distinguish "model missing (None)" from "model genuinely returned 0.0".
+    # Only None triggers the NEUTRAL abstain; a real 0.0 still votes SELL below.
+    _xgb_missing = _opt("XGB_MISSING_NEUTRAL", True) and (xgb_prob is None)
+    xgb_prob = xgb_prob if xgb_prob is not None else 0.0
     mc_pct_up = mc_pct_up if mc_pct_up is not None else 50.0
-    # [OPT-9] xgb_prob is coerced to 0.0 when the model gave nothing, which then
-    # voted SELL and scored X=100 for any short.
-    _xgb_missing = _opt("XGB_MISSING_NEUTRAL", False) and not xgb_prob
     xgb_dir = (
         "NEUTRAL"
         if _xgb_missing
@@ -1632,7 +1621,9 @@ def main():
             telegram_send=send_telegram_message,
             dry_run=DRY_RUN_MODE,
             json_log=json_log,
-            **({} if _opt("EARLY_EXIT_PARITY", True) else {"enabled": TRAILING_SL}),  # [OPT-7]
+            **(
+                {} if _opt("EARLY_EXIT_PARITY", True) else {"enabled": TRAILING_SL}
+            ),  # [OPT-7]
         )
 
         def _early_close_wrap(instr, reason_code=None, detail_msg=""):
@@ -2019,7 +2010,9 @@ def main():
                     "rsi": _df.iloc[-1].get("rsi", 50.0),
                     "adx": _df.iloc[-1].get("adx", -1.0),
                 }
-                log.info(f"🛡️ EXIT-COVER: {_p} owned but outside Top-N → added to Step 5")
+                log.info(
+                    f"🛡️ EXIT-COVER: {_p} owned but outside Top-N → added to Step 5"
+                )
             except Exception as _e:
                 log.error(f"❌ EXIT-COVER fetch failed {_p}: {_e}")
 
@@ -2224,8 +2217,16 @@ def main():
             current,
             spread_pips,
         )
-        prob_raw = (getattr(sig, "model_p_up", None) if sig else None) or 0.0
+        _sig_model_missing = sig is None or getattr(sig, "model_p_up", None) is None
+        prob_raw = getattr(sig, "model_p_up", None) if sig else None
         mc_pct_up = mc_cache.get(pair, {}).get("p_up", 50.0)
+        if _sig_model_missing:
+            log.warning(
+                f"⚠️ {pair}: XGB model missing — "
+                f"sig={'None' if sig is None else 'OK'} "
+                f"model_p_up={getattr(sig, 'model_p_up', None) if sig else 'N/A'} — "
+                f"treating XGB as NEUTRAL (OPT_XGB_MISSING_NEUTRAL)"
+            )
 
         direction, w = calc_weighted_score(
             pair, gap, rsi_val, adx_val, prob_raw, mc_pct_up
