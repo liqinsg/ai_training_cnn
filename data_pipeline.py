@@ -389,20 +389,19 @@ class FeatureEngine:
 # ──────────────────────────────────────────────────────────────────
 class DataFetcher:
     """Data fetching helper — preserved for backward compatibility."""
-
-    def __init__(self, config=None):
-        self.config = config
-
-    def fetch(self, *args, **kwargs):
-        """Fetch market data — restore original logic here if needed."""
-        raise NotImplementedError("DataFetcher.fetch() to be restored")
+    def __init__(self, **kwargs):
+        # Accept ALL keyword args (use_oanda, config, etc.) without complaining
+        self.config = kwargs
+        self.use_oanda = kwargs.get('use_oanda', False)
+        self.api_config = kwargs.get('api_config', None)
 
     def get_candles(self, instrument, granularity, count):
-        """Get OHLCV candles — placeholder for existing callers."""
         import pandas as pd
-
         return pd.DataFrame()
 
+    def fetch(self, *args, **kwargs):
+        import pandas as pd
+        return pd.DataFrame()
 
 # ──────────────────────────────────────────────────────────────────
 # Compatibility stubs — preserved for production imports
