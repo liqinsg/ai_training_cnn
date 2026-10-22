@@ -362,9 +362,9 @@ class FeatureEngine:
     """Feature engineering pipeline — kept for backward compatibility.
     Actual feature generation logic remains unchanged; this is a stable API."""
 
-    def __init__(self, config=None):
+    def __init__(self, config=None, **kwargs):
         self.config = config
-        # Placeholder for any learned parameters
+        self.__dict__.update(kwargs)
         self.feature_stats = {}
 
     def fit_transform(self, df):
