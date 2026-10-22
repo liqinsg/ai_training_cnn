@@ -359,3 +359,21 @@ class FeatureEngine:
         # TODO: restore original feature engineering logic if needed
         # For now: pass-through to unblock production
         return df
+
+# ──────────────────────────────────────────────────────────────────
+# DataFetcher — preserved for production runtime compatibility
+# ──────────────────────────────────────────────────────────────────
+class DataFetcher:
+    """Data fetching helper — preserved for backward compatibility."""
+
+    def __init__(self, config=None):
+        self.config = config
+
+    def fetch(self, *args, **kwargs):
+        """Fetch market data — restore original logic here if needed."""
+        raise NotImplementedError("DataFetcher.fetch() to be restored")
+
+    def get_candles(self, instrument, granularity, count):
+        """Get OHLCV candles — placeholder for existing callers."""
+        import pandas as pd
+        return pd.DataFrame()
