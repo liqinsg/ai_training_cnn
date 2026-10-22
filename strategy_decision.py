@@ -130,7 +130,7 @@ class StrategyEngine:
         # ── 数据边界保护：下面立刻 `df.iloc[-1]`，数据不足时打日志并优雅返回 ──
         if not has_min_bars(df, 5, context="StrategyEngine.generate_signal"):
             logger.warning(
-                f"[XGB-MISS] {pair}: insufficient bars ({len(df)}) — generate_signal returning None"
+                f"[XGB-FAIL] {pair}: insufficient bars ({len(df)} < 5) — generate_signal returning None"
             )
             return None
 
@@ -139,9 +139,15 @@ class StrategyEngine:
         try:
             p_up = self._predict(latest)
         except Exception as e:
-            notes.append(f"Model predict failed: {e}")
+            cause = e
+            cause_chain = []
+            while cause is not None:
+                cause_chain.append(f"{type(cause).__name__}: {cause}")
+                cause = cause.__cause__
+            cause_str = " → caused by: ".join(cause_chain) if len(cause_chain) > 1 else cause_chain[0]
+            notes.append(f"Model predict failed: {cause_str}")
             logger.warning(
-                f"[XGB-MISS] {pair}: model predict failed — {e} — "
+                f"[XGB-FAIL] {pair}: predict error [{type(e).__name__}] — {cause_str} — "
                 f"generate_signal returning None"
             )
             return None
@@ -162,7 +168,7 @@ class StrategyEngine:
         if raw_prob < min_prob:
             notes.append(f"Raw prob {raw_prob:.2%} < min {min_prob:.2%}")
             logger.info(
-                f"[XGB-MISS] {pair}: raw_prob={raw_prob:.4f} < min={min_prob:.4f} — skipping"
+                f"[XGB-LOW] {pair}: raw_prob={raw_prob:.4f} < min_edge={min_prob:.4f} — skipping"
             )
             return None
 
@@ -225,7 +231,7 @@ class StrategyEngine:
         if score < self.cfg.min_conviction_score:
             notes.append(f"Score {score:.1f} < min {self.cfg.min_conviction_score}")
             logger.info(
-                f"[XGB-MISS] {pair}: score={score:.1f} < min_conviction={self.cfg.min_conviction_score} — skipping"
+                f"[XGB-LOW] {pair}: score={score:.1f} < min_conviction={self.cfg.min_conviction_score} — skipping"
             )
             return None
 
