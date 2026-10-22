@@ -35,6 +35,7 @@ OANDA_GRANULARITY_MAP = {"15m": "M15", "1H": "H1", "H4": "H4"}
 OANDA_GRANULARITY = OANDA_GRANULARITY_MAP.get(TIMEFRAME, "M15")
 LOOKBACK_BARS = 500
 TARGET_HORIZON = 6
+TARGET_THRESHOLD = 0.0005
 TRAIN_TEST_SPLIT = 0.20
 
 DEFAULT_PAIRS = config.DEFAULT_PAIRS
@@ -105,7 +106,7 @@ def fetch_all_data():
 
         # ── Build TARGET: Did price go UP > threshold in N bars?
         df["future_return"] = df["Close"].shift(-TARGET_HORIZON) / df["Close"] - 1
-        df["target"] = (df["future_return"] > 0.002).astype(int)  # UP > 0.2% = BUY
+        df["target"] = (df["future_return"] > TARGET_THRESHOLD).astype(int)
 
         df["pair"] = pair
         all_dfs.append(df)
