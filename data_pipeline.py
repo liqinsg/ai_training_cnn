@@ -1,50 +1,396 @@
 """
-data_pipeline.py — FX Bot Feature Engineering & Inference Matrix Builder
-Integrates: Phase1 dtype/scaler fix + Phase2 MACD/NaN gap protection
-Version: 6.8.5-2 | Date: 2026-10-22
+data_pipeline.py — v3.1 ADX-Fixed
+ATR-aware, XGBoost-first, bulletproof feature engineering.
 """
+
+import json
+import pickle
+import logging
+import warnings
+from pathlib import Path
+from typing import Optional, List, Dict, Tuple
+from dataclasses import dataclass
+from datetime import datetime, timezone
+
 
 import numpy as np
 import pandas as pd
-import logging
-from typing import Optional, Tuple, List, Dict, Any
+
+from data_guard import trim_to_closed_candles
+
+
+xgboost_available = False
+try:
+    import xgboost as xgb
+
+    xgboost_available = True
+except ImportError:
+    pass
+
+
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import TimeSeriesSplit
 from sklearn.preprocessing import StandardScaler
+
 
 logger = logging.getLogger(__name__)
 
-# ─── Constants ───
-MIN_REQUIRED_BARS = 34  # MACD theoretical minimum: 26+9-1
-MACD_FAST = 12
-MACD_SLOW = 26
-MACD_SIGNAL = 9
 
-
-# ─── Exception Classes ───
+# ─── Inference contract exceptions (Phase 1) ───
 class InferenceFeatureError(ValueError):
-    """Raised when features cannot be computed/validated — fail explicitly, not zero-fill"""
-
-    pass
+    """Raised when the inference row violates the trained feature contract."""
 
 
 class ScalerMissingError(RuntimeError):
-    """Scaler not provided or unfitted when required"""
-
-    pass
+    """Raised when no fitted scaler is available for inference."""
 
 
 class DimensionMismatchError(ValueError):
-    """Input/scaler/model dimension mismatch"""
-
-    pass
+    """Raised on input / scaler / model dimension mismatch."""
 
 
+def adx(high, low, close, period=14):
+    # Ensure we work with Pandas Series to preserve .rolling()
+    high = pd.Series(high)
+    low = pd.Series(low)
+    close = pd.Series(close)
+
+    tr = np.maximum(
+        high - low, np.maximum(abs(high - close.shift(1)), abs(low - close.shift(1)))
+    )
+    plus_dm = np.where(
+        (high - high.shift(1)) > (low.shift(1) - low), high - high.shift(1), 0
+    )
+    minus_dm = np.where(
+        (low.shift(1) - low) > (high - high.shift(1)), low.shift(1) - low, 0
+    )
+
+    # Convert np arrays back to Series so .rolling() works
+    tr = pd.Series(tr)
+    plus_dm = pd.Series(plus_dm, index=high.index)
+    minus_dm = pd.Series(minus_dm, index=high.index)
+
+    atr = tr.rolling(period).mean()
+    plus_di = 100 * (plus_dm.rolling(period).mean() / atr)
+    minus_di = 100 * (minus_dm.rolling(period).mean() / atr)
+    dx = 100 * np.abs(plus_di - minus_di) / (plus_di + minus_di)
+    return dx.rolling(period).mean()
+
+
+@dataclass
 class FeatureConfig:
-    def __init__(self, **kwargs):
-        for k, v in kwargs.items():
-            setattr(self, k, v)
+    use_atr: bool = True
+    atr_period: int = 14
+    atr_sl_mult: float = 2.0
+    atr_tp_mult: float = 3.0
+    atr_position_sizing: bool = True
+    risk_per_trade_pct: float = 0.01
+
+    use_returns: bool = True
+    use_volatility: bool = True
+    use_body_features: bool = True
+
+    use_rsi: bool = True
+    rsi_period: int = 14
+    use_macd: bool = False
+    use_adx: bool = True
+    adx_period: int = 14
+
+    model_type: str = "xgboost"
+    target_horizon: int = 6
+    train_lookback_bars: int = 5000
+    retrain_every_n_days: int = 7
+    required_bars: int = 20  # absolute minimum
+
+
+class ATRModule:
+    def __init__(self, period: int = 14):
+        self.period = period
+
+    def compute(self, df: pd.DataFrame) -> pd.DataFrame:
+        df = df.copy()
+        n = len(df)
+        if n < 2:
+            df["atr"] = np.nan
+            df["atr_pct"] = np.nan
+            df["atr_percentile"] = 0.5
+            df["atr_ma"] = np.nan
+            df["atr_expanding"] = 0
+            df["atr_ratio"] = 1.0
+            df["vol_regime"] = "normal"
+            return df
+
+        try:
+            import pandas_ta as ta
+
+            atr_series = ta.atr(df["High"], df["Low"], df["Close"], length=self.period)
+            if atr_series is None or atr_series.empty:
+                raise ValueError("ta.atr returned None/empty")
+            df["atr"] = atr_series
+        except Exception as e:
+            logger.warning(f"ta.atr failed ({e}), using manual TR")
+            df["tr1"] = df["High"] - df["Low"]
+            df["tr2"] = (df["High"] - df["Close"].shift(1)).abs()
+            df["tr3"] = (df["Low"] - df["Close"].shift(1)).abs()
+            df["tr"] = df[["tr1", "tr2", "tr3"]].max(axis=1)
+            df["atr"] = df["tr"].rolling(window=self.period, min_periods=1).mean()
+            df = df.drop(columns=["tr1", "tr2", "tr3", "tr"], errors="ignore")
+
+        df["atr_pct"] = df["atr"] / df["Close"]
+
+        # ATR percentile — safe rolling min/max method
+        lookback = min(n, max(self.period * 2, 50))
+        atr_min = df["atr"].rolling(window=lookback, min_periods=1).min()
+        atr_max = df["atr"].rolling(window=lookback, min_periods=1).max()
+        atr_range = (atr_max - atr_min).replace(0, np.nan)
+        df["atr_percentile"] = (
+            ((df["atr"] - atr_min) / atr_range).fillna(0.5).clip(0, 1)
+        )
+
+        df["atr_ma"] = df["atr"].rolling(window=self.period, min_periods=1).mean()
+        df["atr_expanding"] = (df["atr"] > df["atr_ma"]).fillna(0).astype(int)
+
+        hist_window = min(n, self.period * 2)
+        atr_hist_mean = (
+            df["atr"]
+            .rolling(window=hist_window, min_periods=1)
+            .mean()
+            .replace(0, np.nan)
+        )
+        df["atr_ratio"] = (df["atr"] / atr_hist_mean).fillna(1.0)
+
+        # Vol regime
+        df["vol_regime"] = "normal"
+        df.loc[df["atr_percentile"] < 0.25, "vol_regime"] = "low"
+        df.loc[df["atr_percentile"] > 0.75, "vol_regime"] = "high"
+
+        return df
+
+    def sl_tp_from_atr(
+        self,
+        entry: float,
+        direction: str,
+        atr_value: float,
+        is_jpy: bool,
+        sl_mult: float = 2.0,
+        tp_mult: float = 3.0,
+    ) -> Tuple[Optional[float], Optional[float]]:
+        if not atr_value or np.isnan(atr_value) or atr_value <= 0:
+            return None, None
+        pip = 0.01 if is_jpy else 0.0001
+        decimals = 3 if is_jpy else 5
+        sl_dist = atr_value * sl_mult
+        tp_dist = atr_value * tp_mult
+        if direction == "SELL":
+            sl = round(entry + sl_dist, decimals)
+            tp = round(entry - tp_dist, decimals)
+        else:
+            sl = round(entry - sl_dist, decimals)
+            tp = round(entry + tp_dist, decimals)
+        if direction == "SELL" and not (sl > entry > tp):
+            return None, None
+        if direction == "BUY" and not (tp > entry > sl):
+            return None, None
+        return sl, tp
+
+    def position_size(
+        self,
+        equity: float,
+        risk_pct: float,
+        entry: float,
+        sl: float,
+        pair: str,
+        atr_value: float,
+    ) -> int:
+        risk_amount = equity * risk_pct
+        sl_distance = abs(entry - sl)
+        if sl_distance == 0:
+            return 0
+        units = int(risk_amount / sl_distance)
+        atr_pct = (atr_value / entry) if entry and atr_value else 0
+        if atr_pct > 0.002:
+            units = int(units * 0.5)
+            logger.info(f"High volatility ({atr_pct:.4f}), halving size")
+        return max(units, 1000)
+
+
+class FeatureEngine:
+    def __init__(self, cfg: FeatureConfig):
+        self.cfg = cfg
+        self.atr_mod = ATRModule(period=cfg.atr_period)
+
+    def build(self, df: pd.DataFrame) -> pd.DataFrame:
+        if df.empty:
+            raise ValueError("Empty DataFrame passed to FeatureEngine")
+        n = len(df)
+        if n < self.cfg.required_bars:
+            logger.warning(
+                f"Only {n} bars, minimum {self.cfg.required_bars} recommended"
+            )
+        df = df.copy()
+
+        # 1. Returns
+        if self.cfg.use_returns:
+            for p in [1, 3, 6, 12]:
+                if n > p:
+                    df[f"ret_{p}h"] = df["Close"].pct_change(p)
+            if n > 1:
+                df["ret_log"] = np.log(df["Close"] / df["Close"].shift(1))
+
+        # 2. Realized volatility
+        if self.cfg.use_volatility:
+            for p in [12, 24, 48]:
+                if n > p:
+                    df[f"vol_{p}h"] = df["Close"].pct_change().rolling(
+                        p, min_periods=1
+                    ).std() * np.sqrt(p * 4)
+
+        # 3. Candle microstructure
+        if self.cfg.use_body_features and n > 1:
+            df["body"] = (df["Close"] - df["Open"]).abs() / df["Open"]
+            df["upper_wick"] = (df["High"] - df[["Close", "Open"]].max(axis=1)) / df[
+                "Open"
+            ]
+            df["lower_wick"] = (df[["Close", "Open"]].min(axis=1) - df["Low"]) / df[
+                "Open"
+            ]
+            df["range"] = (df["High"] - df["Low"]) / df["Open"]
+            df["direction"] = np.where(df["Close"] > df["Open"], 1, -1)
+
+        # 4. ATR
+        if self.cfg.use_atr:
+            try:
+                df = self.atr_mod.compute(df)
+            except Exception as e:
+                logger.error(f"ATR computation failed: {e}")
+
+        # 5. RSI
+        if self.cfg.use_rsi and n > self.cfg.rsi_period:
+            try:
+                import pandas_ta as ta
+
+                df["rsi"] = ta.rsi(df["Close"], length=self.cfg.rsi_period)
+                if df["rsi"] is None or df["rsi"].dropna().empty:
+                    raise ValueError("ta.rsi returned None/empty")
+            except Exception as e:
+                # Manual Wilder RSI, mirroring the ATR fallback above. Without
+                # this the column is absent, downstream `.get("rsi", 50.0)`
+                # silently substitutes 50.0, and the RSI scoring term
+                # ((rsi - 50) * 2) collapses to exactly 0.0 for every pair —
+                # i.e. the configured RSI weight stops existing.
+                logger.warning(f"RSI failed ({e}), using manual Wilder RSI")
+                period = self.cfg.rsi_period
+                delta = df["Close"].diff()
+                gain = delta.clip(lower=0)
+                loss = -delta.clip(upper=0)
+                # Wilder smoothing: alpha = 1/period (matches ta.rsi).
+                avg_gain = gain.ewm(
+                    alpha=1 / period, adjust=False, min_periods=period
+                ).mean()
+                avg_loss = loss.ewm(
+                    alpha=1 / period, adjust=False, min_periods=period
+                ).mean()
+                rs = avg_gain / avg_loss.replace(0.0, np.nan)
+                manual_rsi = 100.0 - (100.0 / (1.0 + rs))
+                # avg_loss == 0 → RSI 100 (pure uptrend); 0/0 → 50 (flat).
+                manual_rsi = manual_rsi.where(avg_loss != 0, 100.0)
+                manual_rsi = manual_rsi.where(
+                    ~((avg_gain == 0) & (avg_loss == 0)), 50.0
+                )
+                df["rsi"] = manual_rsi
+
+            # Slope is computed regardless of which path produced df["rsi"].
+            if n > self.cfg.rsi_period + 3:
+                df["rsi_slope"] = df["rsi"].diff(3)
+
+        # ─── 6. ADX ✅ FIXED: self.config → self.cfg + bar guard ───
+        if self.cfg.use_adx and n > self.cfg.adx_period:
+            df["adx"] = adx(
+                df["High"], df["Low"], df["Close"], self.cfg.adx_period
+            ).fillna(0.0)
+
+        # 7. MACD
+        if self.cfg.use_macd and n > 26:
+            try:
+                import pandas_ta as ta
+
+                macd = ta.macd(df["Close"])
+                if macd is not None and not macd.empty:
+                    df = pd.concat([df, macd], axis=1)
+            except Exception as e:
+                logger.warning(f"MACD failed: {e}")
+
+        # 8. Distance from extremes
+        for p in [24, 48, 96]:
+            if n > p:
+                df[f"dist_high_{p}"] = (
+                    df["Close"] - df["High"].rolling(p, min_periods=1).max()
+                ) / df["Close"]
+                df[f"dist_low_{p}"] = (
+                    df["Close"] - df["Low"].rolling(p, min_periods=1).min()
+                ) / df["Close"]
+
+        # 9. Volume
+        if "Volume" in df.columns and df["Volume"].sum() > 0 and n > 24:
+            df["vol_sma_ratio"] = (
+                df["Volume"] / df["Volume"].rolling(24, min_periods=1).mean()
+            )
+            df["vol_trend"] = np.where(df["Volume"] > df["Volume"].shift(1), 1, -1)
+
+        # 10. Time features
+        if isinstance(df.index, pd.DatetimeIndex):
+            df["hour"] = df.index.hour
+            df["day_of_week"] = df.index.dayofweek
+            df["is_london"] = ((df["hour"] >= 8) & (df["hour"] <= 16)).astype(int)
+            df["is_ny"] = ((df["hour"] >= 13) & (df["hour"] <= 21)).astype(int)
+        else:
+            df["hour"] = 0
+            df["day_of_week"] = 0
+            df["is_london"] = 0
+            df["is_ny"] = 0
+
+        return df
+
+    def build_target(self, df: pd.DataFrame, horizon: int = 6) -> pd.DataFrame:
+        df = df.copy()
+        if len(df) > horizon:
+            future_return = df["Close"].shift(-horizon) / df["Close"] - 1
+            df["target"] = (future_return > 0).astype(int)
+            df["future_return"] = future_return
+        else:
+            df["target"] = np.nan
+            df["future_return"] = np.nan
+        return df
+
+    def get_feature_columns(self, df: pd.DataFrame) -> List[str]:
+        exclude = {
+            "target",
+            "future_return",
+            "Open",
+            "High",
+            "Low",
+            "Close",
+            "Volume",
+            "time",
+            "date",
+            "vol_regime",
+        }
+        cols = []
+        for c in df.columns:
+            if c in exclude:
+                continue
+            dtype = df[c].dtype
+            if np.issubdtype(dtype, np.number):
+                cols.append(c)
+        return cols
 
 
 def _build_matrix(X, feature_list, scaler) -> np.ndarray:
+    """Align `feature_list` order, validate dtypes/values, then scale.
+
+    Fails loudly (never zero-fills) so a broken contract cannot silently
+    produce a fake prediction.
+    """
     if scaler is None:
         raise ScalerMissingError("Scaler not provided")
     if not hasattr(scaler, "n_features_in_"):
@@ -87,32 +433,125 @@ def _build_matrix(X, feature_list, scaler) -> np.ndarray:
     else:
         raise TypeError(f"Unsupported input type: {type(X)}")
 
-    try:
-        vals = np.asarray(raw, dtype=np.float64)
-    except (ValueError, TypeError) as e:
-        raise InferenceFeatureError(
-            f"Non-numeric values in inference input: {e}"
-        ) from e
-
+    vals = np.asarray(raw, dtype=np.float64)
     if not np.isfinite(vals).all():
         raise InferenceFeatureError("Non-finite values in inference matrix")
 
     return scaler.transform(vals)
 
 
+def positive_class_index(model, num_classes=None):
+    """Index of the positive (UP) class — follows model.classes_, not column 1."""
+    classes = list(model.classes_) if hasattr(model, "classes_") else [0, 1]
+    return 1 if classes[1] > classes[0] else 0
+
+
+def predict_p_up(model, scaler, feature_list, X):
+    """Single P(UP) inference entry point shared by wrapper and strategy engine."""
+    if scaler is None:
+        raise ScalerMissingError("Scaler not fitted or provided")
+    X_scaled = _build_matrix(X, feature_list, scaler)
+    proba = model.predict_proba(X_scaled)
+    pos_idx = positive_class_index(model)
+    return proba[:, pos_idx], None
+
+
 class ModelWrapper:
-    """Minimal implementation matching test expectations"""
+    def __init__(self, cfg: FeatureConfig, model_path: Optional[Path] = None):
+        self.cfg = cfg
+        self.model = None
+        self.scaler = StandardScaler()
+        self.feature_names: List[str] = []
+        raw = model_path or Path("trade_model_xgb")
+        p = Path(raw)
+        if p.suffix in (".pkl", ".joblib"):
+            p = p.with_suffix("")
+        self.model_stem = p
+        self.is_xgb = cfg.model_type == "xgboost" and xgboost_available
 
-    def __init__(self, config=None, model_path=None, feature_list=None, **kwargs):
-        self.config = config or FeatureConfig()
-        self.model_path = model_path
-        self.feature_names = feature_list or []
-        self.model = kwargs.get("model")
-        self.scaler = kwargs.get("scaler")
+    @property
+    def _xgb_json(self) -> Path:
+        return self.model_stem.with_suffix(".json")
 
-    def predict_proba(self, X):
+    @property
+    def _scaler_joblib(self) -> Path:
+        return self.model_stem.parent / "scaler.joblib"
+
+    @property
+    def _feat_json(self) -> Path:
+        return self.model_stem.with_suffix(".features.json")
+
+    @property
+    def _cfg_json(self) -> Path:
+        return self.model_stem.with_suffix(".cfg.json")
+
+    @property
+    def _legacy_pkl(self) -> Path:
+        return self.model_stem.with_suffix(".pkl")
+
+    def _create_model(self):
+        if self.is_xgb:
+            return xgb.XGBClassifier(
+                n_estimators=200,
+                max_depth=5,
+                learning_rate=0.05,
+                subsample=0.8,
+                colsample_bytree=0.8,
+                objective="binary:logistic",
+                eval_metric="logloss",
+                random_state=42,
+                n_jobs=-1,
+            )
+        else:
+            logger.warning("XGBoost not available, falling back to RandomForest")
+            return RandomForestClassifier(
+                n_estimators=200,
+                max_depth=8,
+                min_samples_leaf=50,
+                random_state=42,
+                n_jobs=-1,
+            )
+
+    def fit(self, df: pd.DataFrame, feature_cols: List[str]) -> dict:
+        self.feature_names = feature_cols
+        df_clean = df[feature_cols + ["target"]].dropna()
+        if len(df_clean) < 100:
+            raise ValueError(
+                f"Insufficient training data: {len(df_clean)} rows (need >= 100)"
+            )
+
+        X = df_clean[feature_cols].values
+        y = df_clean["target"].values
+        X = self.scaler.fit_transform(X)
+
+        tscv = TimeSeriesSplit(n_splits=3)
+        scores = []
+        for train_idx, val_idx in tscv.split(X):
+            if len(train_idx) < 50 or len(val_idx) < 10:
+                continue
+            X_train, X_val = X[train_idx], X[val_idx]
+            y_train, y_val = y[train_idx], y[val_idx]
+            model = self._create_model()
+            model.fit(X_train, y_train)
+            scores.append(model.score(X_val, y_val))
+
+        self.model = self._create_model()
+        self.model.fit(X, y)
+
+        metrics = {
+            "cv_accuracy": round(np.mean(scores), 4) if scores else None,
+            "train_samples": len(df_clean),
+            "features": len(feature_cols),
+            "model": "xgboost" if self.is_xgb else "sklearn_rf",
+        }
+        self.save()
+        logger.info(f"Model trained: {metrics}")
+        return metrics
+
+    def predict_proba(self, X) -> np.ndarray:
         if self.model is None:
-            raise RuntimeError("Model not set")
+            self.load()
+        # Same strict align + scale path the strategy engine uses.
         X_scaled = _build_matrix(X, self.feature_names, self.scaler)
         return self.model.predict_proba(X_scaled)
 
@@ -127,299 +566,181 @@ class ModelWrapper:
                     f"Artifact dimension mismatch: {n} features vs {label} expects {k}"
                 )
 
+    def feature_importance(self) -> pd.DataFrame:
+        if self.model is None:
+            raise RuntimeError("Model not trained")
+        imp = self.model.feature_importances_
+        return pd.DataFrame(
+            {"feature": self.feature_names, "importance": imp}
+        ).sort_values("importance", ascending=False)
 
-def positive_class_index(model, num_classes=None):
-    """Return index of positive class — [0,1]→1; [1,0]→0"""
-    classes = list(model.classes_) if hasattr(model, "classes_") else [0, 1]
-    return 1 if classes[1] > classes[0] else 0
+    def save(self):
+        import joblib
 
-
-def predict_p_up(model, scaler, feature_list, X):
-    if scaler is None:
-        raise ScalerMissingError("Scaler not fitted or provided")
-
-    X_scaled = _build_matrix(X, feature_list, scaler)
-    proba = model.predict_proba(X_scaled)
-    pos_idx = positive_class_index(model)
-    return proba[:, pos_idx], None
-
-
-__all__ = [
-    "FeatureConfig",
-    "ModelWrapper",
-    "InferenceFeatureError",
-    "ScalerMissingError",
-    "DimensionMismatchError",
-    "positive_class_index",
-    "predict_p_up",
-    "prepare_inference_matrix",
-    "build_feature_dataframe",
-    "compute_macd_safe",
-    "validate_input_length",
-]
-
-
-# ─── Phase 2: Gap-Resilient Price & MACD Features ───
-def compute_macd_safe(df: pd.DataFrame) -> Tuple[pd.Series, pd.Series, pd.Series]:
-    close = df["Close"].copy()
-
-    gap_count = close.isna().sum()
-    if gap_count > 0:
-        logger.warning(
-            f"[DATA-GAP] Close column has {gap_count} NaN value(s) "
-            f"→ forward-fill then back-fill applied"
-        )
-        close = close.ffill().bfill()
-
-    if close.isna().any():
-        raise InferenceFeatureError(
-            "[MACD-FAIL] Persistent NaN in Close after filling — cannot compute MACD"
-        )
-
-    try:
-        import talib
-
-        # ✅ 关键修复：确保 float64 numpy 数组传给 TA-Lib
-        close_np = close.values.astype(np.float64)
-        macd_line, signal_line, hist_line = talib.MACD(
-            close_np,
-            fastperiod=MACD_FAST,
-            slowperiod=MACD_SLOW,
-            signalperiod=MACD_SIGNAL,
-        )
-        idx = df.index
-        macd_line = pd.Series(macd_line, index=idx)
-        signal_line = pd.Series(signal_line, index=idx)
-        hist_line = pd.Series(hist_line, index=idx)
-    except ImportError:
-        # Pandas fallback
-        ema_fast = close.ewm(span=MACD_FAST, adjust=False).mean()
-        ema_slow = close.ewm(span=MACD_SLOW, adjust=False).mean()
-        macd_line = ema_fast - ema_slow
-        signal_line = macd_line.ewm(span=MACD_SIGNAL, adjust=False).mean()
-        hist_line = macd_line - signal_line
-
-    if macd_line.isna().all() or signal_line.isna().all() or hist_line.isna().all():
-        raise InferenceFeatureError(
-            "[MACD-FAIL] All MACD values are NaN after gap fill — insufficient data range"
-        )
-
-    macd_line = macd_line.ffill().fillna(0.0)
-    signal_line = signal_line.ffill().fillna(0.0)
-    hist_line = hist_line.ffill().fillna(0.0)
-
-    return macd_line, signal_line, hist_line
-
-
-def build_feature_dataframe(
-    df: pd.DataFrame,
-    feature_list: List[str],
-    use_macd: bool = True,
-) -> pd.DataFrame:
-    """
-    Build aligned feature DataFrame matching .features.json order & definition.
-    Only columns listed in feature_list are returned.
-    """
-    X = pd.DataFrame(index=df.index)
-
-    # ─── Price / Basic ───
-    if "return_1" in feature_list:
-        X["return_1"] = df["Close"].pct_change(1)
-    if "return_4" in feature_list:
-        X["return_4"] = df["Close"].pct_change(4)
-    if "return_12" in feature_list:
-        X["return_12"] = df["Close"].pct_change(12)
-    if "volatility_12" in feature_list:
-        X["volatility_12"] = df["Close"].pct_change(1).rolling(12).std()
-    if "high_low_range" in feature_list:
-        X["high_low_range"] = (df["High"] - df["Low"]) / df["Close"]
-    if "close_vs_ma20" in feature_list:
-        ma20 = df["Close"].rolling(20).mean()
-        X["close_vs_ma20"] = (df["Close"] - ma20) / ma20
-
-    # ─── RSI ───
-    if any(c.startswith("rsi_") for c in feature_list):
-        delta = df["Close"].diff()
-        gain = delta.where(delta > 0, 0).rolling(14).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
-        rs = gain / (loss + 1e-8)
-        rsi = 100 - (100 / (1 + rs))
-        if "rsi" in feature_list:
-            X["rsi"] = rsi
-        if "rsi_slope" in feature_list:
-            X["rsi_slope"] = rsi.diff(3)
-
-    # ─── MACD (Phase 2 protected) ───
-    macd_cols = ["macd_line", "macd_signal", "macd_hist"]
-    if use_macd and any(c in feature_list for c in macd_cols):
-        try:
-            ml, ms, mh = compute_macd_safe(df)
-            if "macd_line" in feature_list:
-                X["macd_line"] = ml
-            if "macd_signal" in feature_list:
-                X["macd_signal"] = ms
-            if "macd_hist" in feature_list:
-                X["macd_hist"] = mh
-        except InferenceFeatureError as e:
-            logger.warning(f"[BUILD-SKIP] {e} — MACD columns will be missing")
-
-    # ─── Time features ───
-    if "hour" in feature_list:
-        X["hour"] = df.index.hour
-    if "day_of_week" in feature_list:
-        X["day_of_week"] = df.index.dayofweek
-    if "is_ny" in feature_list:
-        # NY session approx: UTC 12–21
-        X["is_ny"] = ((df.index.hour >= 12) & (df.index.hour < 21)).astype(int)
-
-    # ─── Reorder to EXACT match training feature list ───
-    missing = [c for c in feature_list if c not in X.columns]
-    if missing:
-        raise InferenceFeatureError(f"Missing required features: {missing}")
-
-    return X[feature_list].copy()
-
-
-# ─── Phase 1 Core Fix: Mixed-dtype Series Row Handling ───
-def prepare_inference_matrix(
-    X_input,
-    feature_list: List[str],
-    scaler: Optional[StandardScaler] = None,
-    validate_dims: bool = True,
-) -> np.ndarray:
-    """
-    Convert raw feature input to model-ready matrix — Phase 1 dtype fix included.
-
-    Fix: pd.Series row from .iloc[-1] collapses mixed int/float/bool → object dtype.
-    Build frame column-by-column to preserve dtypes instead of .to_frame().T.
-    """
-    names = list(feature_list)
-
-    # ─── Input shape normalization ───
-    if isinstance(X_input, pd.Series):
-        # Phase 1 FIX: preserve per-column dtypes instead of object cast
-        X_input = pd.DataFrame({c: [X_input[c]] for c in names if c in X_input.index})
-    elif isinstance(X_input, np.ndarray):
-        if X_input.ndim == 1:
-            X_input = pd.DataFrame([dict(zip(names, X_input))], columns=names)
+        if self.is_xgb and xgboost_available:
+            self.model.save_model(str(self._xgb_json))
         else:
-            X_input = pd.DataFrame(X_input, columns=names[: X_input.shape[1]])
+            with open(self._xgb_json.with_suffix(".sklearn.pkl"), "wb") as f:
+                pickle.dump(self.model, f)
+        joblib.dump(self.scaler, self._scaler_joblib)
+        with open(self._feat_json, "w") as f:
+            json.dump(self.feature_names, f, indent=2)
+        with open(self._cfg_json, "w") as f:
+            json.dump(
+                self.cfg.__dict__ if hasattr(self.cfg, "__dict__") else self.cfg,
+                f,
+                indent=2,
+            )
+        logger.info(f"Model saved → {self._xgb_json}")
 
-    if not isinstance(X_input, pd.DataFrame):
-        raise TypeError(f"Unsupported input type: {type(X_input)}")
+    def load(self):
+        import joblib
 
-    # ─── Align columns ───
-    if list(X_input.columns) != names:
-        try:
-            X_input = X_input[names]
-        except KeyError as e:
-            raise InferenceFeatureError(f"Feature name mismatch: {e}") from e
+        xgb_ok = self._xgb_json.exists()
+        scaler_ok = self._scaler_joblib.exists()
+        feat_ok = self._feat_json.exists()
 
-    # ─── dtype validation ───
-    object_cols = X_input.select_dtypes(include=["object"]).columns.tolist()
-    if object_cols:
-        raise InferenceFeatureError(
-            f"Non-numeric columns in inference: {object_cols} — dtype preservation failed"
+        if xgb_ok and scaler_ok and feat_ok:
+            if self.is_xgb and xgboost_available:
+                self.model = xgb.XGBClassifier()
+                self.model.load_model(str(self._xgb_json))
+            else:
+                with open(self._xgb_json.with_suffix(".sklearn.pkl"), "rb") as f:
+                    self.model = pickle.load(f)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", DeprecationWarning)
+                self.scaler = joblib.load(self._scaler_joblib)
+            with open(self._feat_json) as f:
+                self.feature_names = json.load(f)
+            if self._cfg_json.exists():
+                with open(self._cfg_json) as f:
+                    cfg_dict = json.load(f)
+                if isinstance(self.cfg, FeatureConfig):
+                    for k, v in cfg_dict.items():
+                        setattr(self.cfg, k, v)
+            logger.info(f"Loaded split model → {self._xgb_json.parent}")
+            self._validate_loaded_artifacts()
+            return
+
+        if self._legacy_pkl.exists():
+            logger.warning(
+                f"Split artifacts missing — falling back to legacy {self._legacy_pkl} and re-migrating"
+            )
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                with open(self._legacy_pkl, "rb") as f:
+                    payload = pickle.load(f)
+            self.model = payload["model"]
+            self.scaler = payload["scaler"]
+            self.feature_names = payload["feature_names"]
+            self.cfg = payload.get("cfg", self.cfg)
+            self._validate_loaded_artifacts()
+            self.save()
+            return
+
+        raise FileNotFoundError(
+            f"No model found — looked for {self._xgb_json}, {self._scaler_joblib}, {self._feat_json}, {self._legacy_pkl}"
         )
 
-    # ─── Scaler transform ───
-    values = X_input.values.astype(np.float64)
 
-    if scaler is not None:
-        if validate_dims:
-            expect_feat = getattr(scaler, "n_features_in_", len(names))
-            if values.shape[1] != expect_feat:
-                raise InferenceFeatureError(
-                    f"Scaler dimension mismatch: scaler expects {expect_feat}, "
-                    f"input has {values.shape[1]}"
-                )
-        values = scaler.transform(values)
-
-    # ─── Sanitize extremities ───
-    # ─── Sanitize extremities ───
-    if np.isnan(values).any():
-        raise InferenceFeatureError("Non-finite values in inference matrix")
-    if np.isinf(values).any():
-        raise InferenceFeatureError("Non-finite values in inference matrix")
-
-    return values
-
-
-# ─── Utility ───
-def validate_input_length(df: pd.DataFrame, required: int = MIN_REQUIRED_BARS) -> None:
-    n = len(df)
-    if n < required:
-        raise InferenceFeatureError(
-            f"Insufficient data: {n} bars available, minimum {required} required"
-        )
-    logger.debug(f"Input length OK: {n} bars ≥ {required} minimum")
-
-
-# ──────────────────────────────────────────────────────────────────
-# FeatureEngine — preserved for production runtime compatibility
-# ──────────────────────────────────────────────────────────────────
-class FeatureEngine:
-    """Feature engineering pipeline — kept for backward compatibility.
-    Actual feature generation logic remains unchanged; this is a stable API."""
-
-    def __init__(self, config=None, **kwargs):
-        self.config = config
-        self.__dict__.update(kwargs)
-        self.feature_stats = {}
-
-    def fit_transform(self, df):
-        """Fit to data and return transformed features."""
-        return self._engineer_features(df, fit=True)
-
-    def transform(self, df):
-        """Transform new data using learned parameters."""
-        return self._engineer_features(df, fit=False)
-
-    def _engineer_features(self, df, fit=False):
-        """Core feature generation — keep existing logic here."""
-        df = df.copy()
-
-        # TODO: restore original feature engineering logic if needed
-        # For now: pass-through to unblock production
-        return df
-
-
-# ──────────────────────────────────────────────────────────────────
-# DataFetcher — preserved for production runtime compatibility
-# ──────────────────────────────────────────────────────────────────
 class DataFetcher:
-    """Data fetching helper — preserved for backward compatibility."""
+    def __init__(
+        self, use_oanda: bool = True, oanda_api=None, oanda_granularity: str = "M15"
+    ):
+        self.use_oanda = use_oanda
+        self.oanda_api = oanda_api
+        self.oanda_granularity = oanda_granularity
 
-    def __init__(self, **kwargs):
-        # Accept ALL keyword args (use_oanda, config, etc.) without complaining
-        self.config = kwargs
-        self.use_oanda = kwargs.get("use_oanda", False)
-        self.api_config = kwargs.get("api_config", None)
+    def fetch(
+        self,
+        pair: str,
+        oanda_sym: str,
+        count: int = 200,
+        granularity: str = None,
+    ) -> pd.DataFrame:
+        g = granularity or self.oanda_granularity
+        if self.use_oanda and self.oanda_api:
+            return self._from_oanda(oanda_sym, count, g)
+        else:
+            return self._from_yfinance(pair, count, g)
 
-    def get_candles(self, instrument, granularity, count):
-        import pandas as pd
+    def _from_oanda(
+        self, instrument: str, count: int, granularity: str = None
+    ) -> pd.DataFrame:
+        from oandapyV20.endpoints.instruments import InstrumentsCandles
 
-        return pd.DataFrame()
-
-    def fetch(self, *args, **kwargs):
-        import pandas as pd
-
-        return pd.DataFrame()
-
-
-# ──────────────────────────────────────────────────────────────────
-# Compatibility stubs — preserved for production imports
-# ──────────────────────────────────────────────────────────────────
-class ATRModule:
-    """ATR feature module — preserved for backward compatibility."""
-
-    def __init__(self, config=None, period=14, **kwargs):
-        self.config = config
-        self.period = period
-        self.__dict__.update(kwargs)
-
-    def fit_transform(self, df):
+        g = granularity or self.oanda_granularity
+        resp = self.oanda_api.request(
+            InstrumentsCandles(
+                instrument=instrument, params={"count": count, "granularity": g}
+            )
+        )
+        candles = resp.get("candles", [])
+        rows = []
+        for c in candles:
+            mid = c.get("mid", {})
+            if not mid:
+                continue
+            try:
+                rows.append(
+                    {
+                        "time": pd.to_datetime(c["time"]),
+                        "Open": float(mid["o"]),
+                        "High": float(mid["h"]),
+                        "Low": float(mid["l"]),
+                        "Close": float(mid["c"]),
+                        "Volume": float(c.get("volume", 0)),
+                    }
+                )
+            except Exception:
+                continue
+        df = pd.DataFrame(rows)
+        if df.empty:
+            logger.warning(f"OANDA returned no candles for {instrument}")
+            return pd.DataFrame(columns=["Open", "High", "Low", "Close", "Volume"])
+        df = df.set_index("time").astype(
+            {
+                "Open": float,
+                "High": float,
+                "Low": float,
+                "Close": float,
+                "Volume": float,
+            }
+        )
+        df = trim_to_closed_candles(df, granularity=g, context=instrument)
         return df
 
-    def transform(self, df):
-        return df
+    def _from_yfinance(
+        self, pair: str, count: int, granularity: str = None
+    ) -> pd.DataFrame:
+        import yfinance as yf
+
+        period_map = {
+            "D": "1y",
+            "W": "2y",
+            "M": "5y",
+            "H1": "3mo",
+            "H4": "6mo",
+            "M15": "5d",
+            "M5": "5d",
+            "M1": "5d",
+        }
+        interval_map = {
+            "D": "1d",
+            "W": "1wk",
+            "M": "1mo",
+            "H1": "1h",
+            "H4": "4h",
+            "M15": "15m",
+            "M5": "5m",
+            "M1": "1m",
+        }
+        g = granularity or self.oanda_granularity
+        interval = interval_map.get(g, "15m")
+        period = period_map.get(g, "5d")
+        df = yf.download(pair, period=period, interval=interval, progress=False)
+        if df.empty:
+            return pd.DataFrame(columns=["Open", "High", "Low", "Close", "Volume"])
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = [c[0] for c in df.columns]
+        return df[["Open", "High", "Low", "Close", "Volume"]].tail(count)
