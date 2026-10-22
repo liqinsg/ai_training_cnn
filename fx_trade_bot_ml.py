@@ -67,6 +67,19 @@ def ensure_model(
         model_wrapper.load()
         logger.info(f"Loaded model from {xgb_json}")
 
+    # Dependency injection: hand the strategy engine the *same* model / scaler /
+    # feature-order instances the wrapper trained or loaded.  Never reload a
+    # second copy of the scaler here — a separate copy is exactly how the
+    # training-scale/inference-scale mismatch happened before.
     strat_engine.model = model_wrapper.model
+    strat_engine.scaler = model_wrapper.scaler
     strat_engine.features = model_wrapper.feature_names
+    logger.info(
+        "Inference wiring: model_n_features=%s scaler_n_features=%s "
+        "features=%s use_macd=%s",
+        getattr(model_wrapper.model, "n_features_in_", "?"),
+        getattr(model_wrapper.scaler, "n_features_in_", "?"),
+        len(model_wrapper.feature_names),
+        getattr(FEAT_CFG, "use_macd", "?"),
+    )
     return model_wrapper, strat_engine

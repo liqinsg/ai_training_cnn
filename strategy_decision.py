@@ -12,6 +12,7 @@ from config import MAX_TOTAL_TRADES, MAX_PER_USD_GROUP, MAX_PER_JPY_GROUP
 
 logger = logging.getLogger(__name__)
 from data_guard import has_min_bars
+from data_pipeline import ScalerMissingError, predict_p_up
 
 
 class Direction(Enum):
@@ -84,10 +85,20 @@ class Signal:
 
 
 class StrategyEngine:
-    def __init__(self, config: StrategyConfig, model, feature_list: List[str]):
+    def __init__(
+        self,
+        config: StrategyConfig,
+        model,
+        feature_list: List[str],
+        scaler=None,
+    ):
         self.cfg = config
         self.model = model
         self.features = feature_list
+        # Fitted StandardScaler from the training run.  It is injected by
+        # ensure_model() as the *same instance* ModelWrapper loaded — this class
+        # never loads or refits its own copy.
+        self.scaler = scaler
 
     def should_close(
         self, position_units: int, latest_features: pd.Series
@@ -267,9 +278,19 @@ class StrategyEngine:
         return winners
 
     def _predict(self, latest: pd.Series) -> float:
-        row = {f: latest.get(f, 0.0) for f in self.features}
-        X = pd.DataFrame([row])
-        return float(self.model.predict_proba(X.values)[0, 1])
+        """Return P(UP) using the training scaler and feature order.
+
+        The row is aligned to ``self.features`` (the exact order stored in
+        ``.features.json``) and scaled with the injected training scaler before
+        the model is called.  Missing columns, object dtypes and NaN/inf values
+        raise instead of being zero-filled into a fake prediction.
+        """
+        if self.scaler is None:
+            raise ScalerMissingError(
+                "StrategyEngine has no scaler — refusing to predict on unscaled "
+                "features (ensure_model() must inject model_wrapper.scaler)"
+            )
+        return float(np.ravel(predict_p_up(self.model, self.scaler, self.features, latest)[0])[0])
 
     def _score_model_edge(self, edge: float) -> float:
         normalized = min(edge / 0.20, 1.0)

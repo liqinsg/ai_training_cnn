@@ -223,7 +223,7 @@ def resolve_account_id(
 def validate_weights(weights: Dict, label: str, tol: float = 0.005) -> bool:
     s = sum(weights.values())
     ok = abs(s - 1.0) <= tol
-    status = "✅" if ok else "⚠️"
+    # status = "✅" if ok else "⚠️"
     logger.info(f"   {label}")
     for k, v in weights.items():
         logger.info(f"   Weight {k}: {v:.4f}")
@@ -246,7 +246,15 @@ def self_test():
     print("\n[2/4] Global Validation")
     print("─" * 36)
     global_weights = {
-        k: v for k, v in {"S": 0.50, "R": 0.15, "G": 0.00, "A": 0.15, "X": 0.12, "M": 0.08}.items()
+        k: v
+        for k, v in {
+            "S": 0.50,
+            "R": 0.15,
+            "G": 0.00,
+            "A": 0.15,
+            "X": 0.12,
+            "M": 0.08,
+        }.items()
     }
     validate_weights(global_weights, "Global defaults")
 
