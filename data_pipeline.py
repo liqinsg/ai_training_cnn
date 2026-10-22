@@ -413,8 +413,10 @@ class DataFetcher:
 class ATRModule:
     """ATR feature module — preserved for backward compatibility."""
 
-    def __init__(self, config=None):
+    def __init__(self, config=None, period=14, **kwargs):
         self.config = config
+        self.period = period
+        self.__dict__.update(kwargs)
 
     def fit_transform(self, df):
         return df
