@@ -1,0 +1,28 @@
+# ═══════════════════════════════════════════════════════════════
+# FX TRADE BOT v6.8.3 — DEMO MODE (no --live) — 4-Profile
+# ═══════════════════════════════════════════════════════════════
+# PF-A — Trend
+*/15 * * * 1-5 cd $HOME/projects/ai_training_cnn && /usr/local/bin/jitter-run.sh -m 1 -- /home/ubuntu/miniconda3/envs/ai-sprint/bin/python fx_trade_bot_v685_1.py -p 1 >> logs/bot_profile1_A.log 2>&1
+
+# PF-B — Balanced
+*/15 * * * 1-5 cd $HOME/projects/ai_training_cnn && /usr/local/bin/jitter-run.sh -m 2 -- /home/ubuntu/miniconda3/envs/ai-sprint/bin/python fx_trade_bot_v685_1.py -p 2 >> logs/bot_profile2_B.log 2>&1
+
+# PF-C — Conservative
+*/15 * * * 1-5 cd $HOME/projects/ai_training_cnn && /usr/local/bin/jitter-run.sh -m 3 -- /home/ubuntu/miniconda3/envs/ai-sprint/bin/python fx_trade_bot_v685_1.py -p 3 >> logs/bot_profile3_C.log 2>&1
+
+# PF-D — Structure
+*/15 * * * 1-5 cd $HOME/projects/ai_training_cnn && /usr/local/bin/jitter-run.sh -m 4 -- /home/ubuntu/miniconda3/envs/ai-sprint/bin/python fx_trade_bot_v685_1.py -p 4 >> logs/bot_profile4_D.log 2>&1
+
+# ═══════════════════════════════════════════════════════════════
+# Attribution V2 — Analysis & Dashboard
+# ═══════════════════════════════════════════════════════════════
+0 * * * * /usr/local/bin/jitter-run.sh -m 10 -- $HOME/projects/ai_training_cnn/refresh_dashboard.sh
+
+# ─── Maintenance ─────────────────────────────────────────────────
+0 0 * * 0 cd $HOME/projects/ai_training_cnn && mv logs/bot_h4.log logs/bot_h4_$(date +\%Y\%m\%d).log && touch logs/bot_h4.log
+0 3 * * 1-5 find $HOME/projects/ai_training_cnn/daily_results -name "*.json" -mtime +7 -delete
+0 0 * * 1-5 cd $HOME/projects/ai_training_cnn && /home/ubuntu/miniconda3/envs/ai-sprint/bin/python retrain_model.py >> logs/bot_cron.log 2>&1
+
+
+# MC data updates                                                                                                                                                                           
+0 8 * * *  $HOME/projects/fx_monte_carlo/run_fx_mc.sh >> $HOME/projects/fx_monte_carlo/mc_cron.log 2>&1
