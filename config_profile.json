@@ -70,7 +70,7 @@
             "BE_TRIGGER_ATR_MULT": 2.5,
             "TRAIL_TRIGGER_ATR_MULT": 3.5,
             "TRAIL_ATR_MULT": 2.0,
-            "MAX_HOLD_BARS": 48
+            "MAX_HOLD_BARS": 9999
         },
         "confluence_filter": {
             "MULTI_TF_CONFLUENCE": false,
@@ -123,7 +123,7 @@
         "D_GATE_CONFIRM": "2H1",
         "MAX_ENTRIES_THIS_RUN": 3,
         "TRAIL_ATR_MULT": 2.0,
-        "MAX_HOLD_BARS": 48,
+        "MAX_HOLD_BARS": 9999,
         "USE_TOP_PAIRS_ONLY": true,
         "MIN_REQUIRED_BARS": 34
     },
