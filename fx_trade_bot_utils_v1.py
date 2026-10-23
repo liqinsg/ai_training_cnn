@@ -1457,6 +1457,24 @@ def load_mc_legacy(
     return None, False
 
 
+def normalize_mc_pair_key(raw_key):
+    """Canonicalise an MC bundle key to OANDA-native form (e.g. EUR_USD).
+
+    Handles every format the generator / consumers may emit:
+      - Yahoo Finance : "EURUSD=X"  -> "EUR_USD"
+      - slash         : "EUR/USD"   -> "EUR_USD"
+      - bare          : "EURUSD"    -> "EUR_USD"
+      - already native: "EUR_USD"   -> "EUR_USD"
+    """
+    if not isinstance(raw_key, str):
+        return raw_key
+    s = raw_key.strip().upper().replace("=X", "").replace("=", "")
+    s = s.replace("/", "_").replace("-", "_").replace(" ", "")
+    if "_" not in s and len(s) == 6:
+        s = f"{s[:3]}_{s[3:]}"
+    return s
+
+
 def load_mc_bundle(mc_dir: Path, timeframe_prefix: str = "D"):
     """Load pre-computed MC bundle from mc_results/ based on filename date.
 
@@ -1517,10 +1535,19 @@ def load_mc_bundle(mc_dir: Path, timeframe_prefix: str = "D"):
     try:
         with open(f) as j:
             data = json.load(j)
-        bundle = data.get("results", data) if isinstance(data, dict) else {}
-        if not bundle:
+        raw_bundle = data.get("results", data) if isinstance(data, dict) else {}
+        if not raw_bundle:
             logger.warning(f"⚠️ MC bundle {f.name} has empty 'results'")
             return None, False, None
+        # Normalise every key to OANDA-native form so callers looking up
+        # "EUR_USD" match bundles keyed by "EURUSD=X" / "EUR/USD" / "EURUSD".
+        bundle = {}
+        for k, v in raw_bundle.items():
+            canon = normalize_mc_pair_key(k)
+            if isinstance(v, dict):
+                v = dict(v)
+                v["pair"] = normalize_mc_pair_key(v.get("pair", canon))
+            bundle[canon] = v
         return bundle, True, f.name
     except Exception as e:
         logger.warning(f"⚠️ Failed to load MC bundle {f.name}: {e}")
@@ -1528,16 +1555,35 @@ def load_mc_bundle(mc_dir: Path, timeframe_prefix: str = "D"):
 
 
 def get_mc_results_dir():
-    """Return the mc_results directory path (sibling to the fx_monte_carlo project)."""
+    """Return the mc_results directory as an ABSOLUTE path.
+
+    Single source of truth (first hit wins):
+      1. env var ``MC_RESULTS_DIR``
+      2. config_profile.json → global.monte_carlo.MC_RESULTS_DIR
+      3. known absolute fallbacks (siblings of this project)
+    """
+    env_dir = os.getenv("MC_RESULTS_DIR")
+    if env_dir:
+        return Path(env_dir).expanduser().resolve()
+
+    try:
+        import config_bot as _cb  # lazy import: avoid import-order coupling
+
+        cfg_dir = _cb.GLOBAL.get("monte_carlo", {}).get("MC_RESULTS_DIR")
+        if cfg_dir:
+            return Path(cfg_dir).expanduser().resolve()
+    except Exception:
+        pass
+
     candidates = [
         Path.home() / "projects" / "fx_monte_carlo" / "mc_results",
         Path(__file__).resolve().parent.parent / "fx_monte_carlo" / "mc_results",
-        Path("/home/qili/projects/fx_monte_carlo/mc_results"),
+        Path("/home/ubuntu/projects/fx_monte_carlo/mc_results"),
     ]
     for c in candidates:
         if c.is_dir():
-            return c
-    return candidates[0]
+            return c.resolve()
+    return candidates[0].resolve()
 
 
 def build_mc_telegram(mc_results, title, tf, lookback, fcst, sims):

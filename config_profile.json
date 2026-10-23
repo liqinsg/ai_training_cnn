@@ -32,6 +32,7 @@
             "PERIODS_YEAR_D": 252
         },
         "monte_carlo": {
+            "MC_RESULTS_DIR": "$HOME/projects/fx_monte_carlo/mc_results",
             "MC_REPORT_TITLE": "FX H4 MONTE CARLO",
             "MC_REPORT_TITLE_D": "FX DAILY MONTE CARLO",
             "MC_MAX_AGE_HOURS": 24,
