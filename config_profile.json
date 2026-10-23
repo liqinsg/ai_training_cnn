@@ -110,7 +110,7 @@
             "TOP_PAIRS_MIN_GAP": 1.5,
             "MIN_CONVICTION_SCORE_FALLBACK": 30.0,
             "MIN_CONVICTION_SCORE_ALT": 45.0,
-            "COOLDOWN_HOURS_AFTER_TP": 0.30
+            "COOLDOWN_HOURS_AFTER_TP": 3
         },
         "validation": {
             "CONFIG_VALIDATION_ENABLED": true,
