@@ -1,8 +1,8 @@
 {
     "version": "6.8.4",
     "meta": {
-        "note": "Consolidated config: global defaults + profile overrides | Updated Profile4 with Trend-G (Scheme A)",
-        "source": "profiles_config.json + config_bot.py shared constants + G-factor integration"
+        "note": "v2026b: MAX_OPEN=6 for PF2/PF4, relaxed exit thresholds, cooldown=3h",
+        "source": "Unified config — PF2/PF4 expanded to 6 positions"
     },
     "global": {
         "feature_settings": {
@@ -66,11 +66,11 @@
             "DYNAMIC_TP": false,
             "TRAILING_TP": false,
             "TRAILING_SL": false,
-            "TP_RAISE_THRESHOLD_PIPS": 15,
-            "BE_TRIGGER_ATR_MULT": 1.5,
-            "TRAIL_TRIGGER_ATR_MULT": 2.5,
-            "TRAIL_ATR_MULT": 1.5,
-            "MAX_HOLD_BARS": 12
+            "TP_RAISE_THRESHOLD_PIPS": 25,
+            "BE_TRIGGER_ATR_MULT": 2.5,
+            "TRAIL_TRIGGER_ATR_MULT": 3.5,
+            "TRAIL_ATR_MULT": 2.0,
+            "MAX_HOLD_BARS": 48
         },
         "confluence_filter": {
             "MULTI_TF_CONFLUENCE": false,
@@ -126,7 +126,6 @@
         "MAX_HOLD_BARS": 48,
         "USE_TOP_PAIRS_ONLY": true,
         "MIN_REQUIRED_BARS": 34
-
     },
     "profiles": {
         "1": {
@@ -169,8 +168,8 @@
             "MIN_GAP": 0.25,
             "MIN_SLOPE": 0.0007,
             "D_GATE_ENABLED": true,
-            "MAX_OPEN": 3,
-            "TOP_N": 3,
+            "MAX_OPEN": 6,
+            "TOP_N": 6,
             "ACCOUNT_SUFFIX": "002",
             "account_id_demo": "101-003-39389016-002",
             "account_id_live": "001-003-21515688-002",
@@ -219,8 +218,8 @@
             "D_GATE_ENABLED": true,
             "D_GATE_BUFFER_PCT": 0.15,
             "D_GATE_CONFIRM": "2H1",
-            "MAX_OPEN": 3,
-            "TOP_N": 3,
+            "MAX_OPEN": 6,
+            "TOP_N": 6,
             "ACCOUNT_SUFFIX": "004",
             "account_id_demo": "101-003-39389016-004",
             "account_id_live": "001-003-21515688-004",
