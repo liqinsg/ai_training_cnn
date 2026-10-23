@@ -145,8 +145,8 @@
             "MIN_GAP": 0.25,
             "MIN_SLOPE": 0.0010,
             "D_GATE_ENABLED": true,
-            "MAX_OPEN": 3,
-            "TOP_N": 3,
+            "MAX_OPEN": 6,
+            "TOP_N": 6,
             "ACCOUNT_SUFFIX": "001",
             "account_id_demo": "101-003-39389016-001",
             "account_id_live": "001-003-21515688-001"
@@ -194,8 +194,8 @@
             "D_GATE_ENABLED": true,
             "D_GATE_BUFFER_PCT": 0.15,
             "D_GATE_CONFIRM": "2H1",
-            "MAX_OPEN": 2,
-            "TOP_N": 2,
+            "MAX_OPEN": 6,
+            "TOP_N": 6,
             "ACCOUNT_SUFFIX": "003",
             "account_id_demo": "101-003-39389016-003",
             "account_id_live": "001-003-21515688-003"
