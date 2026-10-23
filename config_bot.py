@@ -25,25 +25,15 @@ with open(CONFIG_FILE, "r", encoding="utf-8") as f:
 
 
 # ─── Pair universe (DEFAULT_PAIRS / WHITELIST) ───
-# Held in forex_pairs.json (bare symbols, no "=X") — surfaced here so the bot can
-# read P["WHITELIST"] from the unified profile dict like every other key.
-def _with_suffix(pair: str) -> str:
-    return pair if pair.endswith("=X") else f"{pair}=X"
-
-
-def _yahoo_to_oanda(pair: str) -> str:
-    s = pair[:-2] if pair.endswith("=X") else pair
-    return f"{s[:-3]}_{s[-3:]}"
-
-
+# Held in forex_pairs.json — already OANDA-native instrument names (EUR_USD …),
+# surfaced here so the bot can read P["WHITELIST"] from the unified profile dict
+# like every other key.
 try:
     with open(FOREX_PAIRS_FILE, "r", encoding="utf-8") as f:
         _FOREX = json.load(f)
-    DEFAULT_PAIRS = [_with_suffix(p) for p in _FOREX["DEFAULT_PAIRS"]]
-    WHITELIST = {
-        str(k): [_with_suffix(p) for p in v] for k, v in _FOREX["WHITELIST"].items()
-    }
-    YAHOO_TO_OANDA = {p: _yahoo_to_oanda(p) for p in DEFAULT_PAIRS}
+    DEFAULT_PAIRS = _FOREX["DEFAULT_PAIRS"]
+    WHITELIST = _FOREX["WHITELIST"]
+    YAHOO_TO_OANDA = {p: p for p in DEFAULT_PAIRS}
     logger.info(
         f"   forex_pairs.json ✅ {len(DEFAULT_PAIRS)} default pairs, "
         f"{len(WHITELIST)} whitelist bucket(s)"

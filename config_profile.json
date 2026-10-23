@@ -58,7 +58,7 @@
             "SL_H8_LOOKBACK_BARS": 4,
             "SL_DAILY_LOOKBACK_BARS": 2,
             "SL_PAIR_FLOOR_OVERRIDES__NO_DGATE": {
-                "GBPJPY=X": 50
+                "GBP_JPY": 50
             },
             "SL_PAIR_FLOOR_OVERRIDES__DGATE": {}
         },

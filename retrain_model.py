@@ -10,13 +10,12 @@ import numpy as np
 import pandas as pd
 import shutil
 from pathlib import Path
-from datetime import datetime, timezone
+from datetime import datetime
 import xgboost as xgb
-from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score, roc_auc_score
 
 import config
-from config_oanda import OANDA_API_TOKEN, OANDA_ACCOUNT_ID, OANDA_ENV
+from config_oanda import OANDA_API_TOKEN, OANDA_ENV
 from data_pipeline import FeatureConfig, FeatureEngine, DataFetcher, ModelWrapper
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -152,17 +151,28 @@ def train_model(df):
 
     logger.info(f"🧪 Features: {len(feature_cols)} (numeric only)")
 
-    X = df[feature_cols].values
-    y = df["target"].values
-
-    # Remove last N rows (no target available)
-    X = X[:-TARGET_HORIZON]
-    y = y[:-TARGET_HORIZON]
-
-    # Split
-    X_train, X_val, y_train, y_val = train_test_split(
-        X, y, test_size=TRAIN_TEST_SPLIT, shuffle=False, random_state=42
-    )
+    # ── PER-PAIR TEMPORAL SPLIT ─────────────────────────────
+    # 每个币种各自按时间顺序切分：最新的 TRAIN_TEST_SPLIT 进验证集。
+    # 取代"拼接整表 shuffle=False"的切法 —— 后者会让验证集退化成最后 1~2 个
+    # 币种，且除末币种外每个币种尾部 6 行（无未来收益）被误标为 0 混进训练集。
+    X_all = df[feature_cols].values
+    y_all = df["target"].values
+    pair_arr = df["pair"].values
+    X_train_list, y_train_list, X_val_list, y_val_list = [], [], [], []
+    for p in pd.unique(pair_arr):
+        mask = pair_arr == p
+        Xp = X_all[mask]
+        yp = y_all[mask]
+        n_valid = len(Xp) - TARGET_HORIZON
+        split_idx = int(n_valid * (1 - TRAIN_TEST_SPLIT))
+        X_train_list.append(Xp[:split_idx])
+        y_train_list.append(yp[:split_idx])
+        X_val_list.append(Xp[split_idx:n_valid])
+        y_val_list.append(yp[split_idx:n_valid])
+    X_train = np.concatenate(X_train_list)
+    y_train = np.concatenate(y_train_list)
+    X_val = np.concatenate(X_val_list)
+    y_val = np.concatenate(y_val_list)
 
     logger.info(f"Training: {len(X_train)} | Validation: {len(X_val)}")
     logger.info(

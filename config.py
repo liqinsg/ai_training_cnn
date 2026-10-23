@@ -146,7 +146,7 @@ ML_TRAIN_CANDLE_COUNT = 3000
 ML_HOLDOUT_FRACTION = 0.2
 ML_LABEL_HORIZON = 3
 ML_MIN_HOLDOUT_F1 = 0.0
-ML_TRAIN_PAIR = "USDJPY=X"
+ML_TRAIN_PAIR = "USD_JPY"
 DEMO_MODE = False
 
 # ==========================================
@@ -180,24 +180,16 @@ NORMAL_MIN_PROB = 51.0
 DEFAULT_LOT_SIZE = 10000
 USE_DEFAULT_LOT_SIZE = True
 DEFAULT_PAIRS = [
-    "EURUSD=X",
-    "GBPUSD=X",
-    "EURJPY=X",
-    "GBPJPY=X",
-    "AUDUSD=X",
-    "USDJPY=X",
-    "USDCHF=X",
+    "EUR_USD",
+    "GBP_USD",
+    "AUD_USD",
+    "USD_CHF",
+    "USD_JPY",
+    "GBP_JPY",
 ]
-YAHOO_TO_OANDA = {
-    "EURUSD=X": "EUR_USD",
-    "GBPUSD=X": "GBP_USD",
-    "EURJPY=X": "EUR_JPY",
-    "GBPJPY=X": "GBP_JPY",
-    "AUDUSD=X": "AUD_USD",
-    "USDJPY=X": "USD_JPY",
-    "USDCHF=X": "USD_CHF",
-    "AUDJPY=X": "AUD_JPY",
-}
+
+# Phase‑1: OANDA native instrument names — identity mapping
+YAHOO_TO_OANDA = {p: p for p in DEFAULT_PAIRS}
 ENABLE_PIVOTS = True
 PIVOT_METHOD = "Classic"
 PIVOT_TIMEFRAME = "D"

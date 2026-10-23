@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# fx_trade_bot_v685_2.py  --- cloned from v685_1
+# fx_trade_bot_v685
 # ──────────────────────────────────────────────────────
 # FX Trade Bot v6.8.5 — 配置统一入口
 # 唯一来源: config_profile.json → config_bot.py
@@ -303,7 +303,7 @@ TREND_FILTER_ENABLED = False
 WEEK_EMA100_FILTER_ENABLED = False
 
 # ─── RISK OVERRIDES (former profile2 GBPJPY SL floor) ────────────────────────
-SL_PAIR_FLOOR_OVERRIDES = {"GBPJPY=X": 50}
+SL_PAIR_FLOOR_OVERRIDES = {"GBP_JPY": 50}
 
 # ─── SLOPE_DIAG (former profile3 evidence-collection switch) ─────────────────
 SLOPE_DIAG = True
@@ -1090,15 +1090,16 @@ ALL_PAIRS = cfg_bot(
         "AUDJPY=X",
     ],
 )
+# Phase‑1: OANDA native names — identity fallback
 _YAHOO_TO_OANDA_DEFAULT = {
-    "EURUSD=X": "EUR_USD",
-    "GBPUSD=X": "GBP_USD",
-    "EURJPY=X": "EUR_JPY",
-    "GBPJPY=X": "GBP_JPY",
-    "AUDUSD=X": "AUD_USD",
-    "USDJPY=X": "USD_JPY",
-    "USDCHF=X": "USD_CHF",
-    "AUDJPY=X": "AUD_JPY",
+    "EUR_USD": "EUR_USD",
+    "GBP_USD": "GBP_USD",
+    "AUD_USD": "AUD_USD",
+    "USD_CHF": "USD_CHF",
+    "USD_JPY": "USD_JPY",
+    "EUR_JPY": "EUR_JPY",
+    "GBP_JPY": "GBP_JPY",
+    "AUD_JPY": "AUD_JPY",
 }
 YAHOO_TO_OANDA = cfg_bot("YAHOO_TO_OANDA", _YAHOO_TO_OANDA_DEFAULT.copy())
 for _sym, _oanda in _YAHOO_TO_OANDA_DEFAULT.items():
@@ -2192,7 +2193,7 @@ def main():
     trade_lines, pip_cache, pair_parts, _open_reasons = (
         {},
         {p: pip_size(p) for p in selected_pairs},
-        {p: (p[:3], p[3:].replace("=X", "")) for p in selected_pairs},
+        {p: (p[:3], p[4:]) for p in selected_pairs},
         {},
     )
     all_candidates = []
