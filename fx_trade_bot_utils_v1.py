@@ -1713,11 +1713,36 @@ def record_cooldown_from_closed_trades(
             )
 
         if ctype == "TP" and not remove_cooldown:
-            expire_ts = datetime.now(timezone.utc).timestamp() + cooldown_hours * 3600
-            cooldown_state[oanda_inst] = (Direction.NONE, expire_ts)
-            logger.info(
-                f"❄️  TP close detected on {oanda_inst} — cooldown applied "
-                f"({cooldown_hours}h)"
-            )
+            # ── 只认「近期」的 TP 平仓：仅当平仓时刻仍落在 cooldown_hours 窗口内
+            #    才写冷却；更早/周末/历史残留的 TP 记录一律忽略（不进冷却）。
+            #    冷却到期时间从「平仓时刻」起算，而不是从本次扫描时刻起算。 ──
+            _now_ts = datetime.now(timezone.utc).timestamp()
+            _close_ts = None
+            _close_time_str = t.get("closeTime") or t.get("close_time")
+            if _close_time_str:
+                try:
+                    _close_ts = datetime.fromisoformat(
+                        _close_time_str.replace("Z", "+00:00")
+                    ).timestamp()
+                except Exception:
+                    _close_ts = None
+            if _close_ts is None:
+                logger.warning(
+                    f"⚠️ {oanda_inst}: TP close detected but closeTime is "
+                    f"missing/unparsable ({_close_time_str!r}) — cooldown SKIPPED"
+                )
+            elif _now_ts - _close_ts > cooldown_hours * 3600:
+                logger.info(
+                    f"⏭️ {oanda_inst}: stale TP close "
+                    f"({(_now_ts - _close_ts) / 3600:.1f}h ago > "
+                    f"{cooldown_hours:.1f}h) — cooldown SKIPPED"
+                )
+            else:
+                expire_ts = _close_ts + cooldown_hours * 3600
+                cooldown_state[oanda_inst] = (Direction.NONE, expire_ts)
+                logger.info(
+                    f"❄️  TP close detected on {oanda_inst} — cooldown applied "
+                    f"({cooldown_hours}h, closes-in {(expire_ts - _now_ts) / 3600:.1f}h)"
+                )
         if remove_cooldown:
             cooldown_state.pop(oanda_inst, None)
