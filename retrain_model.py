@@ -251,12 +251,21 @@ def save_model(model, scaler, feature_cols):
 
 # ── MAIN ─────────────────────────────────────────────────
 if __name__ == "__main__":
+    from utils.utils import apply_jitter
     logger.info("=" * 60)
     logger.info("🚀 XGBOOST MODEL RETRAINING — FRESH DATA")
     logger.info("=" * 60)
 
-    df = fetch_all_data()
-    model, scaler, features = train_model(df)
-    save_model(model, scaler, features)
+    try:
+        apply_jitter(1.0, 10.0)
+        
+        df = fetch_all_data()
+        model, scaler, features = train_model(df)
+        save_model(model, scaler, features)
 
-    logger.info("\n🎉 RETRAINING COMPLETE! Restart your bot to use new model.")
+        logger.info("\n🎉 RETRAINING COMPLETE! Restart your bot to use new model.")
+
+    except Exception as e:
+        log.exception(f"Fatal error in retrain_model.py main loop")
+        send_telegram_message(f"❌ retrain_model.py FATAL ERROR: {e}")
+        raise
