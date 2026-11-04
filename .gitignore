@@ -50,3 +50,6 @@ archives/
 
 trade_data
 mc_results/
+mc_results
+.claude/
+locks/
