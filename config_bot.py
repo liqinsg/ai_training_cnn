@@ -173,6 +173,10 @@ def build_profile_cfg(profile_id: int) -> Dict:
         "COOLDOWN_HOURS_AFTER_TP": get_global(
             "ranking_cooldown.COOLDOWN_HOURS_AFTER_TP"
         ),
+        "DIRECTION_FLIP_EXIT_ENABLED": p.get(
+            "DIRECTION_FLIP_EXIT_ENABLED",
+            get_global("ranking_cooldown.DIRECTION_FLIP_EXIT_ENABLED"),
+        ),
     }
     return cfg
 

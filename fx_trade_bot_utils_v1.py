@@ -1440,6 +1440,25 @@ def should_close_by_strength(
     return False, ""
 
 
+def should_close_by_opposite_signal(
+    open_trade: dict | None, candidate_direction: str, pair: str = ""
+):
+    """Return whether a fresh BUY/SELL signal should close the owned position."""
+    if not open_trade or not candidate_direction:
+        return False, ""
+
+    open_side = str(open_trade.get("direction", "")).strip().lower()
+    signal_dir = str(candidate_direction).strip().upper()
+    is_opposite = (open_side == "long" and signal_dir == "SELL") or (
+        open_side == "short" and signal_dir == "BUY"
+    )
+    if not is_opposite:
+        return False, ""
+
+    label = pair or str(open_trade.get("instrument", "")).strip() or "UNKNOWN_PAIR"
+    return True, f"{label}: owned {open_side.upper()} but fresh signal={signal_dir}"
+
+
 def load_mc_legacy(
     pair: str, results_dir: Path, today_str: str, max_age_hours: int = 24
 ):
@@ -1562,16 +1581,24 @@ def get_mc_results_dir():
       2. config_profile.json → global.monte_carlo.MC_RESULTS_DIR
       3. known absolute fallbacks (siblings of this project)
     """
+    def _resolve_existing_dir(raw_dir):
+        if not raw_dir:
+            return None
+        resolved = Path(raw_dir).expanduser().resolve()
+        return resolved if resolved.is_dir() else None
+
     env_dir = os.getenv("MC_RESULTS_DIR")
-    if env_dir:
-        return Path(env_dir).expanduser().resolve()
+    resolved_env = _resolve_existing_dir(env_dir)
+    if resolved_env is not None:
+        return resolved_env
 
     try:
         import config_bot as _cb  # lazy import: avoid import-order coupling
 
         cfg_dir = _cb.GLOBAL.get("monte_carlo", {}).get("MC_RESULTS_DIR")
-        if cfg_dir:
-            return Path(cfg_dir).expanduser().resolve()
+        resolved_cfg = _resolve_existing_dir(cfg_dir)
+        if resolved_cfg is not None:
+            return resolved_cfg
     except Exception:
         pass
 

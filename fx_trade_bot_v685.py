@@ -58,6 +58,7 @@ from fx_trade_bot_utils_v1 import (
     load_mc_legacy,
     load_mc_bundle,
     get_mc_results_dir,
+    should_close_by_opposite_signal,
     PositionStatus,
 )
 from fx_trade_bot_ml import ensure_model
@@ -1134,11 +1135,13 @@ SIMULATIONS = cfg_bot("MC_SIMULATIONS", 5000)
 CONFIDENCE = cfg_bot("MC_BAND_PCT", 90) / 100.0
 REMOVE_COOLDOWN = cfg_bot("REMOVE_COOLDOWN", False)
 COOLDOWN_HOURS_AFTER_TP = cfg_bot("COOLDOWN_HOURS_AFTER_TP", 0.0)
+DIRECTION_FLIP_EXIT_ENABLED = cfg_bot("DIRECTION_FLIP_EXIT_ENABLED", True)
 COOLDOWN_SCOPE = os.environ.get("COOLDOWN_SCOPE", cfg_bot("COOLDOWN_SCOPE", "currency"))
 log.info(
     f"⏳ TP-COOLDOWN: hours={COOLDOWN_HOURS_AFTER_TP} "
     f"REMOVE_COOLDOWN={REMOVE_COOLDOWN} scope={COOLDOWN_SCOPE}"
 )
+log.info(f"🔄 DIRECTION-FLIP EXIT: enabled={DIRECTION_FLIP_EXIT_ENABLED}")
 if COOLDOWN_SCOPE == "currency" and _opt("LEGACY_SCOPE_WARNING", False):  # [OPT-2]
     log.warning(
         "⚠️  COOLDOWN_SCOPE=currency (default) — cooldown matches on bare 3-letter "
@@ -1606,11 +1609,17 @@ def main():
         _f, _ = _owned_cached(_o)
         if _f:
             _early_open_count += 1
-    _skip_signal_generation = _early_open_count >= MAX_OPEN
+    _skip_signal_generation = (
+        _early_open_count >= MAX_OPEN and not DIRECTION_FLIP_EXIT_ENABLED
+    )
     log.info(
         f"🔍 MAX_OPEN EARLY-GATE: {_early_open_count}/{MAX_OPEN} owned positions "
         f"→ {'SKIP signal generation' if _skip_signal_generation else 'proceed'}"
     )
+    if _early_open_count >= MAX_OPEN and DIRECTION_FLIP_EXIT_ENABLED:
+        log.info(
+            "🔄 MAX_OPEN early-gate bypassed — keep signal evaluation on for direction-flip exits"
+        )
 
     if _skip_signal_generation:
         # ── Minimal Step 6 snapshot so Step 5 (Dynamic Exit) has pair_data ──
@@ -2089,7 +2098,7 @@ def main():
     dyn_mgr.update_all(pair_data, close_wrap)
 
     # Step 6 — Scan Open Positions (OWNERSHIP-AWARE via OANDA tags)
-    open_pos_by_oanda, open_pos_count = {}, 0
+    open_pos_by_oanda, owned_trade_by_oanda, open_pos_count = {}, {}, 0
     owned_positions_snapshot = []
     log.info(
         f"🔍 Checking open positions (owner_client_ext_id={OWNER_CLIENT_EXT_ID}, tag={OWNER_CLIENT_EXT_TAG})..."
@@ -2113,6 +2122,7 @@ def main():
             client_ext_tag=OWNER_CLIENT_EXT_TAG,
         )
         open_pos_by_oanda[oanda_inst] = found
+        owned_trade_by_oanda[oanda_inst] = trade if found else None
         if found:
             open_pos_count += 1
             sl_str = f"SL={trade['sl']}" if trade.get("sl") else "SL=NONE"
@@ -2190,18 +2200,29 @@ def main():
     min_sl_pips_jpy, min_sl_pips_std = cfg_bot("MIN_SL_PIPS_JPY", 35), cfg_bot(
         "MIN_SL_PIPS", 25
     )
+    signal_eval_pairs = list(
+        dict.fromkeys(
+            selected_pairs
+            + [
+                p
+                for p in pair_data.keys()
+                if open_pos_by_oanda.get(YAHOO_TO_OANDA.get(p), False)
+            ]
+        )
+    )
     trade_lines, pip_cache, pair_parts, _open_reasons = (
         {},
-        {p: pip_size(p) for p in selected_pairs},
-        {p: (p[:3], p[4:]) for p in selected_pairs},
+        {p: pip_size(p) for p in signal_eval_pairs},
+        {p: (p[:3], p[4:]) for p in signal_eval_pairs},
         {},
     )
     all_candidates = []
 
-    for pair in selected_pairs:
+    for pair in signal_eval_pairs:
         if pair not in pair_data:
             continue
         oanda = pair_data[pair]["oanda"]
+        owned_trade = owned_trade_by_oanda.get(oanda)
         atr_val, rsi_val, adx_val = (
             pair_data[pair]["atr"],
             pair_data[pair]["rsi"],
@@ -2214,18 +2235,15 @@ def main():
             continue
 
         # ✅ Cooldown check — file-based, auto-clean expired, show remaining
-        _in_cd, _remain_mins, _matched_key = is_in_cooldown(pair, oanda)
-        if _in_cd:
-            log.info(
-                f"⏭️ {oanda} IN COOLDOWN scope=pair "
-                f"matched_key={_matched_key} "
-                f"remaining={_remain_mins}min — SKIP"
-            )
-            continue
-
-        if open_pos_by_oanda.get(oanda, False):
-            log.info(f"⏭️ {pair}: position already open — SKIP DUPLICATE")
-            continue
+        if not owned_trade:
+            _in_cd, _remain_mins, _matched_key = is_in_cooldown(pair, oanda)
+            if _in_cd:
+                log.info(
+                    f"⏭️ {oanda} IN COOLDOWN scope=pair "
+                    f"matched_key={_matched_key} "
+                    f"remaining={_remain_mins}min — SKIP"
+                )
+                continue
 
         try:
             prices = get_live_prices(oanda)
@@ -2330,6 +2348,35 @@ def main():
             timeframe=args.timeframe,
         )
         if not allow_entry:
+            continue
+
+        if owned_trade:
+            close_now, close_detail = should_close_by_opposite_signal(
+                owned_trade,
+                direction,
+                pair=pair,
+            )
+            if DIRECTION_FLIP_EXIT_ENABLED and close_now:
+                log.warning(f"🔄 DIRECTION-FLIP EXIT {pair}: {close_detail}")
+                if close_wrap(
+                    oanda,
+                    reason_code="DIRECTION_FLIP",
+                    detail_msg=close_detail,
+                ):
+                    open_pos_by_oanda[oanda] = False
+                    owned_trade_by_oanda[oanda] = None
+                    open_pos_count = max(0, open_pos_count - 1)
+                    trade_lines[pair] = f"📤 {pair} closed on opposite signal\n└─ {close_detail}"
+                    log.info(
+                        f"✅ {pair}: owned position closed on opposite signal — same-cycle re-entry skipped"
+                    )
+                else:
+                    log.error(
+                        f"❌ {pair}: opposite-signal close failed — keeping existing position"
+                    )
+                continue
+
+            log.info(f"⏭️ {pair}: owned position already open — SKIP DUPLICATE")
             continue
 
         dec = 3 if "JPY" in pair else 5
