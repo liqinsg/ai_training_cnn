@@ -65,6 +65,12 @@ from fx_trade_bot_ml import ensure_model
 
 # from portfolio_balance import balance_from_config
 from sl_zone_hierarchy import compute_sl_zone
+from utils.fib_zone_sizing import (
+    compute_zone_plan,
+    format_zone_audit,
+    load_fib_index,
+    to_mc_key,
+)
 from config_oanda import (
     # api,
     get_oanda_profile,
@@ -766,6 +772,50 @@ def cfg_bot(name, default):
     if name in P:
         return P[name]
     return getattr(config_bot, name, getattr(config, name, default))
+
+
+# ─── FIB ZONE EXECUTION OVERLAY (v685 Fib layer) ─────────────────────────────
+# Scope is deliberately tiny: size_units + tp_pips (+ skip on degenerate /
+# breakout records). It must NEVER influence signal direction, score, SL or MC
+# fusion. Resolution order: FIB_ZONE_DEFAULTS → global.fib_zone → profile.fib_zone
+# (the merge is performed once inside config_bot.build_profile_cfg()).
+FIB_ZONE_CFG = cfg_bot("FIB_ZONE_CFG", config_bot.FIB_ZONE_DEFAULTS)
+# The overlay reads the DAILY MC+Fib snapshot only. The bot's entry timeframe
+# (15m / 1H / H4) does not change that: Fib zones are a daily spatial structure.
+# "W" is explicitly unsupported this phase → treated as fib unavailable.
+FIB_ZONE_TF = "D"
+
+
+def _load_fib_index_once():
+    """Load the MC+Fib snapshot ONCE per run (never per pair → 1 file read).
+
+    Returns the ``results`` index ({pair_key: record}) or ``{}`` when the
+    overlay is disabled / unavailable. Every failure is graceful: the run
+    continues with v685 sizing and TP.
+    """
+    if not FIB_ZONE_CFG.get("ENABLED", False):
+        log.info(
+            "🧭 FIB-ZONE: DISABLED (fib_zone.ENABLED=false) — "
+            "v685 sizing/TP used unchanged"
+        )
+        return {}
+    fib_index = load_fib_index(TODAY_STR, FIB_ZONE_TF)
+    if not fib_index:
+        log.warning(
+            f"⚠️ FIB-ZONE: no usable MC+Fib snapshot for {TODAY_STR} "
+            f"(tf={FIB_ZONE_TF}) — overlay INACTIVE, v685 sizing/TP fallback"
+        )
+        return {}
+    log.info(
+        f"🧭 FIB-ZONE: loaded {len(fib_index)} pair records from MC+Fib "
+        f"snapshot ({TODAY_STR}, tf={FIB_ZONE_TF}) | "
+        f"ENABLED={FIB_ZONE_CFG.get('ENABLED')} MODE={FIB_ZONE_CFG.get('MODE')} "
+        f"CENTER={FIB_ZONE_CFG.get('CENTER_LO')}-{FIB_ZONE_CFG.get('CENTER_HI')} "
+        f"LADDER={FIB_ZONE_CFG.get('SIZE_LADDER')} "
+        f"TP_SCALE={FIB_ZONE_CFG.get('TP_SCALE_MIN')}-{FIB_ZONE_CFG.get('TP_SCALE_MAX')} "
+        f"MIN_TP_PIPS={FIB_ZONE_CFG.get('MIN_TP_PIPS')}"
+    )
+    return fib_index
 
 
 def cfg_mod(name, default):  # [OPT-12] was cfg(): shadowed `cfg = C.get_profile(...)`
@@ -2217,6 +2267,11 @@ def main():
         {},
     )
     all_candidates = []
+    _zone_audit = {}  # pair -> rendered Fib Zone audit line (decision trace)
+
+    # ─── Fib Zone overlay: load the MC+Fib bundle ONCE for the whole run ─────
+    # One file read via interface.py; every pair below reads from this index.
+    fib_index = _load_fib_index_once()
 
     for pair in signal_eval_pairs:
         if pair not in pair_data:
@@ -2380,6 +2435,32 @@ def main():
             continue
 
         dec = 3 if "JPY" in pair else 5
+        # ─── FIB ZONE OVERLAY ────────────────────────────────────────────────
+        # Runs AFTER direction/score/D-Gate/trend-TP are final and BEFORE SL/TP
+        # prices are built. It may only change size_units + tp_pips (or skip on
+        # a degenerate record); SL stays 100% compute_sl_zone()'s output.
+        fib_rec = fib_index.get(to_mc_key(pair), {}) if fib_index else {}
+        plan = compute_zone_plan(
+            rec=fib_rec,
+            direction=direction,
+            cfg=FIB_ZONE_CFG,
+            base_lot=DEFAULT_LOT_SIZE,
+            base_tp_pips=smart_tp_pips,
+        )
+        audit_line = format_zone_audit(
+            pair, direction, plan, DEFAULT_LOT_SIZE, smart_tp_pips
+        )
+        log.info(f"🧭 FIB-ZONE {pair} {direction} | {audit_line}")
+        if plan["skip"]:
+            log.info(
+                f"⏭️ FIB-ZONE SKIP {pair} {direction} — reason={plan['reason']} "
+                f"zone={plan['zone_index']} — NO ORDER"
+            )
+            continue
+        tp_pips_eff = plan["tp_pips"]
+        size_units = plan["size_units"]
+        _zone_audit[pair] = audit_line
+
         if cfg_bot("SL_USE_ZONE_HIERARCHY", True):
             sl_price, _ = compute_sl_zone(
                 api, oanda, direction, current, pip_cache[pair], cfg_bot
@@ -2397,9 +2478,9 @@ def main():
             )
 
         tp_price = (
-            round(current + smart_tp_pips * pip_cache[pair], dec)
+            round(current + tp_pips_eff * pip_cache[pair], dec)
             if direction == "BUY"
-            else round(current - smart_tp_pips * pip_cache[pair], dec)
+            else round(current - tp_pips_eff * pip_cache[pair], dec)
         )
 
         d_gate_label = (
@@ -2423,7 +2504,8 @@ def main():
                 sl_price,
                 tp_price,
                 dec,
-                smart_tp_pips,
+                tp_pips_eff,
+                size_units,
             )
         )
 
@@ -2469,10 +2551,13 @@ def main():
         f"{max(0, _rank_limit)} (MAX_OPEN={MAX_OPEN}, existing={open_pos_count}, "
         f"MAX_ENTRIES={MAX_ENTRIES or 'unlimited'})"
     )
-    for i, (_, score, pair, _, dir, _, _, _, _, tp_pips) in enumerate(
+    for i, (_, score, pair, _, dir, _, _, _, _, tp_pips, units) in enumerate(
         all_candidates, 1
     ):
-        log.info(f"   #{i} — {pair} {dir} SCORE={score:.1f} SMART-TP={tp_pips:.1f}p")
+        log.info(
+            f"   #{i} — {pair} {dir} SCORE={score:.1f} "
+            f"SMART-TP={tp_pips:.1f}p UNITS={units}"
+        )
 
     executed_in_this_run = set()
     entries_this_run = 0
@@ -2487,6 +2572,7 @@ def main():
         tp_price,
         dec,
         _,
+        size_units,
     ) in all_candidates:
         if open_pos_by_oanda.get(oanda, False):
             log.info(f"⏭️ {pair} ({oanda}): already open — SKIP DUPLICATE")
@@ -2503,7 +2589,11 @@ def main():
 
         if DRY_RUN_MODE:
             _r = _open_reasons.get(pair, "UNKNOWN")
-            log.info(f"✅ OPEN {pair} {direction} lots={DEFAULT_LOT_SIZE} → {_r}")
+            log.info(f"✅ OPEN {pair} {direction} lots={size_units} → {_r}")
+            log.info(
+                f"🧭 FIB-ZONE APPLIED {pair} {direction} | "
+                f"{_zone_audit.get(pair, 'n/a')}"
+            )
             log.info(
                 f"🧪 [DRY-RUN] SIGNAL {pair} {direction} | "
                 f"SL={sl_price} | TP={tp_price} | Score={FINAL:.1f} — NO ORDER SENT"
@@ -2513,7 +2603,7 @@ def main():
                 f"└─ {_r}\n🧪 DRY-RUN"
             )
             send_telegram_message(
-                f"✅ OPEN {pair} {direction} lots={DEFAULT_LOT_SIZE}\n"
+                f"✅ OPEN {pair} {direction} lots={size_units}\n"
                 f"└─ {_r}\n🧪 DRY-RUN (no real order)"
             )
             set_cooldown(pair, oanda)
@@ -2528,7 +2618,7 @@ def main():
                 OANDA_ACCOUNT_ID,
                 oanda,
                 direction,
-                DEFAULT_LOT_SIZE,
+                size_units,
                 sl_price,
                 tp_price,
                 dry_run=DRY_RUN_MODE,  # defence-in-depth (entry gate above already blocks)
@@ -2547,7 +2637,7 @@ def main():
                 log.info(
                     f"✅ EXECUTED {pair} {direction} | SL={sl_price} | TP={tp_price} | TradeID={tid}"
                 )
-                log.info(f"✅ OPEN {pair} {direction} lots={DEFAULT_LOT_SIZE} → {_r}")
+                log.info(f"✅ OPEN {pair} {direction} lots={size_units} → {_r}")
                 trade_lines[pair] = (
                     f"✅ {pair} {direction} Score={FINAL:.1f} | SL={sl_price} TP={tp_price}\n"
                     f"└─ {_r}"
@@ -2556,7 +2646,7 @@ def main():
                 json_log.bot_open(
                     pair=pair,
                     direction=direction,
-                    units=DEFAULT_LOT_SIZE,
+                    units=size_units,
                     entry_price=float(current),
                     trade_id=str(tid),
                     sl=float(sl_price),
@@ -2565,7 +2655,7 @@ def main():
                 )
 
                 send_telegram_message(
-                    f"✅ OPEN {pair} {direction} lots={DEFAULT_LOT_SIZE} | TradeID={tid}\n"
+                    f"✅ OPEN {pair} {direction} lots={size_units} | TradeID={tid}\n"
                     f"└─ {_r}"
                 )
                 set_cooldown(pair, oanda)
@@ -2573,7 +2663,7 @@ def main():
                 open_pos_count += 1
                 executed_in_this_run.add(oanda)
             elif status == "DRY_RUN":
-                log.info(f"✅ OPEN {pair} {direction} lots={DEFAULT_LOT_SIZE} → {_r}")
+                log.info(f"✅ OPEN {pair} {direction} lots={size_units} → {_r}")
                 log.info(
                     f"🧪 DRY_RUN {pair} {direction} | SL={sl_price} | TP={tp_price} — validated, no API call"
                 )
@@ -2582,7 +2672,7 @@ def main():
                     f"└─ {_r}\n🧪 DRY-RUN"
                 )
                 send_telegram_message(
-                    f"✅ OPEN {pair} {direction} lots={DEFAULT_LOT_SIZE}\n"
+                    f"✅ OPEN {pair} {direction} lots={size_units}\n"
                     f"└─ {_r}\n🧪 DRY-RUN (no real order)"
                 )
                 set_cooldown(pair, oanda)
