@@ -1382,8 +1382,9 @@ def build_top_pairs(
     oanda_map,
     top_n=TOP_N_CURRENCIES,
     min_gap=TOP_PAIRS_MIN_GAP,
+    whitelist=None,
 ):
-    """Build candidate pairs: strongest N × weakest N cross-combination"""
+    """Build OANDA-native candidates from the strongest × weakest matrix."""
     ranked = sorted(strength_scores.items(), key=lambda x: x[1], reverse=True)
     strongest = [ccy for ccy, _ in ranked[:top_n]]
     weakest = [ccy for ccy, _ in ranked[-top_n:]]
@@ -1391,34 +1392,109 @@ def build_top_pairs(
     log.info(f"🏆 STRONGEST {top_n}: {strongest}")
     log.info(f"📉 WEAKEST  {top_n}: {weakest}")
 
-    candidates = []
-    seen = set()
+    def normalize_pair(pair):
+        symbol = pair.strip().upper()
+        if symbol.endswith("=X"):
+            symbol = symbol[:-2]
+        symbol = symbol.replace("_", "").replace("/", "")
+        if len(symbol) != 6:
+            return None
+        return f"{symbol[:3]}_{symbol[3:]}"
+
+    all_pairs_normalized = {
+        normalized
+        for pair in all_pairs
+        if (normalized := normalize_pair(pair)) is not None
+    }
+    whitelist_normalized = (
+        None
+        if whitelist is None
+        else {
+            normalized
+            for pair in whitelist
+            if (normalized := normalize_pair(pair)) is not None
+        }
+    )
+    oanda_map_normalized = {
+        normalized: instrument
+        for pair, instrument in oanda_map.items()
+        if (normalized := normalize_pair(pair)) is not None
+    }
+
+    generated = []
+    rejected = []
     for strong in strongest:
         for weak in weakest:
             if strong == weak:
+                rejected.append(f"{strong}/{weak}: same currency")
                 continue
             gap_base_positive = strength_scores[strong] - strength_scores[weak]
             if abs(gap_base_positive) < min_gap:
+                rejected.append(
+                    f"{strong}/{weak}: gap {gap_base_positive:+.3f} "
+                    f"below min_gap {min_gap:.3f}"
+                )
                 continue
             for base, quote in [(strong, weak), (weak, strong)]:
                 yahoo_sym = f"{base}{quote}=X"
-                if yahoo_sym in all_pairs and yahoo_sym not in seen:
-                    oanda_inst = oanda_map.get(yahoo_sym)
-                    if oanda_inst:
-                        seen.add(yahoo_sym)
-                        pair_gap = strength_scores[base] - strength_scores[quote]
-                        candidates.append(
-                            {
-                                "pair": yahoo_sym,
-                                "oanda": oanda_inst,
-                                "gap": pair_gap,
-                                "gap_abs": abs(pair_gap),
-                            }
-                        )
+                generated.append(
+                    {
+                        "raw": yahoo_sym,
+                        "pair": normalize_pair(yahoo_sym),
+                        "base": base,
+                        "quote": quote,
+                    }
+                )
+
+    log.info(f"🧩 Top-{top_n} generated candidates: {[c['raw'] for c in generated]}")
+    log.info(
+        "🔄 Top-%s normalized candidates: %s",
+        top_n,
+        [(c["raw"], c["pair"]) for c in generated],
+    )
+
+    candidates = []
+    whitelist_matches = []
+    mapping_hits = []
+    seen = set()
+    for candidate in generated:
+        pair = candidate["pair"]
+        if pair is None:
+            rejected.append(f"{candidate['raw']}: invalid pair format")
+        elif pair not in all_pairs_normalized:
+            rejected.append(f"{candidate['raw']} → {pair}: not in ALL_PAIRS")
+        elif whitelist_normalized is not None and pair not in whitelist_normalized:
+            rejected.append(f"{candidate['raw']} → {pair}: not in whitelist")
+        else:
+            if pair not in whitelist_matches:
+                whitelist_matches.append(pair)
+            oanda_inst = oanda_map_normalized.get(pair)
+            if not oanda_inst:
+                rejected.append(f"{candidate['raw']} → {pair}: missing OANDA mapping")
+            elif pair in seen:
+                rejected.append(f"{candidate['raw']} → {pair}: duplicate normalized pair")
+            else:
+                seen.add(pair)
+                mapping_hits.append((pair, oanda_inst))
+                pair_gap = (
+                    strength_scores[candidate["base"]]
+                    - strength_scores[candidate["quote"]]
+                )
+                candidates.append(
+                    {
+                        "pair": pair,
+                        "oanda": oanda_inst,
+                        "gap": pair_gap,
+                        "gap_abs": abs(pair_gap),
+                    }
+                )
 
     candidates.sort(key=lambda x: x["gap_abs"], reverse=True)
     selected = [c["pair"] for c in candidates]
 
+    log.info(f"🔒 Top-{top_n} whitelist matches: {whitelist_matches}")
+    log.info(f"🗺️ Top-{top_n} mapping hits: {mapping_hits}")
+    log.info(f"🚫 Top-{top_n} rejected candidates: {rejected}")
     log.info(f"🎯 Top-{top_n} matrix → {len(selected)} qualified pairs")
     for c in candidates[:6]:
         dir_s = "BUY" if c["gap"] > 0 else "SELL"
@@ -1791,6 +1867,7 @@ def main():
             YAHOO_TO_OANDA,
             top_n=TOP_PAIRS_COUNT,
             min_gap=TOP_PAIRS_MIN_GAP,
+            whitelist=ALLOWED_PAIRS,
         )
         if not selected_pairs:
             log.warning("⚠️ No high-gap pairs found — falling back to full scan")
