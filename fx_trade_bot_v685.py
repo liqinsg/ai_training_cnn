@@ -52,6 +52,8 @@ from fx_trade_bot_utils_v1 import (
     close_position,
     fetch_candles,
     fetch_weekly_ema100,
+    update_order_tp,
+    update_order_sl,
     record_cooldown_from_closed_trades,
     open_oanda_order_simple as open_oanda_order,
     DynamicPositionManager,
@@ -2322,6 +2324,102 @@ def main():
         f"📊 Open positions: {open_pos_count}/{MAX_OPEN} | OPEN: {', '.join(open_list) or 'None'} | READY: {', '.join(ready_list) or 'None'}"
     )
 
+    def _revise_owned_position(
+        pair, oanda_inst, owned_trade, open_side, entry, current,
+        pip_size_val, decimals, profit_pips, atr_val,
+        min_profit_pips_for_sl=15.0,
+        atr_tp_mult=3.0,
+    ):
+        trade_id = owned_trade.get("trade_id")
+        if not trade_id:
+            return
+        curr_sl = owned_trade.get("sl")
+        curr_tp = owned_trade.get("tp")
+        if curr_sl is not None:
+            try:
+                curr_sl = float(curr_sl)
+            except Exception:
+                curr_sl = None
+        if curr_tp is not None:
+            try:
+                curr_tp = float(curr_tp)
+            except Exception:
+                curr_tp = None
+
+        revised_sl = curr_sl
+        revised_tp = curr_tp
+
+        if profit_pips >= min_profit_pips_for_sl:
+            try:
+                new_sl, _ = compute_sl_zone(
+                    api, oanda_inst, open_side, current, pip_size_val, cfg_bot
+                )
+                new_sl = round(new_sl, decimals)
+                if open_side == "long":
+                    be_price = round(entry + pip_size_val, decimals)
+                    new_sl = min(new_sl, be_price)
+                    if revised_sl is None or new_sl > revised_sl:
+                        revised_sl = new_sl
+                else:
+                    be_price = round(entry - pip_size_val, decimals)
+                    new_sl = max(new_sl, be_price)
+                    if revised_sl is None or new_sl < revised_sl:
+                        revised_sl = new_sl
+            except Exception as _e:
+                log.warning(f"⚠️ {pair}: compute_sl_zone failed — skip SL revise: {_e}")
+
+        new_tp_by_atr = round(
+            current + atr_tp_mult * atr_val if open_side == "long"
+            else current - atr_tp_mult * atr_val,
+            decimals,
+        )
+        if open_side == "long":
+            if curr_tp is None or new_tp_by_atr > curr_tp:
+                revised_tp = new_tp_by_atr
+        else:
+            if curr_tp is None or new_tp_by_atr < curr_tp:
+                revised_tp = new_tp_by_atr
+
+        sl_changed = revised_sl is not None and (
+            curr_sl is None or abs(revised_sl - curr_sl) >= pip_size_val
+        )
+        tp_changed = revised_tp is not None and (
+            curr_tp is None or abs(revised_tp - curr_tp) >= pip_size_val
+        )
+
+        if not sl_changed and not tp_changed:
+            return
+
+        parts = [f"🔧 REVISE {pair} #{trade_id} {open_side.upper()} profit={profit_pips:.1f}p"]
+        if sl_changed:
+            old_sl_s = "NONE" if curr_sl is None else f"{curr_sl:.{decimals}f}"
+            parts.append(f"SL: {old_sl_s} → {revised_sl:.{decimals}f}")
+        if tp_changed:
+            old_tp_s = "NONE" if curr_tp is None else f"{curr_tp:.{decimals}f}"
+            parts.append(f"TP: {old_tp_s} → {revised_tp:.{decimals}f}")
+        log.info(" | ".join(parts))
+
+        if sl_changed and revised_sl is not None:
+            update_order_sl(
+                api, OANDA_ACCOUNT_ID, trade_id, oanda_inst,
+                revised_sl,
+                send_telegram=send_telegram_message,
+                dry_run=DRY_RUN_MODE,
+                old_sl_price=curr_sl,
+                update_reason="STRUCT_REVISE",
+                json_log=json_log,
+            )
+        if tp_changed and revised_tp is not None:
+            update_order_tp(
+                api, OANDA_ACCOUNT_ID, trade_id, oanda_inst,
+                revised_tp,
+                send_telegram=send_telegram_message,
+                dry_run=DRY_RUN_MODE,
+                old_tp_price=curr_tp,
+                update_reason="STRUCT_REVISE",
+                json_log=json_log,
+            )
+
     # Step 7 — Score, Trend Filter, Smart TP & Execute
     log.info("[STEP 7] Scoring + TREND FILTER + SMART TP...")
     min_sl_pips_jpy, min_sl_pips_std = cfg_bot("MIN_SL_PIPS_JPY", 35), cfg_bot(
@@ -2390,6 +2488,53 @@ def main():
 
         base, quote = pair_parts[pair]
         gap = strength_scores.get(base, 0) - strength_scores.get(quote, 0)
+        mc_pct_up_now = mc_cache.get(pair, {}).get("p_up", 50.0)
+
+        # ─── QUICK-FLIP + REVISE SL/TP for OWNED positions ───
+        if owned_trade:
+            _open_side = owned_trade.get("direction", "")
+            _entry = float(owned_trade["price"])
+            _dec = 3 if "JPY" in pair else 5
+            _pip = pip_cache[pair]
+            _profit_pips = (
+                (current - _entry) / _pip if _open_side == "long"
+                else (_entry - current) / _pip
+            )
+            _strength_flip = (
+                (_open_side == "long" and gap < -0.5)
+                or (_open_side == "short" and gap > 0.5)
+            )
+            _mc_flip = (
+                (_open_side == "long" and mc_pct_up_now < 45)
+                or (_open_side == "short" and mc_pct_up_now > 55)
+            )
+            _flip_count = sum([_strength_flip, _mc_flip])
+
+            if _flip_count >= 2 and DIRECTION_FLIP_EXIT_ENABLED:
+                _detail = (
+                    f"strength_flip={_strength_flip}, mc_flip={_mc_flip}, "
+                    f"gap={gap:+.2f}, mc_pct_up={mc_pct_up_now:.0f}%, "
+                    f"profit={_profit_pips:.1f}p"
+                )
+                log.warning(f"🔄 QUICK-FLIP EXIT {pair} ({_open_side.upper()}): {_detail}")
+                if close_wrap(oanda, reason_code="DIRECTION_FLIP", detail_msg=_detail):
+                    owned_trade = None
+                    owned_trade_by_oanda[oanda] = None
+                    open_pos_by_oanda[oanda] = False
+                    open_pos_count = max(0, open_pos_count - 1)
+                    trade_lines[pair] = f"📤 {pair} quick-flip\n└─ {_detail}"
+                    log.info(f"✅ {pair}: quick-flip closed — proceeding to re-entry eval")
+                else:
+                    log.error(f"❌ {pair}: quick-flip close FAILED — keeping position")
+
+            if owned_trade is not None:
+                _revise_owned_position(
+                    pair, oanda, owned_trade, _open_side, _entry, current,
+                    _pip, _dec, _profit_pips, atr_val,
+                )
+                continue
+
+        # ─── MIN_STRENGTH_GAP gate ───
         if abs(gap) < MIN_STRENGTH_GAP:
             log.info(f"⏭️ {pair}: gap={abs(gap):.2f} < MIN={MIN_STRENGTH_GAP} — SKIP")
             continue

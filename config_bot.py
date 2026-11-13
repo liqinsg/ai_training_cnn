@@ -57,9 +57,9 @@ PROFILE_IDS = sorted([int(k) for k in PROFILES.keys()])
 FIB_ZONE_DEFAULTS: Dict = {
     "ENABLED": True,
     "MODE": "filter",
-    "CENTER_LO": 2,
-    "CENTER_HI": 3,
-    "SIZE_LADDER": [1.0, 0.5, 0.25],
+    "CENTER_EDGE": 2,
+    "SIZE_LADDER": [1.0, 0.5, 0.25, 0.125],
+    "MIN_LOT": 1000,
     "TP_ROOM_REF": 0.5,
     "TP_SCALE_MIN": 0.5,
     "TP_SCALE_MAX": 1.0,

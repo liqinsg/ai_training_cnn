@@ -52,9 +52,9 @@ SUPPORTED_TIMEFRAMES = ("D",)
 _CFG_FALLBACK: Dict[str, Any] = {
     "ENABLED": True,
     "MODE": "filter",
-    "CENTER_LO": 2,
-    "CENTER_HI": 3,
-    "SIZE_LADDER": [1.0, 0.5, 0.25],
+    "CENTER_EDGE": 2,
+    "SIZE_LADDER": [1.0, 0.5, 0.25, 0.125],
+    "MIN_LOT": 1000,
     "TP_ROOM_REF": 0.5,
     "TP_SCALE_MIN": 0.5,
     "TP_SCALE_MAX": 1.0,
@@ -399,17 +399,19 @@ def compute_zone_plan(
                 breakout=breakout,
             )
 
-        center_lo = _as_int(_cfg_get(cfg_dict, "CENTER_LO", 2), 2)
-        center_hi = _as_int(_cfg_get(cfg_dict, "CENTER_HI", 3), 3)
+        center_edge = _as_int(_cfg_get(cfg_dict, "CENTER_EDGE", 2), 2)
         ladder = _size_ladder(cfg_dict)
+        min_lot = _as_int(_cfg_get(cfg_dict, "MIN_LOT", 1000), 1000)
 
         is_short = normalized == "SELL"
-        late_distance = (
-            max(0, center_lo - zone_index)
-            if is_short
-            else max(0, zone_index - center_hi)
-        )
+        if is_short:
+            late_distance = max(0, center_edge - zone_index)
+        else:
+            late_distance = max(0, zone_index - center_edge - 1)
+
         size_scale = ladder[min(late_distance, len(ladder) - 1)]
+        raw_units = _size_units(base_lot, size_scale)
+        size_units = max(raw_units, min_lot)
 
         room = ratio_pos if is_short else (1.0 - ratio_pos)
         room_ref = _as_finite_float(_cfg_get(cfg_dict, "TP_ROOM_REF", 0.5))
@@ -441,7 +443,7 @@ def compute_zone_plan(
             "room": room,
             "late_distance": late_distance,
             "size_scale": float(size_scale),
-            "size_units": _size_units(base_lot, size_scale),
+            "size_units": size_units,
             "tp_scale": float(tp_scale),
             "tp_pips": float(tp_pips),
             "degenerate": degenerate,

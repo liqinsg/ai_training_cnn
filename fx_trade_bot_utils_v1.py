@@ -1015,6 +1015,69 @@ def update_order_tp(
         return {"ok": False, "status": "ERROR", "error": str(e)}
 
 
+def update_order_sl(
+    api,
+    account_id,
+    trade_id,
+    instrument,
+    new_sl_price,
+    send_telegram=None,
+    dry_run: bool = False,
+    old_sl_price=None,
+    update_reason: str = "SL_REVISE",
+    json_log=None,
+):
+    """Update SL — SKIP if market halted."""
+    if not can_trade(api, account_id, instrument):
+        logger.info(f"⏭️ [SKIP SL-UPDATE] {instrument}: MARKET_HALTED")
+        return {"ok": False, "status": "SKIPPED", "reason": "MARKET_HALTED"}
+
+    dec = price_decimals(instrument)
+    new_sl_str = f"{float(new_sl_price):.{dec}f}"
+    old_sl_str = (
+        f"{float(old_sl_price):.{dec}f}" if old_sl_price is not None else "None"
+    )
+    data = {"stopLoss": {"price": new_sl_str, "timeInForce": "GTC"}}
+
+    if dry_run:
+        logger.info(
+            f"🧪 DRY_RUN SL UPDATE {instrument}: would set stopLoss → {new_sl_str} "
+            f"(no TradeCRCDO write sent)"
+        )
+        logger.info(
+            f"🔄 UPDATE {instrument} → SL_REVISED: {old_sl_str} → {new_sl_str} | {update_reason}"
+        )
+        return {"ok": True, "status": "DRY_RUN", "new_sl": new_sl_price, "txid": ""}
+
+    try:
+        resp = api.request(
+            TradeCRCDO(accountID=account_id, tradeID=trade_id, data=data)
+        )
+        if "stopLossOrderTransaction" in resp:
+            txid = resp["stopLossOrderTransaction"]["id"]
+            logger.info(
+                f"🔄 UPDATE {instrument} → SL_REVISED: {old_sl_str} → {new_sl_str} | {update_reason}"
+            )
+            if send_telegram:
+                send_telegram(
+                    f"🔄 UPDATE SL: {instrument}\n"
+                    f"└─ {old_sl_str} → {new_sl_str} | {update_reason}"
+                )
+            return {
+                "ok": True,
+                "status": "UPDATED",
+                "new_sl": new_sl_price,
+                "txid": txid,
+            }
+        return {"ok": False, "status": "UNEXPECTED", "response": resp}
+    except Exception as e:
+        err = f"❌ SL UPDATE FAILED {instrument}: {e}"
+        logger.error(err)
+        if send_telegram:
+            send_telegram(err)
+        return {"ok": False, "status": "ERROR", "error": str(e)}
+
+
 # ============================================================================
 # TP AUTO-ATTACH
 # ============================================================================
