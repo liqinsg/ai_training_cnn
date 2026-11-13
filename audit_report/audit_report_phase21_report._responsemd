@@ -1,0 +1,155 @@
+这份 Phase 2.1 报告质量不错，而且比 Phase 2 又向前推进了一步。
+
+我的判断是：Nov 5 模型由 v685 `ensure_model()` 自动训练生成，是目前最有证据支持的解释，但还不能认定为事实。
+
+我认为这次最重要的发现不是 5,000 bars 本身，而是我们现在有了一条相当完整的时间线，可以把调查范围缩小到具体的训练事件。
+
+## 1. 核心判断：Auto-training 的证据已经比较强
+
+把几个证据放在一起看：
+
+| 证据                               | 对 auto-training 假设的支持程度 |
+| -------------------------------- | ----------------------- |
+| Bot 21:23:29 启动                  | 支持                      |
+| 四个 artifact 在 21:24:06 连续写入      | 强支持                     |
+| 第一次 feature snapshot 在 21:24:24  | 支持启动流程中先训练/加载模型，再进行推理   |
+| Config 保存 5,000 bars             | 强支持                     |
+| 检查到的 auto-training 默认 5,000 bars | 强支持                     |
+| Explicit retraining 使用 500 bars  | 反向支持                    |
+| 没有 training log / run ID         | 无法最终确认                  |
+
+尤其是 artifact 写入顺序与 `ModelWrapper.save()` 的顺序一致，时间间隔只有毫秒。
+
+这不是普通的时间巧合，已经形成了比较强的间接证据。
+
+但有一个必须保留的替代解释：
+
+不能排除另一个进程恰好在 Bot 启动期间执行了训练并写入同一组 artifact。
+
+因此我同意 Claude 使用 LIKELY，而不是 CONFIRMED。
+
+## 2. 现在可以缩小模型训练条件的范围
+
+Nov 5 模型的最佳重建结果
+
+Training route
+
+LIKELY
+
+`ensure_model()` → `ModelWrapper.fit()` → `ModelWrapper.save()`
+
+Timeframe
+
+LIKELY
+
+M15
+
+Requested lookback
+
+LIKELY
+
+5,000 bars
+
+Target definition
+
+LIKELY
+
+`future_return > 0`
+
+Source commit
+
+UNRESOLVED
+
+Candidate: `v2026b @ 75e9eae`
+
+Actual training samples
+
+UNRESOLVED
+
+尚不知道每个品种实际返回、清洗和参与训练的行数。
+
+这里有一个重要区别：
+
+5,000 是请求窗口，不是最终训练样本数。
+
+例如，5,000 根请求数据可能经过 closed-candle filtering、FeatureEngine 计算、NaN 清理、target horizon 截断后，剩下的样本数量会明显减少。
+
+以后分析模型训练质量时，真正应该使用的是最终参与 fit 的样本数量，而不是请求数量。
+
+## 3. 我发现还有三个值得注意的细节
+
+### A. 37 个 Feature Names 由外部 Manifest 提供
+
+模型 JSON 的 `feature_names` 是空的。
+
+这意味着：
+
+- XGBoost 模型知道自己需要 37 个输入。
+- 外部 manifest 提供输入名称及顺序。
+- 模型本身无法证明这 37 个名称就是训练时实际使用的语义定义。
+
+这进一步说明，37 维匹配不能证明训练和推理语义匹配。
+
+它也让未来的 artifact integrity 改进更有必要。
+
+### B. XGBoost 版本证据比其他依赖更强
+
+模型 JSON 内部的 `[3,3,0]` 是支持 XGBoost 3.3.0 的证据。
+
+但它不能证明：
+
+- pandas-ta 的版本；
+- sklearn 的版本；
+- pandas / numpy 的版本；
+- 训练与推理环境完全相同。
+
+不能把一个组件的版本证据扩展成整个环境的版本证据。
+
+### C. Nov 7–13 没有日志不代表没有运行
+
+本地目录没有日志，只能说明这个 checkout 没有保留相关日志。
+
+不能据此判断远程生产环境没有运行，也不能判断生产模型没有更新。
+
+这部分必须拿部署主机的记录验证。
+
+## 4. 下一步：不要再扩大本地代码审计，转向部署主机证据回收
+
+Phase 2.1 已经把本地能恢复的证据基本整理出来了。
+
+我建议下一项任务命名为：
+
+Phase 2.2 — Deployment Runtime Evidence Recovery
+
+范围严格限定为只读证据收集。
+
+| P0 | 需要取得的证据                                  | 解决的问题                         |
+| -- | ---------------------------------------- | ----------------------------- |
+| 1  | Nov 5 Bot 启动时的完整 stdout/stderr           | 是否真正进入 `ensure_model()` 训练分支  |
+| 2  | Nov 5 部署目录的 Git commit / source snapshot | 是否确实运行 `75e9eae`              |
+| 3  | Nov 5 training fetch 记录                  | 请求、返回、closed、cleaned、fit rows |
+| 4  | Nov 7–13 Bot/service logs                | 是否发生过自动重训练                    |
+| 5  | 生产 artifact SHA-256                      | 当前生产模型是否与本地模型一致               |
+| 6  | Nov 5 环境 package inventory               | 训练时的实际依赖版本                    |
+
+特别建议不要让 Claude 为了取得这些证据而重新运行 Bot。 也不要为了补日志而触发 `ensure_model()`。我们需要的是历史证据，不是重新制造一个相似的训练事件。
+
+## 5. Phase 2.1 的最终状态
+
+本地取证基本完成
+
+历史训练事件尚未确认
+
+我会把目前的结论记录为：
+
+- Provenance reconstruction：有较强的 auto-training 证据。
+- Exact provenance：未建立。
+- Historical runtime environment：未建立。
+- Artifact identity：本地文件关系有较强证据，但与生产部署的关系未建立。
+- Retraining after Nov 5：未知。
+
+我不建议现在开始修改模型训练代码，也不建议重新训练。
+
+我们已经从最初的“模型是否一致”推进到“模型可能是怎样产生的”。下一步应该先拿到部署主机的历史记录，尽量把这条训练链路闭合。
+
+如果远程历史日志已经丢失，也应该明确接受这个证据缺口，而不是用当前代码推断历史事实。
