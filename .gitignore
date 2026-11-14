@@ -29,12 +29,12 @@ attribution_v2/reports/
 
 # === 临时/测试脚本 ===
 fix_*.py
-test_*.py
+#test_*.py
 *_fixture.py
 
 # Phase 3.0 runtime-containment suite is a permanent, versioned regression test
 # (narrow exception only — do NOT unignore other test_*.py files).
-!tests/test_phase3_runtime_containment.py
+#!tests/test_phase3_runtime_containment.py
 
 # === 环境/配置/敏感 ===
 .env
