@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "records": [
+    {
+      "artifact_sha256": "94c8751df33daee5190e42634d823bcb08d4a0dbc1e0a2cf2f3e8cfbd91d5942",
+      "scaler_sha256": "031ea8068a2b8309829624b30acb7db2cde40ce4452240cf423619fae4b2cd8c",
+      "decision": "VERIFIED",
+      "positive_class_label": 1,
+      "positive_class_index": 1,
+      "positive_class_semantics": "UP",
+      "negative_class_semantics": "NOT_UP",
+      "probability_semantics": "BINARY_EXCLUSIVE_EXHAUSTIVE",
+      "evidence_record": "docs/PHASE3_1_CD_EVIDENCE.md",
+      "evidence_record_version": "Live Host Evidence (arm / 2026-11-14)",
+      "decision_id": "CD-OPEN-1: SELL = not-UP (accepted 2026-11-14)"
+    }
+  ]
+}
