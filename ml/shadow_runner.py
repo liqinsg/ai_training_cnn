@@ -1,3 +1,15 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# 非权威（NON-AUTHORITATIVE）— DO NOT WIRE  ｜ Phase 3.1 隔离标注
+# ─────────────────────────────────────────────────────────────────────────────
+# 本文件来自一条分歧（Gemini）开发线，不属于 Phase 3.1 契约的权威实现，
+# 仅供存档参考；严禁被实盘交易主循环 import 或接线。
+# 与 docs/PHASE3_1_CONTRACT.md 的冲突：
+#   * L70-L71 硬编码 proba[1] == UP（违反 §1.3.2 #3；当前 CD = NOT VERIFIED）
+#   * L79-L84 用阈值直接把概率映射为 BUY/SELL/NEUTRAL，折叠
+#     Prediction→Decision→Authorization（违反 §8），绕过 PredictionResult /
+#     PredictionStatus 与 §4.1.1 隔离护栏
+# 权威替代：ml/live_prediction_engine.py + ml/integration_hook.py
+# ─────────────────────────────────────────────────────────────────────────────
 # ml/shadow_runner.py — SHADOW INFERENCE RUNNER (PHASE 3)
 # Executes model prediction in shadow-only mode alongside live strategy.
 # Guarantees zero execution risk and structured parity logging.

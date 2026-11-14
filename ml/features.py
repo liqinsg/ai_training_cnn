@@ -1,3 +1,14 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# 非权威（NON-AUTHORITATIVE）— DO NOT WIRE  ｜ Phase 3.1 隔离标注
+# ─────────────────────────────────────────────────────────────────────────────
+# 注意：文件名/正文自称 "AUTHORITATIVE"，实为非权威。本文件来自一条分歧
+# （Gemini）开发线，自造了一套并行特征契约，仅供存档参考；严禁接线。
+# 与权威实现的冲突：
+#   * 与 data_pipeline.FeatureEngine 及 trade_model_xgb.features.json 不同源
+#     （列名 / 顺序 / NaN 清洗策略均不一致），接线即制造训练-推理特征偏离
+#   * build_target() 默认 horizon=5，而生产 TARGET_HORIZON=6
+# 权威替代：data_pipeline.py（生产特征引擎与特征契约）
+# ─────────────────────────────────────────────────────────────────────────────
 # ml/features.py — AUTHORITATIVE FEATURE CONTRACT (PHASE 3)
 # Single implementation shared by offline training and online inference.
 # Guarantees deterministic calculation, explicit schema, and parity.

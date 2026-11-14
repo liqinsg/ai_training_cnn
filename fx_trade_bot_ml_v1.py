@@ -1,3 +1,13 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# 非权威（NON-AUTHORITATIVE）— DO NOT WIRE  ｜ Phase 3.1 隔离标注
+# ─────────────────────────────────────────────────────────────────────────────
+# 本文件来自一条分歧（Gemini）开发线，是 fx_trade_bot_ml.py 的平行副本，
+# 仅供存档参考；严禁被实盘主循环 import 或接线。
+# 与权威实现的冲突：
+#   * 采用 ModelBundleContractError 硬中止（Hard-Stop）哲学，与本仓库刻意采用的
+#     结果对象 ModelInitResult（不崩溃、隔离单点故障）相反
+# 权威替代：fx_trade_bot_ml.py
+# ─────────────────────────────────────────────────────────────────────────────
 # fx_trade_bot_ml.py — MODEL & TRAINING (PHASE 3 REFACTORED)
 # Enforces Model Bundle atomicity, strict feature schema parity, and hard-stop error behavior.
 # Revised by Gemini
