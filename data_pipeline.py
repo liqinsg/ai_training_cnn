@@ -49,6 +49,16 @@ class DimensionMismatchError(ValueError):
     """Raised on input / scaler / model dimension mismatch."""
 
 
+# ─── Artifact write protection (Phase 3.0 §5) ───
+class LiveArtifactWriteError(RuntimeError):
+    """Raised when a read-only (live runtime) wrapper tries to train/publish.
+
+    The live orchestration path (fx_trade_bot.py) must never train a model or
+    write / republish model artifacts.  Offline training (retrain_model.py)
+    constructs its own writable wrapper and is unaffected.
+    """
+
+
 def adx(high, low, close, period=14):
     # Ensure we work with Pandas Series to preserve .rolling()
     high = pd.Series(high)
@@ -462,7 +472,12 @@ def predict_p_up(model, scaler, feature_list, X):
 
 
 class ModelWrapper:
-    def __init__(self, cfg: FeatureConfig, model_path: Optional[Path] = None):
+    def __init__(
+        self,
+        cfg: FeatureConfig,
+        model_path: Optional[Path] = None,
+        read_only: bool = False,
+    ):
         self.cfg = cfg
         self.model = None
         self.scaler = StandardScaler()
@@ -473,6 +488,22 @@ class ModelWrapper:
             p = p.with_suffix("")
         self.model_stem = p
         self.is_xgb = cfg.model_type == "xgboost" and xgboost_available
+        # Phase 3.0 §5.2/§5.4: the live runtime constructs the wrapper read-only,
+        # so fit()/save() and the legacy load-and-republish fallback are blocked
+        # from construction time (not merely flipped later).  The default stays
+        # writable so offline training (retrain_model.py) is unaffected.
+        self.read_only = bool(read_only)
+
+    def _assert_writable(self, action: str):
+        """Block a training/artifact-write attempt in a read-only runtime."""
+        if getattr(self, "read_only", False):
+            msg = (
+                f"live runtime is read-only — {action} blocked "
+                f"(artifact stem={self.model_stem}); publish models with the "
+                f"offline trainer (retrain_model.py) instead"
+            )
+            logger.error("[ARTIFACT-WRITE-BLOCKED] %s", msg)
+            raise LiveArtifactWriteError(msg)
 
     @property
     def _xgb_json(self) -> Path:
@@ -518,6 +549,7 @@ class ModelWrapper:
             )
 
     def fit(self, df: pd.DataFrame, feature_cols: List[str]) -> dict:
+        self._assert_writable("training (fit)")
         self.feature_names = feature_cols
         df_clean = df[feature_cols + ["target"]].dropna()
         if len(df_clean) < 100:
@@ -580,6 +612,7 @@ class ModelWrapper:
         ).sort_values("importance", ascending=False)
 
     def save(self):
+        self._assert_writable("artifact write (save)")
         import joblib
 
         if self.is_xgb and xgboost_available:
@@ -628,6 +661,9 @@ class ModelWrapper:
             return
 
         if self._legacy_pkl.exists():
+            # Phase 3.0 §5.3: never silently load a legacy artifact AND
+            # republish it as a fresh release from the live runtime.
+            self._assert_writable("legacy artifact migration (load + republish)")
             logger.warning(
                 f"Split artifacts missing — falling back to legacy {self._legacy_pkl} and re-migrating"
             )

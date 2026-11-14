@@ -1240,7 +1240,11 @@ feat_engine = FeatureEngine(FEAT_CFG)
 strat_engine = StrategyEngine(STRAT_CFG, model=None, feature_list=[])
 atr_mod = ATRModule(period=getattr(FEAT_CFG, "atr_period", cfg_bot("ATR_PERIOD", 14)))
 MODEL_PATH = BASE_DIR / "trade_model_xgb.pkl"
-model_wrapper = ModelWrapper(FEAT_CFG, model_path=MODEL_PATH)
+# Phase 3.0 §5.2: the live runtime constructs the wrapper read-only, so no live
+# code path can train or write / republish model artifacts.  ensure_model()
+# re-asserts this as defence-in-depth.  Offline training (retrain_model.py)
+# constructs its own writable wrapper and is unaffected.
+model_wrapper = ModelWrapper(FEAT_CFG, model_path=MODEL_PATH, read_only=True)
 last_closed = {} if REMOVE_COOLDOWN else load_cooldown(COOLDOWN_FILE, Direction)
 
 
@@ -1665,7 +1669,6 @@ def calc_weighted_score(
 
 # ─── MAIN TRADING FLOW ───────────────────────────────────────────────────────
 def main():
-    global model_wrapper, strat_engine
     log.info(
         f"\n🤖 RUN v{VERSION} {PROFILE_LABEL} — {ACCOUNT_NAME} | TREND+TP+TOP-N | "
         f"{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')} | "
@@ -1697,7 +1700,18 @@ def main():
             )
             return
 
-    model_wrapper, strat_engine = ensure_model(
+    # ── ML initialisation (Phase 3.0 runtime containment) ────────────────────
+    # ensure_model() now returns an explicit ModelInitResult and NEVER trains,
+    # NEVER writes/republishes artifacts and NEVER raises on an EXPECTED
+    # availability / load / validation failure — so a model failure can no
+    # longer abort the cycle before the genuinely ML-independent paths
+    # (Step 5 Dynamic Exit, Step 6 owned-position snapshot, QUICK-FLIP /
+    # _revise_owned_position) are reached.  Unexpected programming errors are
+    # still raised inside ensure_model() and stay visible here.
+    # NOTE: the ML-dependent entry path (Step 4 confluence / Step 7 scoring) is
+    # deliberately UNCHANGED — see PHASE3_0_IMPLEMENTATION_TASK §4.5.  Entry
+    # authorization remains unchanged and unresolved.
+    ml_init = ensure_model(
         MODEL_PATH,
         FEAT_CFG,
         model_wrapper,
@@ -1707,7 +1721,18 @@ def main():
         ALL_PAIRS,
         YAHOO_TO_OANDA,
         cfg_bot,
+        live=True,
+        profile=PROFILE_NAME,
     )
+    if ml_init.ok:
+        log.info(f"✅ ML READY — {ml_init.as_log_fields()}")
+    else:
+        log.warning(
+            f"⚠️ ML NOT READY ({ml_init.status}/{ml_init.reason}) — {ml_init.detail}. "
+            f"Independent position management (Step 5/Step 6/owned positions) "
+            f"still runs; ML-dependent entry scoring keeps its EXISTING "
+            f"(unresolved) synthetic-X behavior — Phase 3.0 §4.5 approval pending."
+        )
 
     # ── MAX_OPEN EARLY-GATE: quick pre-scan of owned positions BEFORE running
     #    Strength Matrix, D-Gate, MC bundle, scoring, or Step-7 candidate eval.
