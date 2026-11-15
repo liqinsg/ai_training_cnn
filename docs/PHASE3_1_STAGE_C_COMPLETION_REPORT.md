@@ -1,11 +1,13 @@
 # Phase 3.1 — Stage C 完成报告（Consumer Transparency Migration）
 
-**Version:** 1.2
+**Version:** 1.3
 **Date:** 2026-11-15
-**Status:** 复核收尾（review closure）已在工作树落地，**尚未提交**、**尚未验收**。
-首轮实现 = `c8bf4b9`；补充测试 + C-5 语义还原 = `a5e916f`。本版在 `a5e916f` 之上追加
-**SC-02 路径 A（真绑定 production load）**、**C-4 显式 provenance（且不过度声明权威 READY）**
-两个收尾修复，以及本文档的偏差记录。Stage C **暂不正式验收**，等待复核。
+**Status:** 复核收尾（review closure）代码已提交（分支 `v2026c`，4 个 commit，均已推送），
+**本报告（v1.3）为工作树中唯一未提交文件**；Stage C **尚未正式关闭**。
+**commit 轨迹：** `c8bf4b9`（首轮）→ `a5e916f`（补充测试 + C-5）→ `20bd831`
+（SC-02 路径 A + C-4 显式 provenance）→ `5947433`（C-4 marker 语义如实化）。
+本版（v1.3）追加 **SC-02 表述收窄 + 契约符合性核对** 与 **Git 偏差处置** 记录。
+**Stage C 状态：有条件通过最终复核。**
 **Contract:** `docs/PHASE3_1_CONTRACT.md` v1.3（SHA-256 `49975ef4…de7b`）
 **Spec:** `docs/PHASE3_1_STAGE_B_STRICT_SPEC.md` v3（Stage B 已验收）
 **Task order:** `docs/PHASE3_1_STAGE_C_IMPLEMENTATION_TASK.md`（SC-01…SC-06）
@@ -58,7 +60,24 @@ registry 命中 VERIFIED，消费者就可能把运行中的 A 误当作已验�
 - 失败/不可用时字段保持 `None`，**不影响既有 load 结果与控制流**。
 - 结果：`loaded_identity.model_instance` **就是** `strat_engine.model`（同一实例），
   `artifact_sha256` 覆盖的就是产出该运行实例的字节——**loaded-instance provenance**，
-  非 post-load 文件身份。A/B 替换窗口被消除（见 `test_sc02_single_read_is_immune_to_a_later_file_swap`）。
+  非 post-load 文件身份。见 `test_sc02_single_read_is_immune_to_a_later_file_swap`。
+
+**表述收窄（复核意见）——精确到「已取得的保证」：**
+
+> 消除了**单个 artifact** 在「加载后、身份捕获前」被替换所造成的实例身份错配窗口；
+> Model/Scaler **跨文件发布配对一致性**不由本机制保证，也不能仅由单次读取证明。
+
+- **适用范围**：路径 A 的 loaded-instance provenance **只对 XGBoost bytes-backed 生产加载成立**
+  （`ModelWrapper.load(model_bytes=...)` 且 scaler 亦从 bytes 加载 → `_loaded_from_bytes=True`）。
+  对 **RandomForest / sklearn pickle 路径**（仍从磁盘加载模型）与**磁盘 fallback**
+  （`_loaded_from_bytes=False`），**不声明**已取得 loaded-instance provenance——此时身份被
+  **withhold**（`loaded_identity=None` + `identity_detail`）。**不得**把 XGBoost 路径的测试
+  结果泛化为「所有 backend 都已完成身份绑定」。
+- **跨文件配对边界（契约符合性）**：Contract v1.3 **不要求** Model/Scaler 属于同一已验证
+  release pair —— §1.3.2 的「Exact artifact binding」只把 CD 证据绑到**模型** artifact 的
+  SHA-256；§1.3.4 明确「指纹 ≠ 版本身份」；§3.6 中 `model_hash`/`scaler_hash` 为独立字节摘要；
+  L47/§3.6 中 `release_id` 声明未赋值、manifest 不解析。故**跨文件配对一致性为已知限制**，
+  不升级为新的 Stage C 工作。
 
 ### SC-03 — C-2 / C-3 透明化（`fx_trade_bot_v685.py`）
 
@@ -128,35 +147,19 @@ PredictionResult 已 READY」——这是代码无法证明的 **provenance 过�
 
 ## 2. 变更文件清单
 
-**已提交（`c8bf4b9` + `a5e916f`，range `c8bf4b9~1..HEAD`）：**
+**已提交（分支 `v2026c`，共 4 个 commit）：**
+
+| commit | 内容 | 规模 |
+| --- | --- | --- |
+| `c8bf4b9` | 首轮实现（SC-01…SC-06） | 10 files, +790/−52 |
+| `a5e916f` | 补充测试 + C-5 语义还原 | 见 V8 |
+| `20bd831` | **SC-02 路径 A**（真绑定 production load）+ **C-4 显式 provenance** + `bind_loaded_identity` 专属测试 | 9 files, +571/−164 |
+| `5947433` | **C-4 marker 语义如实化**（`MODEL_READY` → `LEGACY_MODEL_INFERENCE_OK`） | 4 files, +119/−78 |
+
+**工作树中未提交：**
 
 ```
- attribution_v2/data_bridge.py                     |  93 +++++++++---
- attribution_v2/live_hook.py                       |  49 +++---
- attribution_v2/tests/test_stage_c_transparency.py | 173 ++++++++++++++++++++++
- docs/PHASE3_1_STAGE_C_COMPLETION_REPORT.md        | 172 +++++++++++++++++++++
- docs/PHASE3_1_STAGE_C_IMPLEMENTATION_TASK.md      | 106 +++++++++++++
- fx_trade_bot_ml.py                                |  53 ++++++-
- fx_trade_bot_v685.py                              |  37 ++++-
- ml/integration_hook.py                            |   9 ++
- ml/live_prediction_engine.py                      |  14 ++
- tests/test_phase3_runtime_containment.py          | 136 +++++++++++++++++
- 10 files changed, 790 insertions(+), 52 deletions(-)
-```
-
-**工作树中未提交（复核收尾，`git diff --stat` vs HEAD；含本报告自身的改动）：**
-
-```
- attribution_v2/live_hook.py                       |  33 ++--
- attribution_v2/tests/test_stage_c_transparency.py |  69 ++++++--
- data_pipeline.py                                  |  26 ++-
- docs/PHASE3_1_STAGE_C_COMPLETION_REPORT.md        | 185 +++++++++++++++-------
- fx_trade_bot_ml.py                                | 112 +++++++++----
- ml/prediction_adapter.py                          |  43 +++++
- strategy_decision.py                              |  16 ++
- tests/test_phase3_runtime_containment.py          | 146 ++++++++++-------
- tests/test_prediction_adapter.py                  | 105 ++++++++++++
- 9 files changed, 571 insertions(+), 164 deletions(-)
+ docs/PHASE3_1_STAGE_C_COMPLETION_REPORT.md   （本版 v1.3）
 ```
 
 ---
@@ -199,7 +202,7 @@ PredictionResult 已 READY」——这是代码无法证明的 **provenance 过�
 | 项目 | 结论 |
 | --- | --- |
 | SC-01 | 暂时认可 |
-| SC-02 | **路径 A 已实现**（真绑定 production load；含单次读免疫测试 + `bind_loaded_identity` 专属测试）；待复核 |
+| SC-02 | **路径 A 已实现**（真绑定 production load；含单次读免疫测试 + `bind_loaded_identity` 专属测试）；**有条件认可**：表述已收窄为「单个 artifact 的实例 provenance」，**仅 XGBoost bytes-backed 路径**适用，跨文件 release-pair 一致性列为已知限制（契约 v1.3 未要求） |
 | SC-03 / SC-04 | 暂时认可（未改） |
 | C-4 | **Stage C 内降级交付**：显式 provenance（`Signal.model_p_up_source` + `derive_xgb_p_up` 校验）已实现，且 marker 语义如实标注为「legacy 模型推理成功」而非权威 `PredictionResult.status==READY`；「绑定权威适配器 READY」部分**延后 Phase 3.6** |
 | C-5 | **通过** |
@@ -244,23 +247,33 @@ PredictionResult 已 READY」——这是代码无法证明的 **provenance 过�
 
 ## 7. Git 流程偏差（如实记录）
 
-任务单 §0 明确写着「**本次不 commit、不部署、不重训**」。实际出现了两次提交：
+任务单 §0 明确写着「**本次不 commit、不部署、不重训**」。实际出现了 **4 次提交**
+（分支 `v2026c`，均已推送）：
 
-- `c8bf4b9` — `phase31 stage C implementation`（首轮实现）
-- `a5e916f` — `phase31 stage C implementation 2`（补充测试 + C-5 修正）
+- `c8bf4b9` — phase31 stage C implementation（首轮实现）
+- `a5e916f` — phase31 stage C implementation 2（补充测试 + C-5 修正）
+- `20bd831` — phase31 stage C implementation 3（SC-02 路径 A + C-4 provenance + bind 测试）
+- `5947433` — phase31 stage C implementation 4（C-4 marker 语义如实化）
 
 这属于**明确的授权边界偏差**。它不意味着应撤销代码，也不意味着代码质量因此变差，但需在此
-如实记录。当前分支 `v2026c`；`git status` 显示 9 个文件为工作树**未提交**改动（见 §2）。
-本轮复核收尾**严格遵守**「不再提交新 commit」——所有修复保留在工作树。
+如实记录。当前分支 `v2026c`；工作树**仅** `docs/PHASE3_1_STAGE_C_COMPLETION_REPORT.md`
+（本版 v1.3）未提交（见 §2）。
+
+**偏差处置（复核意见）：**
+- 偏差已在 §7 如实披露，**不得**通过报告措辞把历史事实改写成「符合授权」。
+- **不擅自改写历史**：不因形式整洁而 `reset`/`rebase`/`cherry-pick`。已存在的 commit 保留原样。
+- 后续若要提交工作树收尾内容，**必须先取得相应授权**。
 
 ---
 
 ## 8. 状态
 
-- 首轮实现 + 初版报告 = `c8bf4b9`；补充测试 + C-5 还原 = `a5e916f`（**均在工作树之外**）。
-- 本轮复核收尾（SC-02 路径 A、C-4 显式 provenance + marker 语义如实化、
-  `bind_loaded_identity` 测试、本文档）在**工作树中，尚未提交**。
+- 已提交：`c8bf4b9`（首轮）、`a5e916f`（补充测试 + C-5）、`20bd831`（SC-02 路径 A + C-4 provenance）、
+  `5947433`（C-4 marker 语义如实化）。
+- 工作树**仅本报告**（v1.3）未提交。
 - **C-4 在 Stage C 内为「降级交付」**：实现并验证了「不合成 / 需显式标记」，
   「绑定权威 `PredictionResult(status=READY)`」部分**延后 Phase 3.6 Controlled Activation**。
-- **Stage C 暂不正式验收。** 待用户/ChatGPT 复核 SC-02 路径 A 与 C-4 证据后，
-  再决定提交、部署、重训与正式关闭。
+- **SC-02 表述已收窄**（单 artifact 实例 provenance + XGBoost 适用范围 + release-pair 已知限制）。
+- **Git 偏差已如实记录并声明处置原则**（不改写历史、后续提交需先授权）。
+- **Stage C 状态：有条件通过最终复核**（C-4/C-5/SC-01/SC-03/SC-04 通过；SC-02 收窄后认可）。
+  部署、重训、接通权威 READY **均不属于本次验收授权**。正式关闭待用户决定。
