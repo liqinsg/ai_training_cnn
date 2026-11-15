@@ -1,0 +1,185 @@
+--- a/docs/PHASE3_2_STRICT_SPEC.md
++++ b/docs/PHASE3_2_STRICT_SPEC.md
+@@ -1,11 +1,14 @@
+ 
+ # 【Strict Spec】Phase 3.2 — Feature / Inference Consistency
+ 
+-**Version:** 0.1
++**Version:** 0.3 — Baseline and Parity Controls Added
+ **Date:** 2026-11-15
+ **Status:** DRAFT — PENDING OWNER APPROVAL
+ **Repository:** `ai_training_cnn`
+-**Baseline:** User-uploaded `ai_training_cnn.zip`
++**Baseline:** Current local repository source at `HEAD` `05bf31e8a8f1f07da03c32983dc379fa246b70ed`
++**Working-tree note:** `.gitignore`, `monte_carlo/monte_carlo_kf.py`, and `requirements.txt` have uncommitted changes. The `requirements.txt` change includes a NumPy version change; Stage A must record the effective dependency baseline before parity experiments.
++
++Stage A must record `git status --short`, staged and unstaged diffs for all modified files, untracked files relevant to Phase 3.2, Python version, and effective installed versions of NumPy, pandas, pandas-ta, pandas-ta-classic, scikit-learn, and XGBoost. The effective experiment baseline is `HEAD` plus explicitly recorded working-tree changes and dependency environment. This recording requirement does not authorize dependency changes.
+ **Implementation Authorization:** NOT GRANTED
+ **Priority:** P0 / P1
+ 
+@@ -84,7 +87,7 @@
+ 
+ ## 3. Current Source Findings
+ 
+-以下是本次 ZIP 源码中已经确认的事实，不等于所有问题均已证明影响当前生产预测。
++以下是当前本地仓库源码中已经确认的事实，不等于所有问题均已证明影响当前生产预测。
+ 
+ ### F32-01 — Feature Backend
+ 
+@@ -127,27 +130,34 @@
+ - `bfill()`
+ - `fillna(0)`
+ 
+-`fx_trade_bot.py` 主行情路径也执行了相同清洗步骤。
+-
+-但多周期 Confluence 路径直接调用 `feat_engine.build(raw_tf)`，没有执行同样的清洗流程。
++`fx_trade_bot.py` 主交易数据路径（包括常规扫描及持仓覆盖数据路径）也执行了相同清洗步骤。
++
++多周期 Confluence 路径则直接把 `feat_engine.build(raw_tf)` 的结果传给策略，没有执行同样的清洗流程。
++
++| Consumer path | Feature construction | Post-build cleaning |
++| --- | --- | --- |
++| Training | `FeatureEngine.build(raw)` | `replace([inf, -inf], nan) → ffill → bfill → fillna(0)` |
++| Main trading data paths | `feat_engine.build(raw)` | `replace([inf, -inf], nan) → ffill → bfill → fillna(0)` |
++| Multi-timeframe Confluence | `feat_engine.build(raw_tf)` | No matching cleaning chain before strategy call |
+ 
+ **Required action:** 明确所有消费者是否应该共用同一个输入验证与预处理入口，并单独验证 `bfill()` 对训练样本的影响。
++Stage A must compare resulting column sets, warm-up rows, NaN/Inf handling, and the actual frames received by each consumer. It must assess whether `bfill()` carries later-row values into earlier training rows.
+ 
+ ### F32-04 — Lookback Guard Mismatch
+ 
+ **Status: CONFIRMED**
+ 
+-当前存在多套长度条件：
+-
+-- `FeatureConfig.required_bars = 20`
+-- `StrategyEngine.generate_signal()` 最低检查 5 根。
+-- `data_guard.MIN_REQUIRED_BARS` 默认 200。
+-- `retrain_model.py` 要求至少 200 根原始数据。
+-- 主交易路径请求 200 根，但实际返回数量可能少于请求数量。
++当前存在多套、作用于不同调用路径的长度条件：
++
++- Training：`retrain_model.py::fetch_pair_data()` 拒绝少于 200 根原始数据。
++- Main trading inference：实时策略入口 `StrategyEngine.generate_signal()` 检查 5 根；不能据此认定有 200 根保护。
++- FeatureEngine：`FeatureConfig.required_bars = 20`，不足时记录 warning，不强制拒绝。
++- `indicator_provider`：调用 `has_min_bars(..., MIN_REQUIRED_BARS)`，该默认值为 200；这不是主交易策略入口的保护。
++- Main trading data paths 请求 200 根，但请求数量不保证实际返回数量。
+ 
+ FeatureEngine 中存在 `dist_high_96` / `dist_low_96` 等条件生成的特征。
+ 
+-**Required action:** 根据完整依赖图定义唯一的有效输入规则。不能把 API 请求数量当成实际数据保证。
++**Required action:** Stage A 必须绘制实际调用链，逐路径记录最小数据检查位置、检查结果及失败行为。根据完整特征依赖图定义有效输入规则；不能把配置常量或 API 请求数量当成实际保护保证。
+ 
+ ### F32-05 — Timeframe Compatibility
+ 
+@@ -183,18 +193,22 @@
+ 
+ ### F32-07 — Artifact Evidence
+ 
+-**Status: NOT VERIFIED**
+-
+-本次 ZIP 不包含：
+-
+-- `.git` 元数据
+-- `docs/Development_plan.md`
+-- `trade_model_xgb.json`
+-- `scaler.joblib`
+-- `trade_model_xgb.features.json`
+-- `trade_model_xgb.cfg.json`
+-
+-因此，本轮不能确认实际生产 artifact 的 feature list、训练配置及具体兼容性。
++**Status: PARTIALLY VERIFIED**
++
++当前本地仓库中可检查的 metadata：
++
++- `trade_model_xgb.cfg.json`：AVAILABLE — inspectable。
++- `trade_model_xgb.manifest.json`：AVAILABLE — inspectable；声明 34 个特征。
++
++以下证据不可用或未验证：
++
++- `trade_model_xgb.json`：ACTIVE MODEL NOT AVAILABLE。
++- `scaler.joblib`：NOT AVAILABLE。
++- 备份模型文件存在，但不能替代活动模型。
++- 活动模型、Scaler 与 manifest 中 34 个特征的维度兼容性：NOT VERIFIED。
++- manifest 的 34 个特征只证明 metadata 声明了这些特征，不能证明活动模型和 Scaler 与之兼容。
++
++**Required action:** 在活动模型和 Scaler 可取得前，不得宣称已验证模型输入维度或旧 artifact 兼容性；记录最小证据缺口及影响。
+ 
+ ---
+ 
+@@ -283,6 +297,7 @@
+ - 每条实际消费者路径均有记录。
+ - 所有现有 fallback 均有归属。
+ - 不以历史文档代替当前源码证据。
++- 当调用路径、配置权威、依赖基线和证据缺口均已记录后，Stage A 即完成并转入 Stage B；不得以开放式审计为由无限延长本阶段。
+ 
+ ### Stage B — Deterministic Parity Test Design
+ 
+@@ -300,8 +315,11 @@
+ - 非有限数值
+ - 重复及乱序时间戳
+ - 不同 lookback 长度
++- Lookback Sensitivity：使用相同 instrument、timeframe、依赖、FeatureEngine 配置及同一最后一根已完成 K 线，分别用最近 200 根和 500 根历史数据构造特征，并比较最终有效特征向量。
+ - 不同 timeframe
+ - 不同计算 backend
++
++每个数值实验必须在查看结果前，预先记录比较规则、绝对/相对容差和判定方式。容差不得在看到结果后追溯放宽以使失败通过。任何例外必须说明受影响特征、数值原因、接受的容差和下游影响，并取得 owner 明确批准。Lookback Sensitivity 必须记录逐特征绝对差、相对差、历史长度敏感特征、列缺失及 NaN/Inf 情况，并判定是否超过预注册容差。
+ 
+ 验收：
+ 
+@@ -310,19 +328,20 @@
+ - 数值差异满足明确、经批准的容差。
+ - 所有失败均能给出明确原因。
+ - 不依赖真实 OANDA 账户。
+-
+-### Stage C — Canonical Implementation
+-
+-**目标：实现经批准的唯一特征计算与验证入口。**
+-
+-实施前提：
++- Stage B 以可重复实验结果及明确判定结束，不以等待或观察若干天作为完成条件。
++
++### Stage C — Contract Finalization
++
++**目标：依据 Stage A、B 的证据冻结 Feature Contract 与验收标准。Stage C 在本规格授权下仍是规格工作，不包含生产实现。**
++
++合同冻结前提：
+ 
+ - Stage A、B 已验收。
+ - Canonical backend 已明确。
+ - Missing-value / warm-up policy 已批准。
+ - 旧 artifact 兼容策略已明确。
+ 
+-实施要求：
++合同冻结要求：
+ 
+ - 训练和推理使用相同计算定义。
+ - 统一预处理和输入验证。
+@@ -419,13 +438,13 @@
+ - 接通 PredictionResult READY。
+ - 修改任何交易行为。
+ 
+-**Stage C 实施必须取得单独批准。**
++任何生产代码实施（包括 canonical implementation）、模型训练、部署、PredictionResult READY 接入或交易行为变更，均须取得单独批准。
+ 
+ ---
+ 
+ ## 12. Final Deliverables
+ 
+-Phase 3.2 完成时必须交付：
++完整 Phase 3.2 closure deliverables（生产实现部分仍需单独批准）：
+ 
+ 1. `docs/PHASE3_2_FEATURE_CONTRACT.md`
+ 2. `docs/PHASE3_2_TRAIN_INFERENCE_PARITY_REPORT.md`
+@@ -435,6 +454,10 @@
+ 6. Feature Contract Compatibility Matrix。
+ 7. 明确的 Phase 3.2 Closure Decision。
+ 
+-`docs/Development_plan.md` 仍是最高层生命周期参考；其内容必须在最终规格冻结前完成对照，不得由本任务单擅自覆盖。
++本次授权范围仅覆盖 Stage A、B 的只读/离线验证及 Stage C 的合同定稿。自动化 parity suite 的实现和 implementation report 中的生产变更记录，只有在另行批准生产实现后才适用；本规格本身不授权这些变更。
++
++当前可用参考：`docs/Master_Blueprint_v1.0.md`。本地缺少 `docs/Development_plan.md`，其内容与 Phase 3.2 的对齐状态为 `NOT VERIFIED`。Master Blueprint 可作为现有架构参考，但未经核对不得视为 Development Plan 的等价替代。
++
++Phase 3.2 与完整开发生命周期的最终一致性：`PENDING VERIFICATION`。
+ 
+ **Phase 3.2 Status: DRAFT — PENDING APPROVAL**
