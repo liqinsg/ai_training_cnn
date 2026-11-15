@@ -1,7 +1,7 @@
 # Phase 3.2 — Document 02: Feature Technical Definitions and Eligibility
 
 **Date:** 2026-11-15  
-**Status:** DRAFT — OWNER DECISIONS REQUIRED  
+**Status:** L1 + L2-A APPROVED (owner, 2026-11-15) — FD-01..09 recorded below  
 **Scope:** Technical definitions for the 37 source-derived feature candidates. Predictive value is out of scope.
 
 ## 1. Purpose and boundary
@@ -18,7 +18,9 @@ The current matrix classifies 37 candidates as:
 - 14 `DEFER`
 - 0 `EXCLUDE`
 
-These are proposed dispositions, not approvals or final eligibility findings.
+These dispositions were proposed by the matrix; under FD-02 (below) they are now the approved *definition* baseline, but they are still not final eligibility findings.
+
+**FD-02 (approved, 2026-11-15):** the matrix `PHASE3_2_TECHNICAL_FEATURE_DECISION_MATRIX_v0.1.md` is adopted as the approval baseline for the ACCEPTABLE/REDEFINE formulas and names, pinned at SHA-256 `808bdcbdbb7b95a9322183686c9440746df0fc703184475369eb9990044c0453`. It fixes the *technical definition baseline* only; candidate eligibility/freeze remains a Doc 05 (Step 6) outcome.
 
 | # | Source candidate | Proposed disposition | Proposed definition / blocker |
 |---:|---|---|---|
@@ -60,9 +62,9 @@ These are proposed dispositions, not approvals or final eligibility findings.
 | 36 | `is_london` | DEFER | Define local interval/boundaries/calendar; use `Europe/London` IANA timezone |
 | 37 | `is_ny` | DEFER | Define local interval/boundaries/calendar; use `America/New_York` IANA timezone |
 
-## 3. ADX proposed definition — owner approval required
+## 3. ADX definition — APPROVED (FD-06)
 
-Proposed period `n=14` bars remains pending approval.
+Period `n=14` bars: **APPROVED (FD-06, 2026-11-15)**. The definition below is the approved ADX definition.
 
 1. For `t>0`: `up=High[t]-High[t-1]`; `down=Low[t-1]-Low[t]`.
 2. `+DM[t]=up` iff `up>down` and `up>0`, else zero. `-DM[t]=down` iff `down>up` and `down>0`, else zero. Ties set both to zero.
@@ -106,15 +108,15 @@ Failure of any condition means `DEFER`.
 
 | Decision ID | Required decision | Status |
 |---|---|---|
-| FD-01 | Approve target timeframe and timestamp/input semantics | PENDING |
-| FD-02 | Approve proposed formulas/names for ACCEPTABLE/REDEFINE candidates | PENDING |
-| FD-03 | Choose canonical ATR definition/backend/period | PENDING |
-| FD-04 | Choose canonical RSI definition/backend/period | PENDING |
-| FD-05 | Choose canonical MACD definition/backend/periods | PENDING |
-| FD-06 | Approve ADX Wilder definition and period 14 | PENDING |
-| FD-07 | Resolve volume source semantics and invalid-value policy | PENDING |
-| FD-08 | Resolve London/New York sessions and calendar rules | PENDING |
-| FD-09 | Approve feature-specific warm-up and invalidity behavior | PENDING |
+| FD-01 | Approve target timeframe and timestamp/input semantics | APPROVED — M15; input/timestamp semantics per Doc 01 IC-01..08 (IC-02 value pending source evidence) |
+| FD-02 | Approve proposed formulas/names for ACCEPTABLE/REDEFINE candidates | APPROVED — matrix `PHASE3_2_TECHNICAL_FEATURE_DECISION_MATRIX_v0.1.md` as baseline; SHA-256 `808bdcbdbb7b95a9322183686c9440746df0fc703184475369eb9990044c0453` |
+| FD-03 | Choose canonical ATR definition/backend/period | APPROVED — Revision Plan §6 FD-03: Wilder RMA (alpha = 1/n), n = 14; one canonical implementation, no silent fallback; derived `atr_ma`/`atr_pct`/`atr_ecdf_50bar`/`atr_ratio` windows as in §6 |
+| FD-04 | Choose canonical RSI definition/backend/period | APPROVED — Revision Plan §6 FD-04: Wilder RMA (alpha = 1/n), n = 14; `avg_loss == 0 → 100`; fully flat → `50`; `rsi_slope_45m = RSI[t]-RSI[t-3]` |
+| FD-05 | Choose canonical MACD definition/backend/periods | APPROVED — Revision Plan §6 FD-05: EMA alpha = 2/(n+1), `adjust=False`, first-value seed; periods 12 / 26 / 9; `macd`/`macd_signal`/`macd_hist` produced together in one shared valid range |
+| FD-06 | Approve ADX Wilder definition and period 14 | APPROVED — §3 above; n = 14; full break/reseed rules; first seed at index 2n-1 |
+| FD-07 | Resolve volume source semantics and invalid-value policy | APPROVED — `vol_sma_ratio` and `vol_trend` = `EXCLUDE` for the new contract (Revision Plan §10.1); does not alter any other feature |
+| FD-08 | Resolve London/New York sessions and calendar rules | APPROVED — sessions keep IANA zones (`Europe/London`, `America/New_York`); candle-availability calendar governed by the Calendar Contract |
+| FD-09 | Approve feature-specific warm-up and invalidity behavior | APPROVED — Revision Plan §6: warm-up rows stay `NaN` (never filled); per-feature first-valid rows as defined there |
 
 ## 7. Authorization boundary
 

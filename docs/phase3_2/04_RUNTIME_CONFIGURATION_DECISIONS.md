@@ -1,7 +1,7 @@
 # Phase 3.2 — Document 04: Runtime Configuration Decisions
 
 **Date:** 2026-11-15  
-**Status:** DRAFT — OWNER DECISIONS REQUIRED  
+**Status:** L2 APPROVED (owner, 2026-11-15) — RC-01, RC-03..RC-11 recorded; RC-02 remains NOT YET APPROVED (pending Step 4 evidence / L2-B)  
 **Scope:** Runtime settings that must be decided separately from feature formulas and experiments.
 
 ## 1. Purpose
@@ -12,17 +12,17 @@ Separate runtime operating choices from technical feature definitions. These set
 
 | ID | Runtime decision | Current status | Required evidence/decision |
 |---|---|---|---|
-| RC-01 | Production timeframe | NOT APPROVED | Explicit owner choice; M15 remains a candidate |
-| RC-02 | Production history length | NOT YET APPROVED | Explicit bar count and warm-up sufficiency evidence |
-| RC-03 | Timestamp convention | NOT APPROVED | Candle-open or candle-close timestamp |
-| RC-04 | Incomplete-candle handling | NOT APPROVED | Exact shared exclusion rule |
-| RC-05 | Calendar/session gap policy | NOT APPROVED | Pinned calendar and permitted exceptions |
-| RC-06 | Volume source | DEFERRED | Tick volume vs exchange-traded volume, per instrument/feed |
-| RC-07 | Volume comparability | DEFERRED | Whether values are comparable across supported instruments |
-| RC-08 | Volume invalidity | DEFERRED | Missing, zero, negative and unavailable handling |
-| RC-09 | London session | DEFERRED | Local start/end, endpoint inclusivity, weekends/holidays |
-| RC-10 | New York session | DEFERRED | Local start/end, endpoint inclusivity, weekends/holidays |
-| RC-11 | IANA timezone data | PENDING | Pinned timezone database identity/version |
+| RC-01 | Production timeframe | APPROVED — M15 | Explicit owner choice; M15 remains a candidate |
+| RC-02 | Production history length | NOT YET APPROVED | Explicit bar count and warm-up sufficiency evidence (Step 4 report) — L2-B |
+| RC-03 | Timestamp convention | APPROVED (direction) — same as Doc 01 IC-02; concrete value pending source evidence | Candle-open or candle-close timestamp |
+| RC-04 | Incomplete-candle handling | APPROVED — same shared exclusion rule as Doc 01 IC-04 | Exact shared exclusion rule |
+| RC-05 | Calendar/session gap policy | APPROVED — references the Calendar Contract (`PHASE3_2_CALENDAR_CONTRACT.md`) | Pinned calendar and permitted exceptions |
+| RC-06 | Volume source | APPROVED — NOT APPLICABLE (FD-07 = EXCLUDE for the new contract) | Tick volume vs exchange-traded volume, per instrument/feed |
+| RC-07 | Volume comparability | APPROVED — NOT APPLICABLE (FD-07 = EXCLUDE for the new contract) | Whether values are comparable across supported instruments |
+| RC-08 | Volume invalidity | APPROVED — NOT APPLICABLE (FD-07 = EXCLUDE for the new contract) | Missing, zero, negative and unavailable handling |
+| RC-09 | London session | APPROVED — IANA `Europe/London`; boundaries/DST per FD-08; FAIL CLOSED | Local start/end, endpoint inclusivity, weekends/holidays |
+| RC-10 | New York session | APPROVED — IANA `America/New_York`; boundaries/DST per FD-08; FAIL CLOSED | Local start/end, endpoint inclusivity, weekends/holidays |
+| RC-11 | IANA timezone data | APPROVED (requirement) — pin tz database source + version, DST rules, FAIL CLOSED; concrete version pin pending | Pinned timezone database identity/version |
 
 ## 3. Production history length rules
 
@@ -63,17 +63,17 @@ Before session features become eligible, specify:
 
 | ID | Owner-approved value | Approver | Date |
 |---|---|---|---|
-| RC-01 |  |  |  |
-| RC-02 |  |  |  |
-| RC-03 |  |  |  |
-| RC-04 |  |  |  |
-| RC-05 |  |  |  |
-| RC-06 |  |  |  |
-| RC-07 |  |  |  |
-| RC-08 |  |  |  |
-| RC-09 |  |  |  |
-| RC-10 |  |  |  |
-| RC-11 |  |  |  |
+| RC-01 | M15 | owner | 2026-11-15 |
+| RC-02 | NOT YET APPROVED (pending Step 4 evidence; L2-B) | — | — |
+| RC-03 | Same as Doc 01 IC-02; concrete value pending source evidence | owner | 2026-11-15 |
+| RC-04 | Same shared exclusion rule as Doc 01 IC-04 | owner | 2026-11-15 |
+| RC-05 | Reference the Calendar Contract (`PHASE3_2_CALENDAR_CONTRACT.md`) | owner | 2026-11-15 |
+| RC-06 | NOT APPLICABLE (FD-07 = EXCLUDE) | owner | 2026-11-15 |
+| RC-07 | NOT APPLICABLE (FD-07 = EXCLUDE) | owner | 2026-11-15 |
+| RC-08 | NOT APPLICABLE (FD-07 = EXCLUDE) | owner | 2026-11-15 |
+| RC-09 | IANA `Europe/London`; FAIL CLOSED | owner | 2026-11-15 |
+| RC-10 | IANA `America/New_York`; FAIL CLOSED | owner | 2026-11-15 |
+| RC-11 | Pin tz database source + version, DST rules, FAIL CLOSED; concrete version pin pending | owner | 2026-11-15 |
 
 ## 8. Authorization boundary
 

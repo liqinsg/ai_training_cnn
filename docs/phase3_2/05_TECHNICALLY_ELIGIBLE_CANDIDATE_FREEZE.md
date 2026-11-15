@@ -26,6 +26,8 @@ A candidate may be marked `TECHNICALLY ELIGIBLE` only when all applicable condit
 
 A `DEFER` candidate cannot be frozen as technically eligible.
 
+**Status note (2026-11-15):** the L2-A definition decisions (Doc 01 IC-*, Doc 02 FD-*) were recorded on 2026-11-15, which satisfies the definition-level prerequisites 1–5 for the `REDEFINE`/`ACCEPTABLE AS-IS` candidates that are not blocked. **No candidate is frozen**: prerequisites 8 (train/inference parity — P1/P2 not run), 9 (convergence — offline only) and 10 (production history length — RC-02 not approved) remain unmet, and the `atr_ecdf_50bar` tie-sensitivity finding is an open blocker. All `Final status` values below therefore remain `NOT FROZEN` or `DEFER`.
+
 ## 3. Candidate freeze register
 
 | Candidate | Proposed name | Matrix disposition | Formula decision | Backend decision | Warm-up decision | Correctness/parity | Convergence | Production-length support | Final status |

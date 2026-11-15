@@ -1,7 +1,7 @@
 # Phase 3.2 — Document 01: Input Contract Owner Decision
 
 **Date:** 2026-11-15  
-**Status:** DRAFT — OWNER DECISION REQUIRED  
+**Status:** L1 + L2-A APPROVED (owner, 2026-11-15) — IC decisions recorded below  
 **Scope:** Input data, timeframe, timestamps, candle completeness, validation and batch failure policy.
 
 ## 1. Purpose
@@ -12,14 +12,14 @@ Freeze the common input boundary used by both training and inference before feat
 
 | ID | Decision | Current proposal | Owner decision |
 |---|---|---|---|
-| IC-01 | Target timeframe | M15 | PENDING |
-| IC-02 | Timestamp convention | One explicit convention: candle-open timestamp or candle-close timestamp | PENDING |
-| IC-03 | Timestamp timezone | Timezone-aware UTC before validation/features | PENDING |
-| IC-04 | Incomplete candle | Exclude the latest incomplete candle using one shared rule | PENDING |
-| IC-05 | Candle cadence | Expected 15-minute intervals, subject to an approved market/session calendar | PENDING |
-| IC-06 | Invalid batch policy | Reject the entire input batch; no row deletion, imputation, substitution or partial feature output | PENDING |
-| IC-07 | Session gaps | Accept only gaps explicitly explained by an approved calendar; otherwise reject | PENDING |
-| IC-08 | Training/inference parity | Identical validation and failure semantics | PENDING |
+| IC-01 | Target timeframe | M15 | APPROVED — M15 |
+| IC-02 | Timestamp convention | One explicit convention: candle-open timestamp or candle-close timestamp | APPROVED (direction) — candle-open vs candle-close must be determined from OANDA source evidence (see `PHASE3_2_CALENDAR_CONTRACT.md`); not inferred from the `time` field name. Concrete value PENDING source evidence |
+| IC-03 | Timestamp timezone | Timezone-aware UTC before validation/features | APPROVED — timezone-aware UTC before validation/features |
+| IC-04 | Incomplete candle | Exclude the latest incomplete candle using one shared rule | APPROVED — exclude the latest incomplete candle with one shared rule; the identification signal is tied to IC-02 / the OANDA `complete` field |
+| IC-05 | Candle cadence | Expected 15-minute intervals, subject to an approved market/session calendar | APPROVED — 15-minute intervals governed by the Calendar Contract |
+| IC-06 | Invalid batch policy | Reject the entire input batch; no row deletion, imputation, substitution or partial feature output | APPROVED — reject the entire batch; no deletion / imputation / substitution / partial output |
+| IC-07 | Session gaps | Accept only gaps explicitly explained by an approved calendar; otherwise reject | APPROVED — accept only gaps explained by the approved Calendar Contract; otherwise reject |
+| IC-08 | Training/inference parity | Identical validation and failure semantics | APPROVED — identical validation and failure semantics (layered per Revision Plan §8) |
 
 ## 3. Proposed v1 input contract
 
@@ -60,14 +60,16 @@ Freeze the common input boundary used by both training and inference before feat
 
 | Decision | Owner choice / value | Approved by | Date |
 |---|---|---|---|
-| IC-01 Target timeframe |  |  |  |
-| IC-02 Timestamp convention |  |  |  |
-| IC-03 UTC normalization |  |  |  |
-| IC-04 Incomplete-candle rule |  |  |  |
-| IC-05 Cadence/calendar |  |  |  |
-| IC-06 Whole-batch rejection |  |  |  |
-| IC-07 Explained gaps |  |  |  |
-| IC-08 Train/inference parity |  |  |  |
+| IC-01 Target timeframe | M15 | owner | 2026-11-15 |
+| IC-02 Timestamp convention | Source-evidence determined (candle-open vs candle-close); not inferred from field name; concrete value pending Calendar Contract source evidence | owner | 2026-11-15 |
+| IC-03 UTC normalization | Timezone-aware UTC before validation/features | owner | 2026-11-15 |
+| IC-04 Incomplete-candle rule | Exclude the latest incomplete candle, one shared rule across training and inference | owner | 2026-11-15 |
+| IC-05 Cadence/calendar | 15-minute cadence; governed by the Calendar Contract | owner | 2026-11-15 |
+| IC-06 Whole-batch rejection | Reject entire batch; no deletion / imputation / substitution / partial output | owner | 2026-11-15 |
+| IC-07 Explained gaps | Accept only Calendar-Contract-explained gaps; otherwise reject | owner | 2026-11-15 |
+| IC-08 Train/inference parity | Identical validation and failure semantics | owner | 2026-11-15 |
+
+**Open dependency (IC-02 / IC-04):** the decisions above fix the *rule*; the concrete candle-open/close choice, the completion signal and the UTC-conversion layer must still be evidenced from the OANDA feed in the Calendar Contract before they are treated as verified.
 
 ## 7. Authorization boundary
 

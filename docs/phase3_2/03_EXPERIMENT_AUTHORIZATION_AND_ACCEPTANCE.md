@@ -1,7 +1,7 @@
 # Phase 3.2 — Document 03: Experiment Authorization and Acceptance Criteria
 
 **Date:** 2026-11-15  
-**Status:** DRAFT — OWNER APPROVAL REQUIRED BEFORE EXECUTION  
+**Status:** L2-A APPROVED (owner, 2026-11-15) — protocol + bounded execution authorization recorded  
 **Scope:** Bounded technical experiments only. No production implementation or training authorization.
 
 ## 1. Purpose
@@ -96,11 +96,13 @@ Record:
 
 | Authorization | Owner decision |
 |---|---|
-| Approve fixed 200/300/500/800 sequence | PENDING |
-| Approve per-feature tolerance | PENDING |
-| Approve two-pair convergence rule | PENDING |
-| Approve ADX break/reseed fixture | PENDING |
-| Approve experiment execution scope | PENDING |
+| Approve fixed 200/300/500/800 sequence | APPROVED (owner, 2026-11-15) |
+| Approve per-feature tolerance | APPROVED — `atol = 1e-10`, `rtol = 1e-8` |
+| Approve two-pair convergence rule | APPROVED — both `300 vs 500` and `500 vs 800` required per feature |
+| Approve ADX break/reseed fixture | APPROVED — §6 fixture |
+| Approve experiment execution scope | APPROVED — bounded offline fixed-fixture runs only; no production code, training or artifact changes |
+
+**Execution note (2026-11-15):** the bounded Step 4 offline convergence run and the ADX break/reseed unit check were executed as a read-only implementation check under the owner's "go directly to experiment/code" instruction, before this authorization was recorded. Its report is `experiments/phase3_2_feature_convergence/REPORT.md`. This protocol is recorded as approved for that bounded scope; any extension needs a protocol amendment.
 
 ## 9. Stop conditions
 

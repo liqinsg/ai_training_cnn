@@ -46,6 +46,8 @@
 
 01–05 同名副本在 `docs/` 与 `docs/phase3_2/` 经 `cmp` 确认为逐字节相同；仓库级引用盘点尚未完成。当前建议 `docs/phase3_2/` 为 canonical 目录，仍须经 L1 接受 A2 流程后才能执行引用/副本治理。删除或改写副本前必须先完成引用扫描并获 A2 具体批准。
 
+**A2 更新记录（2026-11-15，仅追加，不改上文）：** 上文「逐字节相同」在 2026-11-15 将 L2 决定写入 `docs/phase3_2/` 后不再成立（五对全部 DIFF）。仓库级引用扫描已完成，结论见 `PHASE3_2_A2_REFERENCE_SCAN.md`（全仓库无任何引用指向根目录副本）。Owner 已接受 A2 方案 A：canonical 定为 `docs/phase3_2/`，根目录 `docs/01–05` 五个副本已删除；其原始内容由归档 `phase3_2_owner_decision_pack.zip` 与 git 历史（提交 `334cc00` 之前的版本）保留。
+
 ---
 
 ## 3. 授权模型（三层分离）— 对应 P0-1
@@ -185,7 +187,7 @@ L1 后建立独立文件 **`docs/phase3_2/PHASE3_2_CALENDAR_CONTRACT.md`**。初
 ### FD‑04 · RSI
 - backend：单一 canonical 实现；包、版本、具体 API/参数待 L2 冻结，不得静默切换 fallback
 - 平滑建议：Wilder RMA（alpha = 1/n），n = 14；period、初始化 seed 与 first-valid row 待 L2 决定
-- 零分母行为：`avg_loss == 0 → RSI = 100`；**`avg_gain == avg_loss == 0` 的取值待你定**（50 或 NaN）
+- 零分母行为：`avg_loss == 0 → RSI = 100`；`avg_gain == avg_loss == 0`（完全静止）→ **提案 50**（连续、不引入额外 NaN）
 - warm‑up：前 n 根无值
 - `rsi_slope`：与决策矩阵对齐，候选名 `rsi_slope_45m`，公式 `RSI[t] - RSI[t-3]`（M15 下为三根间隔 / 45 分钟差分），需要 4 个有效 RSI 值；不得写成一阶差分。该重命名/公式仍待 L2 批准。
 
