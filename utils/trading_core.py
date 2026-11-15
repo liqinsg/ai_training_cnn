@@ -59,6 +59,31 @@ def get_open_position(instrument: str):
     )
 
 
+def get_positions() -> list[dict[str, str]]:
+    positions_module = importlib.import_module("oandapyV20.endpoints.positions")
+    req = positions_module.OpenPositions(accountID=OANDA_ACCOUNT_ID)
+    oanda_client.request(req)
+
+    positions = []
+    for position in req.response.get("positions", []):
+        instrument = position.get("instrument")
+        if not instrument:
+            continue
+
+        for side, direction in (("long", "LONG"), ("short", "SHORT")):
+            side_position = position.get(side, {})
+            if float(side_position.get("units", 0) or 0) == 0:
+                continue
+
+            active_position = {"instrument": instrument, "direction": direction}
+            trade_ids = side_position.get("tradeIDs", [])
+            if trade_ids:
+                active_position["trade_id"] = str(trade_ids[0])
+            positions.append(active_position)
+
+    return positions
+
+
 def attach_sl_tp_to_open_trade(signal, instrument: str | None = None) -> bool:
     instrument = instrument or signal.pair_to_trade
     position = get_open_position(instrument)
