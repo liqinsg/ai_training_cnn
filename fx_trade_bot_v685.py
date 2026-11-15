@@ -2172,6 +2172,15 @@ def main():
             log.info(
                 f"🔗 CONFLUENCE {pair}: BUY={buy_c} SELL={sell_c} → {'✅ PASS' if passes else '❌ BLOCK'}"
             )
+            # [Stage C / C-1] Transparency only: these counts are derived from the
+            # legacy Decision-layer `signal.action`, NOT from verified
+            # PredictionResults. No ML vote is invented for a non-READY state
+            # (contract §4.1 C-1). The vote arithmetic above is unchanged.
+            log.info(
+                f"🔎 [ML-STATE] CONFLUENCE {pair}: votes=legacy_derived "
+                f"(signal.action; not verified PredictionResult) "
+                f"| ml_votes_invented=0"
+            )
 
     # [OPT-6] pair_data only holds Top-N pairs; an owned position on a pair that
     # dropped out of Top-N got NO trailing/time-expiry management in this path
@@ -2589,6 +2598,23 @@ def main():
                 f"treating XGB as NEUTRAL (OPT_XGB_MISSING_NEUTRAL)"
             )
 
+        # [Stage C / C-2] ML-state transparency (contract §4.1.1).
+        # Records the TRUE ML state separately from the legacy decision output.
+        # This log changes NO scoring input — `prob_raw` below still feeds
+        # calc_weighted_score exactly as before (C-2 is a frozen known exception).
+        if _sig_model_missing:
+            log.info(
+                f"🔎 [ML-STATE] {pair}: prediction=NOT_AVAILABLE "
+                f"| scoring_input=SYNTHESIZED_NEUTRAL "
+                f"| label=legacy scoring behaviour"
+            )
+        else:
+            log.info(
+                f"🔎 [ML-STATE] {pair}: prediction=AVAILABLE "
+                f"| source=legacy Signal.model_p_up={prob_raw!r} "
+                f"| scoring_input=LEGACY_SIGNAL (frozen, C-2 known exception)"
+            )
+
         _df_closes = pair_data[pair]["df"]["Close"].dropna().reset_index(drop=True)
         direction, w = calc_weighted_score(
             pair, gap, rsi_val, adx_val, prob_raw, mc_pct_up, closes=_df_closes
@@ -2733,9 +2759,16 @@ def main():
         d_gate_label = (
             D_GATE_DIRECTIONS.get(pair, D_GATE_BOTH) if D_GATE_ENABLED else "N/A"
         )
-        xgb_score = (getattr(sig, "model_p_up", None) if sig else None) or 0.0
+        # [Stage C / C-3] Transparency: a missing `model_p_up` is NOT a real
+        # 0.0 probability. Label the synthesized fallback so the open reason
+        # never presents a fabricated value as a model output (contract §4.1 C-3).
+        _p_up_true = getattr(sig, "model_p_up", None) if sig else None
+        xgb_score = _p_up_true if _p_up_true is not None else 0.0
+        xgb_label = (
+            f"{xgb_score:.2f}" if _p_up_true is not None else f"{xgb_score:.2f}(SYNTHETIC)"
+        )
         _open_reasons[pair] = (
-            f"STRENGTH_GAP={abs(gap):.2f} | XGB_SCORE={xgb_score:.2f} | "
+            f"STRENGTH_GAP={abs(gap):.2f} | XGB_SCORE={xgb_label} | "
             f"MC_P_UP={mc_pct_up:.0f}% | D-GATE={d_gate_label} | "
             f"FINAL={w['FINAL']:.2f}"
         )

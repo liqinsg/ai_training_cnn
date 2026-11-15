@@ -135,35 +135,29 @@ def derive_location_raw(
 
 
 def derive_xgb_p_up(sig: Any, w: Optional[Dict[str, Any]]) -> Optional[float]:
-    """Bot's XGB output → P(up) in [0, 1].
+    """Bot's XGB output → interpreted P(up) in [0, 1] — **only when READY**.
 
-    `sig.model_p_up` is already the model's raw P(up) in [0, 1] — the preferred
-    source. Falls back to the bot's `X` factor (0–100, see calc_weighted_score)
-    and finally to the P(up) implied by the accepted direction and its raw
-    probability. 0.5 = no edge.
+    Contract §4.1 / C-4: consume the model's own interpreted P(up) only when the
+    prediction is READY-equivalent; otherwise report **no** interpreted P(up).
+
+      * READY-equivalent ⟺ the signal carries a real model output
+        (``sig.model_p_up`` is not None) — that value is used.
+      * Otherwise the state is non-READY → return ``None`` so the profile layer
+        records the factor as ``degraded``. We deliberately **no longer
+        synthesize** a P(up) from the bot's ``X`` factor (a weighted-score
+        component that can be a neutral fallback) nor from ``raw_prob`` (a
+        direction-conditional quantity) — presenting either as an interpreted
+        P(up) is the behaviour C-4 forbids.
+
+    ``w`` is retained for call-site/API compatibility and is intentionally unused.
     """
     p = getattr(sig, "model_p_up", None)
-    if p is not None:
-        try:
-            return max(0.0, min(1.0, float(p)))
-        except (TypeError, ValueError):
-            pass
-
-    if w is not None and w.get("X") is not None:
-        try:
-            return max(0.0, min(1.0, float(w["X"]) / 100.0))
-        except (TypeError, ValueError):
-            pass
-
-    raw = getattr(sig, "raw_prob", None)
-    if raw is not None:
-        try:
-            raw = max(0.0, min(1.0, float(raw)))
-        except (TypeError, ValueError):
-            raw = None
-        if raw is not None:
-            return raw if direction == "BUY" else 1.0 - raw
-    return None
+    if p is None:
+        return None
+    try:
+        return max(0.0, min(1.0, float(p)))
+    except (TypeError, ValueError):
+        return None
 
 
 def derive_mc_p_up(mc_pct_up: Any) -> Optional[float]:
@@ -268,6 +262,9 @@ class AttributionObserver:
                     "bot_score_final": score_final,
                     "bot_score_bucket": label_from_score(score_final),
                     "gate": gate,
+                    # C-5: which field supplied each probability and the unit
+                    # that was detected — recorded, never silently reinterpreted.
+                    "prob_provenance": getattr(self.bridge, "last_prob_provenance", None),
                 }
 
             write_all(results, date_str=date_str)

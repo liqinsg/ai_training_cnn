@@ -4,6 +4,7 @@ Reads from: ../config_oanda.py, ../config_bot.py
 READ-ONLY — never modifies existing files ✅
 """
 
+import logging
 import sys
 from pathlib import Path
 from datetime import datetime, timezone
@@ -18,6 +19,9 @@ from config_oanda import get_oanda_profile, is_market_open
 from config_bot import get_profile as load_profile
 
 
+logger = logging.getLogger(__name__)
+
+
 class FactorDataBridge:
     """
     Bridge — connect your existing bot's data to attribution_v2
@@ -30,6 +34,10 @@ class FactorDataBridge:
         self.profile = get_oanda_profile(env)
         self.api = self.profile.get("api")
         self.account_id = self.profile.get("account_ids", [""])[0] if self.profile else ""
+        # ── Phase 3.1 Stage C (C-5): provenance of the most recent probability
+        # mapping — which source key supplied each value and which scale was
+        # detected. Additive; read-only consumers may stamp it into their logs.
+        self.last_prob_provenance: Optional[Dict[str, Any]] = None
 
     # ══════════════════════════════════════════════════════════════════
     # ADAPTERS — Map YOUR bot's output → attribution_v2 format
@@ -91,23 +99,30 @@ class FactorDataBridge:
         )
         location_raw = self._norm_location(loc_val)
 
-        # --- Map YOUR model probabilities ---
-        xgb_p_up = bot_candidate.get(
-            "xgb_p_up",
-            bot_candidate.get(
-                "xgb_prob", bot_candidate.get("prob_raw", bot_candidate.get("model_p_up"))
-            ),
+        # --- Map YOUR model probabilities (C-5: record source + unit) ---
+        xgb_raw, xgb_src = self._pick_prob(
+            bot_candidate, "xgb_p_up", ("xgb_prob", "prob_raw", "model_p_up")
         )
-        mc_p_up = bot_candidate.get(
-            "mc_p_up",
-            bot_candidate.get(
-                "mc_prob", bot_candidate.get("mc_pct_up", bot_candidate.get("mc_p_up_pct"))
-            ),
+        mc_raw, mc_src = self._pick_prob(
+            bot_candidate, "mc_p_up", ("mc_prob", "mc_pct_up", "mc_p_up_pct")
         )
 
-        # Normalize probabilities (scale-aware: 0–1 or 0–100)
-        xgb_p_up = self._prob_clip(xgb_p_up)
-        mc_p_up = self._prob_clip(mc_p_up)
+        # Normalize probabilities (scale-aware: 0–1 or 0–100). The boundary
+        # behaviour is preserved exactly; the detected scale/source is now
+        # recorded instead of silently reinterpreted (contract §4.1 / C-5).
+        xgb_p_up, xgb_unit = self._prob_clip_with_unit(xgb_raw)
+        mc_p_up, mc_unit = self._prob_clip_with_unit(mc_raw)
+        self.last_prob_provenance = {
+            "xgb_p_up": {"source": xgb_src, "unit": xgb_unit},
+            "mc_p_up": {"source": mc_src, "unit": mc_unit},
+        }
+        logger.info(
+            "attribution_v2 prob map: xgb_p_up(source=%s unit=%s) mc_p_up(source=%s unit=%s)",
+            xgb_src,
+            xgb_unit,
+            mc_src,
+            mc_unit,
+        )
 
         ts = bot_candidate.get("timestamp") or datetime.now(timezone.utc).strftime(
             "%Y-%m-%dT%H:%M:%SZ"
@@ -194,22 +209,52 @@ class FactorDataBridge:
         return s
 
     @staticmethod
+    def _pick_prob(
+        bot_candidate: Dict[str, Any],
+        primary: str,
+        aliases: tuple,
+    ) -> "tuple[Optional[Any], Optional[str]]":
+        """Return ``(value, source_key)`` using the original precedence order.
+
+        ``source_key`` is the key that actually supplied the value (or ``None``
+        when nothing was present); it is recorded so the mapping is never silent
+        (contract §4.1 / C-5). The selection order is identical to the previous
+        inline ``.get(...).get(...)`` chain.
+        """
+        for key in (primary, *aliases):
+            if bot_candidate.get(key) is not None:
+                return bot_candidate[key], key
+        return None, None
+
+    @staticmethod
+    def _prob_clip_with_unit(val) -> "tuple[Optional[float], str]":
+        """Any probability → ``(value in [0,1], detected_unit)``, scale-aware.
+
+        Same boundary behaviour as `_prob_clip`; additionally returns the unit
+        that was detected so callers can record it (no silent reinterpretation).
+        """
+        if val is None:
+            return None, "none"
+        try:
+            f = float(val)
+        except (TypeError, ValueError):
+            return None, "unparseable"
+        if f > 1.0:  # 0–100 scale (or percent) → 0–1
+            return max(0.0, min(1.0, f / 100.0)), "0-100"
+        return max(0.0, min(1.0, f)), "0-1"
+
+    @staticmethod
     def _prob_clip(val) -> Optional[float]:
         """Any probability → safely in [0, 1], scale-aware.
 
         The main bot's XGB/MC factors are published on a 0–100 scale (see
         `calc_weighted_score`: X = xgb_prob*100, M = mc_pct_up). If a value
         arrives as 0–100 it is rescaled to 0–1 rather than clamped to 1.0.
+
+        Behaviour is unchanged; the unit-detection is shared with
+        :meth:`_prob_clip_with_unit`.
         """
-        if val is None:
-            return None
-        try:
-            f = float(val)
-        except (TypeError, ValueError):
-            return None
-        if f > 1.0:  # 0–100 scale (or percent) → 0–1
-            f = f / 100.0
-        return max(0.0, min(1.0, f))
+        return FactorDataBridge._prob_clip_with_unit(val)[0]
 
     # ══════════════════════════════════════════════════════════════════
     # Live market check helper

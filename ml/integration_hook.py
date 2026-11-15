@@ -1,3 +1,12 @@
+# ml/integration_hook.py — [SUPERSEDED — DO NOT WIRE]
+#
+# Phase 3.1 Stage C (2026-11-15) retirement notice:
+#   This A.2-era hook depends on the retired `ml/live_prediction_engine.py` and
+#   is NOT authorised as a PredictionResult producer. Retained for reference only.
+#
+#   Authoritative replacement: `ml/prediction_adapter.py`
+#   See: docs/PHASE3_1_STAGE_C_IMPLEMENTATION_TASK.md (SC-01).
+#
 # ml/integration_hook.py — STAGE B INTEGRATION HOOK
 # Enforces Phase 3.1 / A.2 contract §4.1.1 isolation while the frozen legacy
 # production path (C-2) keeps running unchanged.

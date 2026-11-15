@@ -22,7 +22,7 @@ import platform
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import pandas as pd
 
@@ -102,6 +102,17 @@ class ModelInitResult:
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
 
+    # ── Phase 3.1 Stage C (SC-02): single-read byte identity surface ─────────
+    # ADDITIVE + best-effort (contract §4.1 freeze; Stage B spec §3.4). When the
+    # authoritative adapter is importable, `loaded_identity` holds a
+    # `ml.prediction_adapter.LoadedModelIdentity` binding the SHA-256 of the exact
+    # bytes read once for each artifact; otherwise it stays `None` and
+    # `identity_detail` explains why. These fields NEVER influence `status` /
+    # `reason` / `ok` / `as_log_fields()` or any control flow — they are purely
+    # additive transparency for Stage C consumers.
+    loaded_identity: Optional[Any] = None
+    identity_detail: Optional[str] = None
+
     @property
     def ok(self) -> bool:
         return self.status == ModelStatus.READY
@@ -167,6 +178,31 @@ def _record(result: ModelInitResult) -> None:
     """Emit one structured runtime record for a model initialization attempt."""
     level = logging.INFO if result.ok else logging.WARNING
     logger.log(level, "[ML-INIT] %s", result.as_log_fields())
+
+
+def _capture_loaded_identity(paths: dict) -> tuple[Optional[Any], Optional[str]]:
+    """Best-effort single-read byte identity for the READY artifact set (SC-02).
+
+    Returns ``(LoadedModelIdentity, None)`` on success, or ``(None, detail)`` when
+    the adapter / heavy inference stack is unavailable or the artifact bytes cannot
+    be loaded. It is **fail-open by design**: every failure is contained here and
+    never propagates, so it can never change ``ensure_model``'s outcome or control
+    flow (contract §4.1 freeze; Stage B spec §3.4). The heavy module is imported
+    lazily so this module keeps working without the inference stack.
+    """
+    try:
+        from ml.prediction_adapter import UtcClock, load_model_with_identity
+    except Exception as e:  # noqa: BLE001 — module/stack unavailable → transparent None
+        return None, f"identity module unavailable: {type(e).__name__}: {e}"
+    try:
+        identity = load_model_with_identity(
+            model_path=str(paths["model"]),
+            scaler_path=str(paths["scaler"]),
+            clock=UtcClock(),
+        )
+        return identity, None
+    except Exception as e:  # noqa: BLE001 — fail-open, never affects the load result
+        return None, f"{type(e).__name__}: {e}"
 
 
 # ─── ensure_model ───────────────────────────────────────────────────────────
@@ -311,6 +347,21 @@ def ensure_model(
         getattr(model_wrapper.scaler, "n_features_in_", "?"),
         len(model_wrapper.feature_names),
         getattr(FEAT_CFG, "use_macd", "?"),
+    )
+
+    # ── Phase 3.1 Stage C (SC-02): record the single-read byte identity. ──
+    # ADDITIVE + fail-open: this runs AFTER the wiring above and cannot alter the
+    # wired instances, `status`, `reason` or any control flow. It only makes the
+    # byte-bound artifact identity available to Stage C consumers (§3.4).
+    result.loaded_identity, result.identity_detail = _capture_loaded_identity(paths)
+    logger.info(
+        "[ML-IDENTITY] loaded_identity=%s artifact_sha256=%s scaler_sha256=%s "
+        "method=%s detail=%s",
+        "single-read-bytes" if result.loaded_identity is not None else "unavailable",
+        getattr(result.loaded_identity, "artifact_sha256", None),
+        getattr(result.loaded_identity, "scaler_sha256", None),
+        getattr(result.loaded_identity, "load_method", None),
+        result.identity_detail,
     )
     _record(result)
     return result

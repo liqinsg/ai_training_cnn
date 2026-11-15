@@ -1,3 +1,17 @@
+# ml/live_prediction_engine.py — [SUPERSEDED — DO NOT WIRE]
+#
+# Phase 3.1 Stage C (2026-11-15) retirement notice:
+#   This A.2-era engine is RETIRED and is NOT authorised as a PredictionResult
+#   producer. It is retained (in full, unmodified) for historical reference only.
+#
+#   Authoritative replacement: `ml/prediction_adapter.py`
+#     - single-read byte identity binding (SHA-256)
+#     - CD-registry-bound verification
+#     - frozen, invariant-checked `PredictionResult`
+#
+#   Do NOT import this module into any production / consumer path.
+#   See: docs/PHASE3_1_STAGE_C_IMPLEMENTATION_TASK.md (SC-01).
+#
 # ml/live_prediction_engine.py — STAGE B LIVE PREDICTION ENGINE
 # Implements the strict prediction state machine, CD validation gate, 
 # and self-describing prediction result payload.
