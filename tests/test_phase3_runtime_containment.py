@@ -61,8 +61,13 @@ class _FakeWrapper:
         self.fit_calls = 0
         self.save_calls = 0
         self._load_impl = load_impl
+        # SC-02 (path A): mirrors ModelWrapper — True only when the wired
+        # model/scaler were constructed from caller-supplied bytes in one read.
+        self._loaded_from_bytes = False
+        self.loaded_model_bytes = None
+        self.loaded_scaler_bytes = None
 
-    def load(self):
+    def load(self, model_bytes=None, scaler_bytes=None):
         self.load_calls += 1
         if self._load_impl is not None:
             self._load_impl(self)
@@ -70,6 +75,14 @@ class _FakeWrapper:
         self.model = _FakeModel()
         self.scaler = _FakeScaler()
         self.feature_names = ["f1", "f2"]
+        if model_bytes is not None and scaler_bytes is not None:
+            # Path A stand-in: the wired instances come from the pre-read bytes,
+            # exactly as the real ModelWrapper.load(model_bytes=..., ...) does.
+            self._loaded_from_bytes = True
+            self.loaded_model_bytes = model_bytes
+            self.loaded_scaler_bytes = scaler_bytes
+        else:
+            self._loaded_from_bytes = False
 
     def fit(self, *a, **k):  # pragma: no cover - must never run
         self.fit_calls += 1
@@ -710,70 +723,89 @@ def test_live_bots_construct_model_wrapper_read_only(bot):
         )
 
 
-# ─── Phase 3.1 Stage C — SC-02: single-read byte identity (transparency only) ─
-def test_sc02_ready_populates_single_read_byte_identity(tmp_path, monkeypatch):
-    """SC-02 + spec §3.4: a READY load records a byte-bound artifact identity.
-
-    The identity must come from the authoritative adapter, called with the
-    *resolved* model/scaler paths, and must not disturb the load outcome.
-    """
-    import ml.prediction_adapter as adapter
+# ─── Phase 3.1 Stage C — SC-02: single-read byte identity (path A) ────────────
+def test_sc02_ready_binds_identity_to_the_wired_instances(tmp_path):
+    """SC-02 path A: a READY load binds the bytes read **once** to the ACTUAL
+    wired instances — loaded-instance provenance, not a post-load re-read."""
+    import hashlib
 
     model_path = _write_release(tmp_path, b"x")
     wrapper, strategy = _FakeWrapper(), _FakeStrategy()
     paths = ml.resolve_artifact_paths(model_path)
-
-    sentinel = object()  # stands in for LoadedModelIdentity
-    seen = {}
-
-    def _fake_load(*, model_path, scaler_path, clock):
-        seen["model_path"] = model_path
-        seen["scaler_path"] = scaler_path
-        seen["clock_is_tz_aware"] = clock.now().tzinfo is not None
-        return sentinel
-
-    monkeypatch.setattr(adapter, "load_model_with_identity", _fake_load)
+    disk_model = paths["model"].read_bytes()
+    disk_scaler = paths["scaler"].read_bytes()
 
     result = _ensure(model_path, wrapper, strategy)
 
-    assert result.status == ml.ModelStatus.READY
-    assert result.loaded_identity is sentinel
+    assert result.status == ml.ModelStatus.READY and result.ok is True
+    ident = result.loaded_identity
+    assert ident is not None
     assert result.identity_detail is None
-    assert seen["model_path"] == str(paths["model"])
-    assert seen["scaler_path"] == str(paths["scaler"])
-    assert seen["clock_is_tz_aware"] is True
-    # the wiring is unchanged by the identity capture
-    assert strategy.model is wrapper.model and strategy.scaler is wrapper.scaler
+    # provenance: the identity wraps the very instances wired into the engine
+    assert ident.model_instance is strategy.model is wrapper.model
+    assert ident.scaler_instance is strategy.scaler is wrapper.scaler
+    # the hash covers the exact bytes read once and handed to the loader
+    assert wrapper.loaded_model_bytes == disk_model
+    assert wrapper.loaded_scaler_bytes == disk_scaler
+    assert ident.artifact_sha256 == hashlib.sha256(disk_model).hexdigest()
+    assert ident.scaler_sha256 == hashlib.sha256(disk_scaler).hexdigest()
+    assert ident.load_method == "BYTES"
+    assert ident.source_path == str(paths["model"])
+    assert result.model_hash == ident.artifact_sha256
+    assert result.scaler_hash == ident.scaler_sha256
 
 
-def test_sc02_identity_is_post_wiring_second_read_not_instance_provenance(
-    tmp_path, monkeypatch
-):
-    """SC-02 evidence boundary — pinned so the field is never over-read.
+def test_sc02_single_read_is_immune_to_a_later_file_swap(tmp_path, monkeypatch):
+    """SC-02 path A evidence (spec §3.1/§3.7): the identity is computed from the
+    bytes read once, so an A→B artifact swap *after* the read cannot rebind the
+    identity to the new file — the exact evidence-mismatch the task forbids."""
+    import hashlib
 
-    ``_capture_loaded_identity`` runs AFTER the strategy engine is wired and reads
-    the artifacts a second time. It therefore binds the *bytes read at capture
-    time*, NOT a proof that the already-wired in-memory instance was built from
-    those bytes (i.e. it is post-load file identity, not instance provenance).
-    """
-    import ml.prediction_adapter as adapter
+    model_path = _write_release(tmp_path, b"orig")
+    paths = ml.resolve_artifact_paths(model_path)
+    original = paths["model"].read_bytes()
 
-    model_path = _write_release(tmp_path, b"y")
+    real_read = ml._read_artifact_bytes
+
+    def _read_then_swap(path):
+        data, detail = real_read(path)
+        if str(path) == str(paths["model"]):
+            # A/B race: the file changes immediately after the authoritative read.
+            paths["model"].write_bytes(b"swapped-in-after-read")
+        return data, detail
+
+    monkeypatch.setattr(ml, "_read_artifact_bytes", _read_then_swap)
+
     wrapper, strategy = _FakeWrapper(), _FakeStrategy()
-    seen = {}
-
-    def _fake_load(*, model_path, scaler_path, clock):
-        seen["wired_model"] = strategy.model  # already wired → post-load
-        seen["wired_scaler"] = strategy.scaler
-        return object()
-
-    monkeypatch.setattr(adapter, "load_model_with_identity", _fake_load)
-
     result = _ensure(model_path, wrapper, strategy)
 
-    assert result.loaded_identity is not None
-    assert seen["wired_model"] is wrapper.model
-    assert seen["wired_scaler"] is wrapper.scaler
+    ident = result.loaded_identity
+    assert ident is not None
+    assert ident.artifact_sha256 == hashlib.sha256(original).hexdigest()
+    assert ident.artifact_sha256 != hashlib.sha256(b"swapped-in-after-read").hexdigest()
+    assert wrapper.loaded_model_bytes == original
+    assert ident.model_instance is strategy.model
+
+
+def test_sc02_identity_withheld_when_loader_ignores_the_bytes(tmp_path):
+    """SC-02 path A guard: if the loader does not build the wired instances from
+    the pre-read bytes (disk fallback), the identity is withheld rather than
+    reported as provenance it cannot back."""
+    model_path = _write_release(tmp_path, b"d")
+
+    def _disk_only_load(w):
+        w.model = _FakeModel()
+        w.scaler = _FakeScaler()
+        w.feature_names = ["f1", "f2"]
+        w._loaded_from_bytes = False  # explicit: the pre-read bytes were not used
+
+    wrapper, strategy = _FakeWrapper(_disk_only_load), _FakeStrategy()
+    result = _ensure(model_path, wrapper, strategy)
+
+    assert result.status == ml.ModelStatus.READY and result.ok is True
+    assert result.loaded_identity is None
+    assert "no instance provenance" in result.identity_detail
+    assert strategy.model is wrapper.model  # wiring is unaffected by the guard
 
 
 def test_sc02_adapter_failure_is_fail_open_and_changes_nothing(tmp_path, monkeypatch):
@@ -785,10 +817,10 @@ def test_sc02_adapter_failure_is_fail_open_and_changes_nothing(tmp_path, monkeyp
     base_wrapper, base_strategy = _FakeWrapper(), _FakeStrategy()
     baseline = _ensure(model_path, base_wrapper, base_strategy)
 
-    def _boom(*, model_path, scaler_path, clock):
+    def _boom(**_kwargs):
         raise RuntimeError("adapter exploded")
 
-    monkeypatch.setattr(adapter, "load_model_with_identity", _boom)
+    monkeypatch.setattr(adapter, "bind_loaded_identity", _boom)
 
     wrapper, strategy = _FakeWrapper(), _FakeStrategy()
     result = _ensure(model_path, wrapper, strategy)
@@ -819,18 +851,22 @@ def test_sc02_adapter_module_unavailable_is_fail_open(tmp_path, monkeypatch):
     )
 
 
-def test_sc02_real_adapter_failure_on_non_model_bytes_is_fail_open(tmp_path):
-    """SC-02 fail-open with the REAL adapter: `_write_release` writes non-model
-    bytes, so the adapter's xgboost/joblib load raises — the runtime must stay
-    READY with `loaded_identity=None` instead of propagating the error."""
+def test_sc02_real_binder_succeeds_without_parsing_the_bytes(tmp_path):
+    """SC-02 path A boundary: binding is byte-hashing + instance association only
+    — it does NOT parse the model (that is the loader's job). It therefore
+    succeeds even for non-model bytes; provenance ≠ validation is explicit."""
+    import hashlib
+
     model_path = _write_release(tmp_path, b"not-a-real-model")
+    paths = ml.resolve_artifact_paths(model_path)
     wrapper, strategy = _FakeWrapper(), _FakeStrategy()
 
     result = _ensure(model_path, wrapper, strategy)
 
     assert result.status == ml.ModelStatus.READY and result.ok is True
-    assert result.loaded_identity is None
-    assert result.identity_detail  # the failure was captured, not raised
+    ident = result.loaded_identity
+    assert ident is not None and ident.model_instance is strategy.model
+    assert ident.artifact_sha256 == hashlib.sha256(paths["model"].read_bytes()).hexdigest()
 
 
 def test_sc02_identity_fields_are_additive_only():

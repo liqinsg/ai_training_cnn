@@ -134,25 +134,38 @@ def derive_location_raw(
     return -1.0 if abs(price - r1) <= abs(price - p) else 0.0
 
 
+# Mirrors strategy_decision.MODEL_P_UP_SOURCE_READY. attribution_v2 is a decoupled
+# observation layer and deliberately does not import the trading module, so the
+# READY marker is mirrored here; any mismatch fails SAFE (value ignored → degraded).
+_READY_MODEL_P_UP_SOURCE = "MODEL_READY"
+
+
 def derive_xgb_p_up(sig: Any, w: Optional[Dict[str, Any]]) -> Optional[float]:
     """Bot's XGB output → interpreted P(up) in [0, 1] — **only when READY**.
 
-    Contract §4.1 / C-4: consume the model's own interpreted P(up) only when the
-    prediction is READY-equivalent; otherwise report **no** interpreted P(up).
+    Contract §4.1 / C-4: an interpreted P(up) is consumed only from a prediction
+    that is explicitly marked READY. Presence of a value is NOT sufficient:
 
-      * READY-equivalent ⟺ the signal carries a real model output
-        (``sig.model_p_up`` is not None) — that value is used.
-      * Otherwise the state is non-READY → return ``None`` so the profile layer
-        records the factor as ``degraded``. We deliberately **no longer
-        synthesize** a P(up) from the bot's ``X`` factor (a weighted-score
-        component that can be a neutral fallback) nor from ``raw_prob`` (a
-        direction-conditional quantity) — presenting either as an interpreted
-        P(up) is the behaviour C-4 forbids.
+      * READY ⟺ ``sig.model_p_up`` is present **and** ``sig.model_p_up_source``
+        is the explicit READY marker emitted by the sole producer
+        (``StrategyEngine.generate_signal``). Only then is the value used.
+      * Anything else — no value, an unmarked/legacy Signal, or a non-READY
+        source — is treated as non-READY → return ``None`` so the profile layer
+        records the factor as ``degraded``.
+
+    This replaces the earlier "``model_p_up is not None`` ⇒ READY" proxy, which
+    could not distinguish a value produced by a genuine model prediction from one
+    carried by a non-READY / legacy Signal. We still never synthesize a P(up)
+    from the bot's ``X`` factor (a weighted-score component that can be a neutral
+    fallback) nor from ``raw_prob`` (a direction-conditional quantity) —
+    presenting either as an interpreted P(up) is the behaviour C-4 forbids.
 
     ``w`` is retained for call-site/API compatibility and is intentionally unused.
     """
     p = getattr(sig, "model_p_up", None)
     if p is None:
+        return None
+    if getattr(sig, "model_p_up_source", None) != _READY_MODEL_P_UP_SOURCE:
         return None
     try:
         return max(0.0, min(1.0, float(p)))

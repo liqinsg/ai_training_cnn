@@ -102,14 +102,16 @@ class ModelInitResult:
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
 
-    # ── Phase 3.1 Stage C (SC-02): single-read byte identity surface ─────────
+    # ── Phase 3.1 Stage C (SC-02, path A): loaded-instance provenance surface ─
     # ADDITIVE + best-effort (contract §4.1 freeze; Stage B spec §3.4). When the
     # authoritative adapter is importable, `loaded_identity` holds a
     # `ml.prediction_adapter.LoadedModelIdentity` binding the SHA-256 of the exact
-    # bytes read once for each artifact; otherwise it stays `None` and
-    # `identity_detail` explains why. These fields NEVER influence `status` /
-    # `reason` / `ok` / `as_log_fields()` or any control flow — they are purely
-    # additive transparency for Stage C consumers.
+    # bytes read once for each artifact **to the model/scaler instances actually
+    # wired into the strategy engine** (single-read byte identity — the hash
+    # covers the same bytes that produced the executing instance). Otherwise it
+    # stays `None` and `identity_detail` explains why. These fields NEVER
+    # influence `status` / `reason` / `ok` / `as_log_fields()` or any control
+    # flow — they are purely additive transparency for Stage C consumers.
     loaded_identity: Optional[Any] = None
     identity_detail: Optional[str] = None
 
@@ -180,25 +182,56 @@ def _record(result: ModelInitResult) -> None:
     logger.log(level, "[ML-INIT] %s", result.as_log_fields())
 
 
-def _capture_loaded_identity(paths: dict) -> tuple[Optional[Any], Optional[str]]:
-    """Best-effort single-read byte identity for the READY artifact set (SC-02).
-
-    Returns ``(LoadedModelIdentity, None)`` on success, or ``(None, detail)`` when
-    the adapter / heavy inference stack is unavailable or the artifact bytes cannot
-    be loaded. It is **fail-open by design**: every failure is contained here and
-    never propagates, so it can never change ``ensure_model``'s outcome or control
-    flow (contract §4.1 freeze; Stage B spec §3.4). The heavy module is imported
-    lazily so this module keeps working without the inference stack.
-    """
+def _read_artifact_bytes(path) -> tuple[Optional[bytes], Optional[str]]:
+    """Read a file's exact bytes once; return ``(bytes, None)`` or ``(None, detail)``."""
     try:
-        from ml.prediction_adapter import UtcClock, load_model_with_identity
+        with open(path, "rb") as f:
+            return f.read(), None
+    except OSError as e:
+        return None, f"{type(e).__name__}: {e}"
+
+
+def _bind_wired_identity(
+    *,
+    model_bytes: Optional[bytes],
+    scaler_bytes: Optional[bytes],
+    model_instance,
+    scaler_instance,
+    source_path,
+    loaded_from_bytes: bool,
+    read_detail: Optional[str],
+) -> tuple[Optional[Any], Optional[str]]:
+    """Path A (SC-02): bind the pre-read bytes to the ALREADY-WIRED instances.
+
+    The bytes were read once and handed to ``model_wrapper.load(...)``, so when
+    the loader confirms it built the wired instances from those bytes
+    (``_loaded_from_bytes``), the resulting ``LoadedModelIdentity`` proves that
+    the SHA-256 covers the *same* bytes that produced the executing model — real
+    instance provenance, not a post-load re-read. Returns ``(identity, None)`` on
+    success or ``(None, detail)``. **Fail-open by design**: every failure is
+    contained here and never propagates, so it cannot change ``ensure_model``'s
+    outcome or control flow (contract §4.1 freeze; Stage B spec §3.4). The heavy
+    module is imported lazily so this module keeps working without the stack.
+    """
+    if model_bytes is None or scaler_bytes is None:
+        return None, read_detail or "artifact bytes unavailable for identity binding"
+    if not loaded_from_bytes:
+        return None, (
+            "loader did not construct the wired instances from the pre-read bytes "
+            "(disk fallback) — no instance provenance available"
+        )
+    try:
+        from ml.prediction_adapter import UtcClock, bind_loaded_identity
     except Exception as e:  # noqa: BLE001 — module/stack unavailable → transparent None
         return None, f"identity module unavailable: {type(e).__name__}: {e}"
     try:
-        identity = load_model_with_identity(
-            model_path=str(paths["model"]),
-            scaler_path=str(paths["scaler"]),
+        identity = bind_loaded_identity(
+            model_bytes=model_bytes,
+            scaler_bytes=scaler_bytes,
+            model_instance=model_instance,
+            scaler_instance=scaler_instance,
             clock=UtcClock(),
+            source_path=str(source_path),
         )
         return identity, None
     except Exception as e:  # noqa: BLE001 — fail-open, never affects the load result
@@ -261,9 +294,18 @@ def ensure_model(
         _record(result)
         return result
 
-    # Identity is derived from real bytes (no manifest → no invented release id).
-    result.model_hash = file_sha256(paths["model"])
-    result.scaler_hash = file_sha256(paths["scaler"])
+    # ── Single authoritative read of the identity artifacts (SC-02, path A) ──
+    # These exact bytes are BOTH hashed here and handed to the loader below, so
+    # the wired model/scaler instances are constructed from the same bytes the
+    # identity binds (single-read byte identity → no A/B swap window).
+    model_bytes, model_read_detail = _read_artifact_bytes(paths["model"])
+    scaler_bytes, scaler_read_detail = _read_artifact_bytes(paths["scaler"])
+    result.model_hash = (
+        hashlib.sha256(model_bytes).hexdigest() if model_bytes is not None else None
+    )
+    result.scaler_hash = (
+        hashlib.sha256(scaler_bytes).hexdigest() if scaler_bytes is not None else None
+    )
     result.features_hash = file_sha256(paths["features"])
     result.cfg_hash = file_sha256(paths["cfg"])
 
@@ -294,7 +336,12 @@ def ensure_model(
 
     # ── Load ──
     try:
-        model_wrapper.load()
+        if model_bytes is not None and scaler_bytes is not None:
+            # Path A: hand over the bytes already read+hashed above, so the wired
+            # instances are built from exactly those bytes (single read).
+            model_wrapper.load(model_bytes=model_bytes, scaler_bytes=scaler_bytes)
+        else:
+            model_wrapper.load()
     except Exception as e:  # noqa: BLE001 — classified immediately below
         name = type(e).__name__
         if name not in _EXPECTED_LOAD_ERRORS:
@@ -349,18 +396,29 @@ def ensure_model(
         getattr(FEAT_CFG, "use_macd", "?"),
     )
 
-    # ── Phase 3.1 Stage C (SC-02): record the single-read byte identity. ──
-    # ADDITIVE + fail-open: this runs AFTER the wiring above and cannot alter the
-    # wired instances, `status`, `reason` or any control flow. It only makes the
-    # byte-bound artifact identity available to Stage C consumers (§3.4).
-    result.loaded_identity, result.identity_detail = _capture_loaded_identity(paths)
+    # ── Phase 3.1 Stage C (SC-02, path A): bind the identity to the WIRED
+    # instances. The hash covers the same bytes the loader used to build
+    # `model_wrapper.model` / `model_wrapper.scaler` — the exact instances wired
+    # into `strat_engine` above (real instance provenance, not a second read).
+    # ADDITIVE + fail-open: this cannot alter the wired instances, `status`,
+    # `reason` or any control flow; it only surfaces byte-bound identity (§3.4).
+    result.loaded_identity, result.identity_detail = _bind_wired_identity(
+        model_bytes=model_bytes,
+        scaler_bytes=scaler_bytes,
+        model_instance=model_wrapper.model,
+        scaler_instance=model_wrapper.scaler,
+        source_path=paths["model"],
+        loaded_from_bytes=bool(getattr(model_wrapper, "_loaded_from_bytes", False)),
+        read_detail=model_read_detail or scaler_read_detail,
+    )
     logger.info(
         "[ML-IDENTITY] loaded_identity=%s artifact_sha256=%s scaler_sha256=%s "
-        "method=%s detail=%s",
+        "method=%s instance_provenance=%s detail=%s",
         "single-read-bytes" if result.loaded_identity is not None else "unavailable",
         getattr(result.loaded_identity, "artifact_sha256", None),
         getattr(result.loaded_identity, "scaler_sha256", None),
         getattr(result.loaded_identity, "load_method", None),
+        result.loaded_identity is not None,
         result.identity_detail,
     )
     _record(result)

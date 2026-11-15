@@ -631,8 +631,16 @@ class ModelWrapper:
             )
         logger.info(f"Model saved → {self._xgb_json}")
 
-    def load(self):
+    def load(self, model_bytes=None, scaler_bytes=None):
+        import io
         import joblib
+
+        # Phase 3.1 Stage C (SC-02, path A): the caller may hand over the *exact*
+        # bytes it already hashed/read, so the model/scaler instances that end up
+        # wired are constructed from those same bytes (single-read byte identity).
+        # ``_loaded_from_bytes`` records whether that happened; it stays False on
+        # the default read-from-disk path, and the default path is unchanged.
+        self._loaded_from_bytes = False
 
         xgb_ok = self._xgb_json.exists()
         scaler_ok = self._scaler_joblib.exists()
@@ -641,13 +649,25 @@ class ModelWrapper:
         if xgb_ok and scaler_ok and feat_ok:
             if self.is_xgb and xgboost_available:
                 self.model = xgb.XGBClassifier()
-                self.model.load_model(str(self._xgb_json))
+                if model_bytes is not None:
+                    try:
+                        self.model.load_model(bytearray(model_bytes))
+                        self._loaded_from_bytes = True
+                    except TypeError:
+                        # library cannot construct from memory → fall back to disk
+                        self.model.load_model(str(self._xgb_json))
+                else:
+                    self.model.load_model(str(self._xgb_json))
             else:
                 with open(self._xgb_json.with_suffix(".sklearn.pkl"), "rb") as f:
                     self.model = pickle.load(f)
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", DeprecationWarning)
-                self.scaler = joblib.load(self._scaler_joblib)
+                if scaler_bytes is not None and self._loaded_from_bytes:
+                    self.scaler = joblib.load(io.BytesIO(scaler_bytes))
+                else:
+                    self.scaler = joblib.load(self._scaler_joblib)
+                    self._loaded_from_bytes = False
             with open(self._feat_json) as f:
                 self.feature_names = json.load(f)
             if self._cfg_json.exists():

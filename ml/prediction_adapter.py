@@ -49,6 +49,7 @@ __all__ = [
     "PredictionAdapterContractError",
     "LoadedModelIdentity",
     "load_model_with_identity",
+    "bind_loaded_identity",
     "CDRegistryHandle",
     "CDRecord",
     "CDLookup",
@@ -345,6 +346,48 @@ def _load_via_private_tempfile(raw: bytes, path_loader: Callable[[str], Any]) ->
             os.remove(tmp_path)
         except OSError:  # pragma: no cover - best effort cleanup
             pass
+
+
+def bind_loaded_identity(
+    *,
+    model_bytes,
+    scaler_bytes,
+    model_instance: Any,
+    scaler_instance: Any,
+    clock: Clock,
+    source_path: Optional[str] = None,
+    load_method: str = "BYTES",
+) -> LoadedModelIdentity:
+    """Bind *already-read* bytes to the *already-wired* instances (SC-02, path A).
+
+    Unlike :func:`load_model_with_identity`, this performs no I/O and constructs
+    nothing: the caller guarantees that ``model_instance`` / ``scaler_instance``
+    were built from ``model_bytes`` / ``scaler_bytes`` in a single read (see
+    ``ModelWrapper.load(model_bytes=..., scaler_bytes=...)`` invoked by
+    ``ensure_model``). The returned identity therefore binds the SHA-256 of those
+    exact bytes to the *live, wired* instances — production loaded-instance
+    provenance, not post-load file identity.
+
+    This is what makes the CD guarantee sound: because the hash covers the very
+    bytes the running instance was built from, a later on-disk artifact swap
+    cannot satisfy ``CDRegistryHandle.lookup`` for the executing model.
+    """
+    _require_clock(clock)
+    if not isinstance(model_bytes, (bytes, bytearray)) or not isinstance(
+        scaler_bytes, (bytes, bytearray)
+    ):
+        raise PredictionAdapterContractError(
+            "model_bytes and scaler_bytes must be bytes-like"
+        )
+    return LoadedModelIdentity(
+        artifact_sha256=hashlib.sha256(bytes(model_bytes)).hexdigest(),
+        scaler_sha256=hashlib.sha256(bytes(scaler_bytes)).hexdigest(),
+        model_instance=model_instance,
+        scaler_instance=scaler_instance,
+        load_timestamp=clock.now(),
+        source_path=str(source_path) if source_path is not None else None,
+        load_method=load_method,
+    )
 
 
 # ─────────────────────────── CD registry ────────────────────────────────────

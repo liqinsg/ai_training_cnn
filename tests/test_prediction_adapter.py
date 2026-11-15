@@ -35,6 +35,7 @@ from ml.prediction_adapter import (
     PredictionResultInvariantError,
     PredictionStatus,
     ROW_SUM_TOLERANCE,
+    bind_loaded_identity,
     build_not_run_result,
     load_model_with_identity,
     run_prediction,
@@ -738,6 +739,109 @@ def test_B_T65_adapter_performs_no_filesystem_read(monkeypatch):
     assert result.status == PredictionStatus.READY
 
 
+# ═════════════════ 16.4b SC-02 path A: bind already-read bytes ═══════════════
+# ``bind_loaded_identity`` ties the SHA-256 of the *already-read* bytes to the
+# *already-wired* instances (production loaded-instance provenance). It must do no
+# I/O and construct nothing — the caller guarantees the instances came from those
+# bytes in a single read.
+def test_sc02_bind_loaded_identity_hashes_the_pre_read_bytes():
+    model_bytes = b"PRE-READ-MODEL-BYTES"
+    scaler_bytes = b"PRE-READ-SCALER-BYTES"
+    model = FakeModel(valid_proba())
+    scaler = FakeScaler()
+
+    identity = bind_loaded_identity(
+        model_bytes=model_bytes,
+        scaler_bytes=scaler_bytes,
+        model_instance=model,
+        scaler_instance=scaler,
+        clock=FakeClock(),
+    )
+
+    assert identity.artifact_sha256 == hashlib.sha256(model_bytes).hexdigest()
+    assert identity.scaler_sha256 == hashlib.sha256(scaler_bytes).hexdigest()
+    assert identity.model_instance is model
+    assert identity.scaler_instance is scaler
+    assert identity.load_timestamp == FIXED_NOW
+
+
+def test_sc02_bind_loaded_identity_normalizes_source_path_and_load_method():
+    identity = bind_loaded_identity(
+        model_bytes=b"m",
+        scaler_bytes=b"s",
+        model_instance=object(),
+        scaler_instance=object(),
+        clock=FakeClock(),
+        source_path=Path("/tmp/model.json"),
+        load_method="TEMPFILE",
+    )
+    assert identity.source_path == "/tmp/model.json"
+    assert isinstance(identity.source_path, str)
+    assert identity.load_method == "TEMPFILE"
+
+
+def test_sc02_bind_loaded_identity_defaults_source_path_to_none():
+    identity = bind_loaded_identity(
+        model_bytes=b"m",
+        scaler_bytes=b"s",
+        model_instance=object(),
+        scaler_instance=object(),
+        clock=FakeClock(),
+    )
+    assert identity.source_path is None
+    assert identity.load_method == "BYTES"
+
+
+def test_sc02_bind_loaded_identity_accepts_bytearray():
+    model_bytes = bytearray(b"BYTEARRAY-MODEL")
+    identity = bind_loaded_identity(
+        model_bytes=model_bytes,
+        scaler_bytes=bytearray(b"BYTEARRAY-SCALER"),
+        model_instance=object(),
+        scaler_instance=object(),
+        clock=FakeClock(),
+    )
+    assert identity.artifact_sha256 == hashlib.sha256(bytes(model_bytes)).hexdigest()
+
+
+@pytest.mark.parametrize("bad", ["not-bytes", None, 123, ["b"]])
+def test_sc02_bind_loaded_identity_rejects_non_bytes(bad):
+    with pytest.raises(PredictionAdapterContractError):
+        bind_loaded_identity(
+            model_bytes=bad,
+            scaler_bytes=b"scaler",
+            model_instance=object(),
+            scaler_instance=object(),
+            clock=FakeClock(),
+        )
+
+
+def test_sc02_bind_loaded_identity_requires_a_clock():
+    with pytest.raises(PredictionAdapterContractError):
+        bind_loaded_identity(
+            model_bytes=b"m",
+            scaler_bytes=b"s",
+            model_instance=object(),
+            scaler_instance=object(),
+            clock=None,
+        )
+
+
+def test_sc02_bind_loaded_identity_performs_no_io(monkeypatch):
+    def _forbidden(*args, **kwargs):
+        raise AssertionError("bind_loaded_identity must not perform any I/O")
+
+    monkeypatch.setattr(builtins, "open", _forbidden)
+    identity = bind_loaded_identity(
+        model_bytes=b"m",
+        scaler_bytes=b"s",
+        model_instance=object(),
+        scaler_instance=object(),
+        clock=FakeClock(),
+    )
+    assert identity.artifact_sha256 == hashlib.sha256(b"m").hexdigest()
+
+
 def test_B_T75_scaler_hash_mismatch_breaks_cd_match():
     identity = make_identity(FakeModel(valid_proba()), FakeScaler(), scaler_hash="d" * 64)
     result = run(identity=identity)
@@ -890,6 +994,7 @@ def test_static_public_api_surface_is_present():
         "run_prediction",
         "build_not_run_result",
         "load_model_with_identity",
+        "bind_loaded_identity",
         "CDRegistryHandle",
         "LoadedModelIdentity",
         "PredictionResult",

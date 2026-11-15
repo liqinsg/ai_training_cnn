@@ -3,10 +3,12 @@ test_stage_c_transparency.py — Phase 3.1 Stage C (C-4 / C-5) regression tests.
 
 Scope (contract §4.1; consumer contract C-4 / C-5):
 
-  * C-4  `derive_xgb_p_up` consumes an interpreted P(up) **only** in the
-         READY-equivalent state (`sig.model_p_up is not None`). It never
-         synthesizes a P(up) from the bot's `X` factor or from `raw_prob`, and a
-         non-READY state must reach the profile record as `degraded`.
+  * C-4  `derive_xgb_p_up` consumes an interpreted P(up) **only** when the
+         prediction is explicitly marked READY (a present `model_p_up` value
+         **and** `model_p_up_source == "MODEL_READY"`). Mere field presence is
+         not sufficient. It never synthesizes a P(up) from the bot's `X` factor
+         or from `raw_prob`, and a non-READY state must reach the profile record
+         as `degraded`.
   * C-5  `data_bridge` keeps its exact scale-aware `_prob_clip` behaviour while
          now recording the source key + detected unit (no silent reinterpretation).
 
@@ -24,24 +26,45 @@ from live_hook import derive_xgb_p_up
 from profile_runner import ProfileAttribution
 
 
+READY = "MODEL_READY"  # mirrors strategy_decision.MODEL_P_UP_SOURCE_READY
+
+
 def _sig(**kw):
     """Minimal Signal stand-in (only the attributes C-4 reads)."""
     return SimpleNamespace(**kw)
 
 
 # ════════════════════════════════════════════════
-# C-4 — READY-equivalent consumes P(up); non-READY yields nothing
+# C-4 — explicit READY provenance consumes P(up); everything else yields nothing
 # ════════════════════════════════════════════════
 def test_c4_ready_uses_model_p_up_as_p_up():
     """`sig.model_p_up` IS the model's direction-independent P(UP) (see
     strategy_decision: model_p_up=round(p_up,4), distinct from direction-
-    conditional `raw_prob`), so it is consumed verbatim."""
-    assert derive_xgb_p_up(_sig(model_p_up=0.42), {"X": 70}) == pytest.approx(0.42)
+    conditional `raw_prob`), so it is consumed verbatim when the Signal is
+    explicitly marked READY."""
+    assert derive_xgb_p_up(
+        _sig(model_p_up=0.42, model_p_up_source=READY), {"X": 70}
+    ) == pytest.approx(0.42)
 
 
 def test_c4_ready_value_clamped_to_unit_interval():
-    assert derive_xgb_p_up(_sig(model_p_up=1.5), None) == pytest.approx(1.0)
-    assert derive_xgb_p_up(_sig(model_p_up=-0.2), None) == pytest.approx(0.0)
+    assert derive_xgb_p_up(
+        _sig(model_p_up=1.5, model_p_up_source=READY), None
+    ) == pytest.approx(1.0)
+    assert derive_xgb_p_up(
+        _sig(model_p_up=-0.2, model_p_up_source=READY), None
+    ) == pytest.approx(0.0)
+
+
+def test_c4_value_without_ready_provenance_is_rejected():
+    """The core C-4 tightening: a *present* value is NOT sufficient evidence of
+    READY. An unmarked/legacy Signal, or one whose source is not the READY
+    marker, must yield no interpreted P(up)."""
+    # field present but no provenance marker at all (legacy / hand-built)
+    assert derive_xgb_p_up(_sig(model_p_up=0.42), {"X": 70}) is None
+    # explicit non-READY provenance
+    assert derive_xgb_p_up(_sig(model_p_up=0.42, model_p_up_source="UNSET"), None) is None
+    assert derive_xgb_p_up(_sig(model_p_up=0.42, model_p_up_source="DEGRADED"), None) is None
 
 
 @pytest.mark.parametrize("x_val", [70, 0.7, None])
@@ -51,7 +74,7 @@ def test_c4_non_ready_never_synthesizes_from_X_or_raw_prob(x_val):
     C-4 forbids that: a non-READY prediction (no `model_p_up`) must yield NO
     interpreted P(up) — regardless of what `X` / `raw_prob` carry.
     """
-    sig = _sig(model_p_up=None, raw_prob=0.8)
+    sig = _sig(model_p_up=None, raw_prob=0.8, model_p_up_source=READY)
     w = None if x_val is None else {"X": x_val}
     assert derive_xgb_p_up(sig, w) is None
 
@@ -61,7 +84,9 @@ def test_c4_none_signal_returns_none():
 
 
 def test_c4_unparseable_model_p_up_returns_none():
-    assert derive_xgb_p_up(_sig(model_p_up="not-a-number"), {"X": 70}) is None
+    assert derive_xgb_p_up(
+        _sig(model_p_up="not-a-number", model_p_up_source=READY), {"X": 70}
+    ) is None
 
 
 def test_c4_non_ready_propagates_to_degraded_profile_record():
@@ -83,9 +108,27 @@ def test_c4_non_ready_propagates_to_degraded_profile_record():
     assert "xgb" in rec["decision"]["missing_factors"]
 
 
+def test_c4_unmarked_value_propagates_to_degraded_profile_record():
+    """A value carried WITHOUT the READY marker must end up degraded end-to-end —
+    proving the provenance check (not just the None case) shapes the record."""
+    p_up = derive_xgb_p_up(_sig(model_p_up=0.42), {"X": 70})  # unmarked → non-READY
+    assert p_up is None
+
+    rec = ProfileAttribution("PF-A").process_candidate(
+        symbol="USD/JPY",
+        candidate_direction="BUY",
+        trend_raw=+1,
+        location_raw=+1,
+        xgb_p_up=p_up,
+        mc_p_up=0.75,
+    )
+    assert rec["decision"]["degraded"] is True
+    assert "xgb" in rec["decision"]["missing_factors"]
+
+
 def test_c4_ready_record_is_not_degraded_on_the_xgb_axis():
-    """Control: a READY-equivalent p_up keeps `xgb` out of `missing_factors`."""
-    p_up = derive_xgb_p_up(_sig(model_p_up=0.42), None)
+    """Control: a READY-marked p_up keeps `xgb` out of `missing_factors`."""
+    p_up = derive_xgb_p_up(_sig(model_p_up=0.42, model_p_up_source=READY), None)
     rec = ProfileAttribution("PF-A").process_candidate(
         symbol="USD/JPY",
         candidate_direction="BUY",
