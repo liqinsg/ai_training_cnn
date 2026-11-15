@@ -66,12 +66,16 @@ class StrategyConfig:
 
 # ── Phase 3.1 Stage C (C-4): explicit provenance for `Signal.model_p_up` ──────
 # `StrategyEngine.generate_signal` is the ONLY constructor of `Signal`, and the
-# ONLY writer of `model_p_up` is the real `_predict()` call on the injected,
-# scaler-backed model (see `generate_signal`). Consumers of the interpreted P(up)
-# (e.g. `attribution_v2.live_hook.derive_xgb_p_up`) must therefore require this
-# explicit READY marker instead of inferring READY from the mere presence of a
-# value. The conservative default means an unmarked Signal reads as non-READY.
-MODEL_P_UP_SOURCE_READY = "MODEL_READY"
+# ONLY writer of `model_p_up` is its `_predict()` call, which goes through
+# `data_pipeline.predict_p_up()` on the injected, scaler-backed model. That is the
+# *legacy* live prediction path (contract §4.1.1.6 known exception); it does NOT
+# produce a `PredictionResult`. This marker therefore asserts only:
+#     "the value came from a genuine legacy model inference, not a synthesis".
+# It deliberately does NOT claim `PredictionResult.status == READY` (the stronger
+# Stage B assertion), which is unreachable in live behaviour until the adapter is
+# wired into the prediction path — deferred to Phase 3.6 Controlled Activation.
+# The conservative default means an unmarked Signal is never consumed as marked.
+MODEL_P_UP_SOURCE_LEGACY_OK = "LEGACY_MODEL_INFERENCE_OK"
 MODEL_P_UP_SOURCE_UNSET = "UNSET"
 
 
@@ -90,8 +94,9 @@ class Signal:
     model_p_up: float
     adx: float
     # Phase 3.1 Stage C (C-4): explicit provenance for `model_p_up`. The sole
-    # producer (`generate_signal`) sets MODEL_P_UP_SOURCE_READY; the default is
-    # deliberately non-READY so an unmarked Signal is never consumed as READY.
+    # producer (`generate_signal`) sets MODEL_P_UP_SOURCE_LEGACY_OK (a genuine
+    # legacy model inference — NOT a `PredictionResult` READY); the default is
+    # deliberately unmarked so an unmarked Signal is never consumed.
     model_p_up_source: str = MODEL_P_UP_SOURCE_UNSET
     mc_data: Optional[dict] = None
     pivot_levels: Optional[dict] = None
@@ -274,7 +279,7 @@ class StrategyEngine:
             edge=round(edge, 4),
             model_p_up=round(p_up, 4),
             adx=round(adx, 2),
-            model_p_up_source=MODEL_P_UP_SOURCE_READY,
+            model_p_up_source=MODEL_P_UP_SOURCE_LEGACY_OK,
             mc_data=mc_data,
             pivot_levels=pivot_levels,
             filter_notes=notes,

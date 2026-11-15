@@ -1,11 +1,11 @@
 # Phase 3.1 — Stage C 完成报告（Consumer Transparency Migration）
 
-**Version:** 1.1
+**Version:** 1.2
 **Date:** 2026-11-15
 **Status:** 复核收尾（review closure）已在工作树落地，**尚未提交**、**尚未验收**。
 首轮实现 = `c8bf4b9`；补充测试 + C-5 语义还原 = `a5e916f`。本版在 `a5e916f` 之上追加
-**SC-02 路径 A（真绑定 production load）** 与 **C-4 显式 provenance** 两个收尾修复，
-以及本文档的偏差记录。Stage C **暂不正式验收**，等待复核。
+**SC-02 路径 A（真绑定 production load）**、**C-4 显式 provenance（且不过度声明权威 READY）**
+两个收尾修复，以及本文档的偏差记录。Stage C **暂不正式验收**，等待复核。
 **Contract:** `docs/PHASE3_1_CONTRACT.md` v1.3（SHA-256 `49975ef4…de7b`）
 **Spec:** `docs/PHASE3_1_STAGE_B_STRICT_SPEC.md` v3（Stage B 已验收）
 **Task order:** `docs/PHASE3_1_STAGE_C_IMPLEMENTATION_TASK.md`（SC-01…SC-06）
@@ -78,20 +78,33 @@ registry 命中 VERIFIED，消费者就可能把运行中的 A 误当作已验�
 
 ### SC-05 — C-4 / C-5 attribution（`attribution_v2/`）
 
-**C-4（复核后：显式 provenance，取代「非空 ⇒ READY」代理）**
+**C-4（复核后：显式 provenance，且**不**过度声明权威 READY）**
 
 复核裁定：初版把 `sig.model_p_up is not None` 当作 READY 等价条件，**误称**——
 legacy `Signal`（契约 §4.1.1.6 C-2 known exception）根本**不是** PredictionResult 消费者，
 字段非空并不等于「已由 READY PredictionResult 确认」。
 
+二次复核（ChatGPT）进一步指出：`StrategyEngine._predict()` 走的是
+`data_pipeline.predict_p_up()`，**从未经过** `ml/prediction_adapter.py`，因此 live 路径
+**不产生** `PredictionResult`。若 marker 命名为 `MODEL_READY`，会被读成「权威
+PredictionResult 已 READY」——这是代码无法证明的 **provenance 过度声明**。
+
+处置（A+B，Stage C 内诚实收口）：
+
 | 位置 | 变更 |
 | --- | --- |
-| `strategy_decision.py:74-75,93-95,277` | 新增常量 `MODEL_P_UP_SOURCE_READY="MODEL_READY"` / `MODEL_P_UP_SOURCE_UNSET="UNSET"`；`Signal` 新增字段 `model_p_up_source: str = MODEL_P_UP_SOURCE_UNSET`；**唯一生产者** `generate_signal` 显式置 `MODEL_P_UP_SOURCE_READY` |
-| `attribution_v2/live_hook.py:140,143-173` | `derive_xgb_p_up` 要求 `getattr(sig,"model_p_up_source",None) == "MODEL_READY"` 方消费；无值 / 未标记 legacy Signal / 非 READY 来源 → `None`（下游记 `degraded`）。观测层**刻意不导入交易模块**，故本地镜像该标记，任何不一致 fail-SAFE |
+| `strategy_decision.py:67-79,96-100,282` | 新增常量 `MODEL_P_UP_SOURCE_LEGACY_OK="LEGACY_MODEL_INFERENCE_OK"` / `MODEL_P_UP_SOURCE_UNSET="UNSET"`；`Signal` 新增字段 `model_p_up_source`（默认 `UNSET`）；**唯一生产者** `generate_signal` 显式置 `LEGACY_MODEL_INFERENCE_OK`。模块注释明确：该标记**仅**断言「值来自真实的 legacy 模型推理、非合成」，**不**断言 `PredictionResult.status==READY` |
+| `attribution_v2/live_hook.py:137-183` | `derive_xgb_p_up` 要求 `model_p_up_source == "LEGACY_MODEL_INFERENCE_OK"` 方消费；无值 / 未标记 / 其他来源 → `None`（下游记 `degraded`）。观测层**刻意不导入交易模块**，本地镜像该标记，任何不一致 fail-SAFE |
 
+- **权威 READY 部分显式延后**：把 `Signal.model_p_up` 绑定到 `PredictionResult(status=READY)`
+  需要让 `StrategyEngine` 消费权威适配器 = **把 READY 接进执行路径**，超出 Stage C §4.1
+  冻结（任务单 §SC-05「不把 READY 接到任何执行路径」）。因此该部分**延后到 Phase 3.6
+  Controlled Activation**，需单独批准。Stage C 内的 C-4 交付被**降级**为：
+  「不得从非 READY **合成** P(up)；且消费要求生产者显式标记」。
 - 同时保留 C-4 的原有禁令：**移除** `w["X"]/100` 与 `raw_prob` **合成**路径。
-- 证据：新增 `test_c4_value_without_ready_provenance_is_rejected`（值存在但未标记 → None）
-  与 `test_c4_unmarked_value_propagates_to_degraded_profile_record`（未标记值端到端 degraded）。
+- 证据：`test_c4_value_without_the_marker_is_rejected`（值存在但未标记 → None）、
+  `test_c4_unmarked_value_propagates_to_degraded_profile_record`（未标记值端到端 degraded）、
+  `test_c4_missing_value_never_synthesizes_from_X_or_raw_prob`（有标记但无值也绝不合成）。
 
 **C-5（复核：通过）**
 
@@ -155,11 +168,11 @@ legacy `Signal`（契约 §4.1.1.6 C-2 known exception）根本**不是** Predic
 | V1 | `python -m py_compile`（全部被改文件 + 新增测试） | **COMPILE_OK** |
 | V2 | `pytest tests/test_prediction_adapter.py tests/test_phase3_runtime_containment.py -q` | **157 passed**（适配器 112 + 运行时遏制 45） |
 | V3 | `pytest tests -q`（cwd=`attribution_v2`） | **83 passed** |
-| V4 | C-4/C-5 行为烟测 | `_prob_clip_with_unit(70)=(0.7,'0-100')`、`(0.4)=(0.4,'0-1')`、`(None)=(None,'none')`；`_prob_clip(70)=0.7`（行为不变）；`_pick_prob` 正确解析来源；`derive_xgb_p_up`：READY-marker→`0.42`、有值但**未标记**→`None`、非 READY→`None`、`sig=None`→`None` |
+| V4 | C-4/C-5 行为烟测 | `_prob_clip_with_unit(70)=(0.7,'0-100')`、`(0.4)=(0.4,'0-1')`、`(None)=(None,'none')`；`_prob_clip(70)=0.7`（行为不变）；`_pick_prob` 正确解析来源；`derive_xgb_p_up`：LEGACY_OK-marker→`0.42`、有值但**未标记**→`None`、其他来源→`None`、`sig=None`→`None` |
 | V5 | 预存在失败隔离 | `git stash` 我的改动后重跑同一命令，结果**逐字相同**，证明**无新增失败** |
 | V6 | `git diff` 全量审阅 | 仅日志 / 标签 / 新字段 / 辅助函数 / 单次读重构；无 Step 7 打分 / 票数 / 权重 / Entry Authorization 逻辑变更 |
 | V7 | **SC-02 路径 A 自动化测试**（`tests/test_phase3_runtime_containment.py`） | 成功路径：`ident.model_instance is strategy.model is wrapper.model`、`wrapper.loaded_model_bytes == 磁盘字节`、`ident.artifact_sha256 == sha256(磁盘字节)`、`load_method=="BYTES"`、`result.model_hash==ident.artifact_sha256`；**单次读免疫**（读后立即替换磁盘文件，身份仍绑定旧字节）；**withhold**（loader 未消费字节 → `loaded_identity is None` 且 detail 含 `no instance provenance`）；适配器异常 / 模块不可导入 fail-open；字段 additive 且不进 `as_log_fields()` |
-| V8 | **C-4 / C-5 自动化测试**（`attribution_v2/tests/test_stage_c_transparency.py`，34） | C-4：READY-marker 用 `model_p_up`、钳位、非 READY 绝不从 `X`/`raw_prob` 合成、`None`/不可解析→`None`、**有值但未标记→`None`（显式 provenance 拒绝）**、`None`/未标记值经 `process_candidate` 落到 `decision.degraded=True` 且 `missing_factors` 含 `xgb`（端到端）。C-5：`_prob_clip` 行为逐值不变、单位标签、来源优先级、**present-but-None 语义**、`last_prob_provenance` 来源+单位 |
+| V8 | **C-4 / C-5 自动化测试**（`attribution_v2/tests/test_stage_c_transparency.py`，34） | C-4：LEGACY_OK-marker 用 `model_p_up`、钳位、**无标记值绝不消费**、无值绝不从 `X`/`raw_prob` 合成、`None`/不可解析→`None`、**有值但未标记→`None`（显式 provenance 拒绝）**、无值/未标记值经 `process_candidate` 落到 `decision.degraded=True` 且 `missing_factors` 含 `xgb`（端到端）。C-5：`_prob_clip` 行为逐值不变、单位标签、来源优先级、**present-but-None 语义**、`last_prob_provenance` 来源+单位 |
 | V9 | **`bind_loaded_identity` 专属测试**（`tests/test_prediction_adapter.py`，+10） | hash 覆盖**预读字节**、`model_instance/scaler_instance` 为**同一对象**（`is`）、clock 时间戳、`source_path` 归一为 `str`、`load_method` 透传、`bytearray` 接受、非 bytes → `PredictionAdapterContractError`、缺 clock → `PredictionAdapterContractError`、**无 I/O**（`builtins.open` 被禁用仍成功） |
 
 **关于全套收集错误（非本次引入）：**
@@ -188,7 +201,7 @@ legacy `Signal`（契约 §4.1.1.6 C-2 known exception）根本**不是** Predic
 | SC-01 | 暂时认可 |
 | SC-02 | **路径 A 已实现**（真绑定 production load；含单次读免疫测试 + `bind_loaded_identity` 专属测试）；待复核 |
 | SC-03 / SC-04 | 暂时认可（未改） |
-| C-4 | **显式 provenance 已实现**（`Signal.model_p_up_source` + `derive_xgb_p_up` 校验）；待复核 |
+| C-4 | **Stage C 内降级交付**：显式 provenance（`Signal.model_p_up_source` + `derive_xgb_p_up` 校验）已实现，且 marker 语义如实标注为「legacy 模型推理成功」而非权威 `PredictionResult.status==READY`；「绑定权威适配器 READY」部分**延后 Phase 3.6** |
 | C-5 | **通过** |
 
 ---
@@ -198,6 +211,9 @@ legacy `Signal`（契约 §4.1.1.6 C-2 known exception）根本**不是** Predic
 - 未接线 ML Vote；未改 Step 7 打分 / 权重；未改 Entry Authorization。
 - 未移除 legacy fallback 的交易影响（§4.1.1.4，需另开 Phase 3.6 门槛）。
 - 未把 `READY` 接到任何执行路径。
+- **未让 `StrategyEngine` 消费权威适配器**：即未把 `Signal.model_p_up` 绑定到
+  `PredictionResult(status=READY)`。这属于「把 READY 接进执行路径」，需 Phase 3.6
+  单独批准（C-4 的权威 READY 部分在此延后）。
 - 未动 `fx_trade_bot.py`（拷贝件）。
 - **未部署、未重训。**
 - **未提交本轮复核收尾改动**（保留在工作树，等待复核后再决定）。
@@ -213,10 +229,13 @@ legacy `Signal`（契约 §4.1.1.6 C-2 known exception）根本**不是** Predic
 2. **SC-02 身份现为「实例 provenance」**：`loaded_identity.model_instance` **就是**
    `strat_engine.model`（同一对象），哈希覆盖产出该运行实例的字节。初版残余「新建实例 ≠
    接线实例」问题已消除。
-3. **C-4 provenance 是显式标记而非推断**：`derive_xgb_p_up` 现在要求 `model_p_up_source
-   == "MODEL_READY"`。该标记的**唯一生产者**是 `StrategyEngine.generate_signal`；观测层
-   本地镜像该字符串（不导入交易模块），任何漂移 fail-SAFE。若存在其他能看到 `Signal` 的
-   构造/序列化路径而绕过 `generate_signal`，其 `model_p_up` 将被判为未标记 → degraded。
+3. **C-4 provenance 是显式标记、且不冒充权威 READY**：`derive_xgb_p_up` 现在要求
+   `model_p_up_source == "LEGACY_MODEL_INFERENCE_OK"`。该标记的**唯一生产者**是
+   `StrategyEngine.generate_signal`；观测层本地镜像该字符串（不导入交易模块），任何漂移
+   fail-SAFE。marker 名刻意**不叫** `MODEL_READY`——因为 live 路径（`predict_p_up`，
+   契约 §4.1.1.6 known exception）**不产生** `PredictionResult`，叫 READY 会过度声明。
+   若存在其他能看到 `Signal` 的构造/序列化路径而绕过 `generate_signal`，其 `model_p_up`
+   将被判为未标记 → degraded。**绑定权威适配器 READY 延后 Phase 3.6。**
 4. **C-5 已还原为严格行为一致**：复核发现初版 `_pick_prob` 用 `is not None` 判断，
    在「主键存在但值为 `None`」时会继续尝试别名，而旧内联链 `.get(key, default)` 会
    停在 `None`。已改为 `if key in bot_candidate`，语义**逐字一致**。
@@ -239,7 +258,9 @@ legacy `Signal`（契约 §4.1.1.6 C-2 known exception）根本**不是** Predic
 ## 8. 状态
 
 - 首轮实现 + 初版报告 = `c8bf4b9`；补充测试 + C-5 还原 = `a5e916f`（**均在工作树之外**）。
-- 本轮复核收尾（SC-02 路径 A、C-4 显式 provenance、`bind_loaded_identity` 测试、本文档）
-  在**工作树中，尚未提交**。
-- **Stage C 暂不正式验收。** 待用户/ChatGPT 复核 SC-02 路径 A 与 C-4 provenance 证据后，
+- 本轮复核收尾（SC-02 路径 A、C-4 显式 provenance + marker 语义如实化、
+  `bind_loaded_identity` 测试、本文档）在**工作树中，尚未提交**。
+- **C-4 在 Stage C 内为「降级交付」**：实现并验证了「不合成 / 需显式标记」，
+  「绑定权威 `PredictionResult(status=READY)`」部分**延后 Phase 3.6 Controlled Activation**。
+- **Stage C 暂不正式验收。** 待用户/ChatGPT 复核 SC-02 路径 A 与 C-4 证据后，
   再决定提交、部署、重训与正式关闭。
