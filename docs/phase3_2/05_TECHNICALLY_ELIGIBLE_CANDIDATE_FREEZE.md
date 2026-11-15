@@ -26,7 +26,9 @@ A candidate may be marked `TECHNICALLY ELIGIBLE` only when all applicable condit
 
 A `DEFER` candidate cannot be frozen as technically eligible.
 
-**Status note (2026-11-15):** the L2-A definition decisions (Doc 01 IC-*, Doc 02 FD-*) were recorded on 2026-11-15, which satisfies the definition-level prerequisites 1–5 for the `REDEFINE`/`ACCEPTABLE AS-IS` candidates that are not blocked. **No candidate is frozen**: prerequisites 8 (train/inference parity — P1/P2 not run), 9 (convergence — offline only) and 10 (production history length — RC-02 not approved) remain unmet, and the `atr_ecdf_50bar` tie-sensitivity finding is an open blocker. All `Final status` values below therefore remain `NOT FROZEN` or `DEFER`.
+**Status note (2026-11-15):** the L2-A definition decisions (Doc 01 IC-*, Doc 02 FD-*) were recorded on 2026-11-15, which satisfies the definition-level prerequisites 1–5 for the `REDEFINE`/`ACCEPTABLE AS-IS` candidates that are not blocked. **No candidate is frozen**: prerequisites 8 (train/inference parity — P1/P2 not run) and 9 (convergence — offline only) remain unmet. All `Final status` values below therefore remain `NOT FROZEN` or `DEFER`.
+
+**Status update (2026-11-15, appended — L2-B):** prerequisite 10 is now met — production history length is approved at 800 bars (RC-02, Doc 04, L2-B), supported by the Step 4 convergence report. The `atr_ecdf_50bar` tie-sensitivity finding is resolved as a documented R-class behaviour (Doc 02 §3.1), not an open blocker, and the frozen production length sits in its stable region. Freeze is still withheld because prerequisite 8 (train/inference parity P1/P2) is `NOT VERIFIED`; this is the remaining gating item.
 
 ## 3. Candidate freeze register
 

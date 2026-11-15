@@ -79,6 +79,14 @@ Period `n=14` bars: **APPROVED (FD-06, 2026-11-15)**. The definition below is th
 
 This is a proposed definition, not a claim of equivalence to any third-party library.
 
+## 3.1 `atr_ecdf_50bar` tie-handling — approved addendum (2026-11-15)
+
+Definition frozen as: `atr_ecdf_50bar[t] = (count of ATR values in the trailing 50 valid ATR values that are <= ATR[t]) / 50` (inclusive rank / ECDF at the sample point). It is deterministic for a fixed input history.
+
+This inclusive-rank form is tie-sensitive by construction: on a (near-)degenerate window where many ATR values are exactly equal, a minute shift of the reference ATR can step the count across many equal samples at once. This was observed exactly once, on the synthetic degenerate `adx_break` fixture (Step 4 report, fixture `adx_break`): the final-candle `|A-B|` for `atr_ecdf_50bar` is **0.92** between history 200 and 300, then stable (0.02) for 300/500/800. Both main acceptance pairs (300v500, 500v800) pass on all fixtures.
+
+Owner decision: keep the inclusive-rank definition (it is the frozen, reproducible semantic) and treat tie-sensitivity as an inherent R-class behaviour, not a defect. The approved production history length (RC-02 = 800, Doc 04) sits in the stable region, so the frozen production configuration is unaffected. No formula change → the preregistered convergence protocol is not re-opened. Any future tie-robust variant (e.g. mid-rank `(count(<) + 0.5*count(==))/w`) would be a **new contract identity**, not a silent change.
+
 ## 4. Shared eligibility gate
 
 All nine conditions are mandatory:

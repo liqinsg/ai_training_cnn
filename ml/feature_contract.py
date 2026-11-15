@@ -9,9 +9,12 @@ Contract. Source of truth:
 Status / boundaries
 -------------------
 * This module is the *single* implementation of the new contract. It does NOT
-  import, call, or modify ``data_pipeline.py`` or ``ml/features.py``; the live
-  runtime call paths are unchanged until an explicit L3 implementation decision
-  wires them.
+  import, call, or modify ``data_pipeline.py`` or ``ml/features.py``.
+* L3 (2026-11-15): the live bots may call :func:`build_features` behind the
+  default-OFF switch ``USE_FEATURE_CONTRACT_V2`` (``_opt``). With the switch off
+  the shipped runtime path is unchanged. With it on, the bots must supply a model
+  artifact whose feature list matches :data:`ORDERED_FEATURES`; otherwise the
+  downstream matrix build fails closed instead of silently misaligning columns.
 * No silent fallback, no ``bfill``, no blanket ``fillna(0)``. Warm-up rows stay
   ``NaN``; invalid candles reject the whole batch (IC-06).
 * Timeframe is M15 (one row == 15 minutes). Every window below is a bar count.

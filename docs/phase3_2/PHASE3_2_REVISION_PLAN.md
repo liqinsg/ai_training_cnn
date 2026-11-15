@@ -386,3 +386,15 @@ L1 后建立独立文件 **`docs/phase3_2/PHASE3_2_CALENDAR_CONTRACT.md`**。初
 | 0.1 | 2026-11-15 | assistant | 初稿：现状快照、修改范围 A/B/C、6 个分歧点、执行顺序 |
 | 0.2 | 2026-11-15 | assistant | 处理 P0‑1..P0‑7：三层授权分离、legacy 证据保全、会话保留 IANA tz+FAIL CLOSED、Calendar Contract、实验比较矩阵+容差+分类验收、parity 分层+FULL_PARITY_STATUS；新增 Volume EXCLUDE 与 vol 缩放登记；执行顺序加入 Step0.1；明确本版本不改 01–05 |
 | 0.3 | 2026-11-15 | assistant | L2 拆为 L2-A/L2-B 并纳入 Doc03 授权；OANDA-specific 独立 Calendar Contract；legacy 历史不可变与引用审计；明确 timestamp/completion/UTC；FD-02 矩阵 SHA 锁定；统一 RSI slope 3-bar；限定 parity 和 convergence 结论；规范 Volume EXCLUDE 及 Step0–7 顺序 |
+| 0.3-append | 2026-11-15 | assistant | 仅追加（不改上文）：owner「全部授权」= **L2-B + L3** 已记录；据 Step4 证据落定 RC-02=800、RC-11=`tzdata==2026.5`/`pytz==2026.1`；据 OANDA 证据落定 IC-02/RC-03=candle-OPEN 并关闭 IC-02/IC-04 source-evidence gap；Calendar Contract 升 v0.2（§4/§6/§8/§9/§11 EVIDENCED）；随后进入 L3 实现（可回退开关） |
+
+### 14.1 授权台账（追加记录）
+
+| 授权 | 层级 | 内容 | 记录日期 |
+|---|---|---|---|
+| L1 | 流程 | 接受本计划书的流程/治理顺序 | 2026-11-15 |
+| L2-A | Step1–3 | IC-01..08、FD-01..09、Doc03 实验协议逐项批准 | 2026-11-15 |
+| L2-B | Step5 | 据 Step4 证据批准 RC-01..11（含 RC-02=800） | 2026-11-15 |
+| L3 | Step8–9 | owner「全部授权」— 允许把新契约接进运行路径（可回退）+ 测试 | 2026-11-15 |
+
+> L3 仍受 §13 边界约束：不训练模型、不写/覆盖 artifact、不部署、不接 READY、不改交易行为；接线须保持默认可回退（开关默认 `False`），且不得破坏既有列名/顺序与 scaler/artifact 一致性。

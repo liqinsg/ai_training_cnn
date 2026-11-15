@@ -1245,6 +1245,28 @@ MODEL_PATH = BASE_DIR / "trade_model_xgb.pkl"
 # re-asserts this as defence-in-depth.  Offline training (retrain_model.py)
 # constructs its own writable wrapper and is unaffected.
 model_wrapper = ModelWrapper(FEAT_CFG, model_path=MODEL_PATH, read_only=True)
+
+
+# ─── [OPT-14] Phase 3.2 Feature Contract v2 (reversible, default OFF) ────────
+# When ON, each per-pair feature frame is built by the Phase 3.2 Feature Contract
+# (ml/feature_contract.py) instead of the legacy FeatureEngine. Default OFF keeps
+# the shipped runtime path byte-identical. The contract emits a DIFFERENT ordered
+# schema than the legacy engine, so it requires a model artifact whose feature
+# list matches it; otherwise the downstream matrix build fails closed rather than
+# silently misaligning columns. No silent fallback: contract errors propagate.
+USE_FEATURE_CONTRACT_V2 = _opt("USE_FEATURE_CONTRACT_V2", False)
+
+
+def _build_pair_features(raw):
+    """Per-pair feature frame: legacy FeatureEngine by default, Phase 3.2 Feature
+    Contract behind USE_FEATURE_CONTRACT_V2 (lazy import; fail-closed)."""
+    if USE_FEATURE_CONTRACT_V2:
+        from ml.feature_contract import build_features as _contract_build
+
+        return _contract_build(raw)
+    return feat_engine.build(raw)
+
+
 last_closed = {} if REMOVE_COOLDOWN else load_cooldown(COOLDOWN_FILE, Direction)
 
 
@@ -1790,7 +1812,7 @@ def main():
                 if _raw is None or _raw.empty:
                     continue
                 _df = (
-                    feat_engine.build(_raw)
+                    _build_pair_features(_raw)
                     .replace([np.inf, -np.inf], np.nan)
                     .ffill()
                     .bfill()
@@ -1919,7 +1941,7 @@ def main():
             if raw.empty:
                 continue
             df = (
-                feat_engine.build(raw)
+                _build_pair_features(raw)
                 .replace([np.inf, -np.inf], np.nan)
                 .ffill()
                 .bfill()
@@ -2156,7 +2178,7 @@ def main():
                     sig = strat_engine.generate_signal(
                         pair,
                         pair_data[pair]["oanda"],
-                        feat_engine.build(raw_tf),
+                        _build_pair_features(raw_tf),
                         None,
                         strength_scores,
                         raw_tf.iloc[-1]["Close"],
@@ -2207,7 +2229,7 @@ def main():
                 if _raw is None or _raw.empty:
                     continue
                 _df = (
-                    feat_engine.build(_raw)
+                    _build_pair_features(_raw)
                     .replace([np.inf, -np.inf], np.nan)
                     .ffill()
                     .bfill()

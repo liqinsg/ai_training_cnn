@@ -1,7 +1,7 @@
 # Phase 3.2 — Document 01: Input Contract Owner Decision
 
 **Date:** 2026-11-15  
-**Status:** L1 + L2-A APPROVED (owner, 2026-11-15) — IC decisions recorded below  
+**Status:** L1 + L2-A APPROVED (owner, 2026-11-15) — IC decisions recorded below; IC-02/IC-04 source-evidence gap CLOSED (2026-11-15, see §6 addendum)  
 **Scope:** Input data, timeframe, timestamps, candle completeness, validation and batch failure policy.
 
 ## 1. Purpose
@@ -13,9 +13,9 @@ Freeze the common input boundary used by both training and inference before feat
 | ID | Decision | Current proposal | Owner decision |
 |---|---|---|---|
 | IC-01 | Target timeframe | M15 | APPROVED — M15 |
-| IC-02 | Timestamp convention | One explicit convention: candle-open timestamp or candle-close timestamp | APPROVED (direction) — candle-open vs candle-close must be determined from OANDA source evidence (see `PHASE3_2_CALENDAR_CONTRACT.md`); not inferred from the `time` field name. Concrete value PENDING source evidence |
+| IC-02 | Timestamp convention | One explicit convention: candle-open timestamp or candle-close timestamp | APPROVED — **candle-OPEN (start) timestamp**; evidenced from OANDA REST-V20 Instrument Definitions (`time` = "The start time of the candlestick"); not inferred from the field name (see `PHASE3_2_CALENDAR_CONTRACT.md` §4) |
 | IC-03 | Timestamp timezone | Timezone-aware UTC before validation/features | APPROVED — timezone-aware UTC before validation/features |
-| IC-04 | Incomplete candle | Exclude the latest incomplete candle using one shared rule | APPROVED — exclude the latest incomplete candle with one shared rule; the identification signal is tied to IC-02 / the OANDA `complete` field |
+| IC-04 | Incomplete candle | Exclude the latest incomplete candle using one shared rule | APPROVED — exclude the latest incomplete candle with one shared rule; the authoritative signal is the OANDA `complete` field (`complete == True` ⇔ candle ending time is not in the future). Deviation logged: current code uses a time-elapsed heuristic instead of `complete` (see §6 addendum) |
 | IC-05 | Candle cadence | Expected 15-minute intervals, subject to an approved market/session calendar | APPROVED — 15-minute intervals governed by the Calendar Contract |
 | IC-06 | Invalid batch policy | Reject the entire input batch; no row deletion, imputation, substitution or partial feature output | APPROVED — reject the entire batch; no deletion / imputation / substitution / partial output |
 | IC-07 | Session gaps | Accept only gaps explicitly explained by an approved calendar; otherwise reject | APPROVED — accept only gaps explained by the approved Calendar Contract; otherwise reject |
@@ -61,15 +61,15 @@ Freeze the common input boundary used by both training and inference before feat
 | Decision | Owner choice / value | Approved by | Date |
 |---|---|---|---|
 | IC-01 Target timeframe | M15 | owner | 2026-11-15 |
-| IC-02 Timestamp convention | Source-evidence determined (candle-open vs candle-close); not inferred from field name; concrete value pending Calendar Contract source evidence | owner | 2026-11-15 |
+| IC-02 Timestamp convention | candle-OPEN (start) timestamp — evidenced from OANDA REST-V20 Instrument Definitions (`time` = "The start time of the candlestick") | owner | 2026-11-15 |
 | IC-03 UTC normalization | Timezone-aware UTC before validation/features | owner | 2026-11-15 |
-| IC-04 Incomplete-candle rule | Exclude the latest incomplete candle, one shared rule across training and inference | owner | 2026-11-15 |
+| IC-04 Incomplete-candle rule | Exclude the latest incomplete candle, one shared rule across training and inference; authoritative signal = OANDA `complete` field | owner | 2026-11-15 |
 | IC-05 Cadence/calendar | 15-minute cadence; governed by the Calendar Contract | owner | 2026-11-15 |
 | IC-06 Whole-batch rejection | Reject entire batch; no deletion / imputation / substitution / partial output | owner | 2026-11-15 |
 | IC-07 Explained gaps | Accept only Calendar-Contract-explained gaps; otherwise reject | owner | 2026-11-15 |
 | IC-08 Train/inference parity | Identical validation and failure semantics | owner | 2026-11-15 |
 
-**Open dependency (IC-02 / IC-04):** the decisions above fix the *rule*; the concrete candle-open/close choice, the completion signal and the UTC-conversion layer must still be evidenced from the OANDA feed in the Calendar Contract before they are treated as verified.
+**Open dependency (IC-02 / IC-04): CLOSED 2026-11-15.** The concrete convention is fixed to **candle-open (start) timestamp**, evidenced from OANDA REST-V20 Instrument Definitions (`time` = "The start time of the candlestick"; `complete` = a flag that is true iff the candle's ending time is not in the future). The full source quote, provenance and the completion-signal definition are recorded in `PHASE3_2_CALENDAR_CONTRACT.md` §4. Remaining recorded deviation: current runtime code identifies the incomplete candle via a time-elapsed heuristic rather than the `complete` field; this is a logged deviation (not a re-opening of IC-04), and the contract requires the `complete` signal where the feed provides it.
 
 ## 7. Authorization boundary
 

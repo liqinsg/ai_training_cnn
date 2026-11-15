@@ -8,9 +8,10 @@ Covers the *proposed* Phase 3.2 Feature Contract implementation:
   * Wilder/EMA primitives and the ADX break/reseed rule
   * fail-closed build (no silent fallback, NaN never filled)
 
-This module is NOT wired to the production runtime: an explicit L3 decision is
-required before data_pipeline.py calls it. These tests are offline and use no
-network, no OANDA calls, and write nothing to production paths.
+This module is wired into the production runtime only behind the default-OFF
+switch ``USE_FEATURE_CONTRACT_V2`` (L3, 2026-11-15); with the switch off the
+shipped path is unchanged. These tests are offline and use no network, no OANDA
+calls, and write nothing to production paths.
 
 Run:  python -m pytest tests/test_feature_contract.py -q
 """
@@ -372,3 +373,38 @@ def test_module_stays_unwired():
     assert ".bfill(" not in body
     assert ".ffill(" not in body
     assert "fillna(" not in body
+
+
+# ── L3 runtime wiring (reversible, default-OFF) ──────────────────────────────
+
+_LIVE_BOTS = [BASE_DIR / "fx_trade_bot.py", BASE_DIR / "fx_trade_bot_v685.py"]
+
+
+@pytest.mark.parametrize("bot", _LIVE_BOTS, ids=lambda p: p.name)
+def test_bot_exposes_default_off_v2_switch(bot):
+    """L3: the contract is reachable only behind a default-OFF runtime switch."""
+    src = bot.read_text(encoding="utf-8")
+    assert 'USE_FEATURE_CONTRACT_V2 = _opt("USE_FEATURE_CONTRACT_V2", False)' in src
+
+
+@pytest.mark.parametrize("bot", _LIVE_BOTS, ids=lambda p: p.name)
+def test_bot_feature_builds_are_routed_through_helper(bot):
+    """Every per-pair build goes through _build_pair_features; the only direct
+    FeatureEngine.build call left is the legacy branch inside the helper."""
+    src = bot.read_text(encoding="utf-8")
+    assert src.count("feat_engine.build(") == 1
+    assert src.count("_build_pair_features(") == 5  # 1 def + 4 call sites
+    assert "return feat_engine.build(raw)" in src
+
+
+@pytest.mark.parametrize("bot", _LIVE_BOTS, ids=lambda p: p.name)
+def test_helper_contract_branch_is_lazy_and_fail_closed(bot):
+    """The contract import is lazy (inside the switch branch) and the build is
+    not wrapped in a swallowing try/except."""
+    src = bot.read_text(encoding="utf-8")
+    start = src.index("def _build_pair_features(raw):")
+    body = src[start:src.index("last_closed = {}", start)]
+    assert "if USE_FEATURE_CONTRACT_V2:" in body
+    assert "from ml.feature_contract import build_features" in body
+    assert "try:" not in body
+    assert "except" not in body
