@@ -12,10 +12,49 @@ import sys
 BASE_DIR = Path(__file__).resolve().parent.parent
 sys.path.extend([str(BASE_DIR), str(BASE_DIR / 'monte_carlo')])
 
+from utils.trading_core import get_positions
+
 # Now we can import the functions to be tested
 from position_monitor import position_monitor, RESULTS_DIR
 
 class TestPositionMonitor(unittest.TestCase):
+
+    @patch("utils.trading_core.oanda_client.request")
+    def test_get_positions_formats_active_long_and_short_positions(self, mock_request):
+        response = {
+            "positions": [
+                {
+                    "instrument": "EUR_USD",
+                    "long": {"units": "100", "tradeIDs": ["123"]},
+                    "short": {"units": "0", "tradeIDs": []},
+                },
+                {
+                    "instrument": "USD_JPY",
+                    "long": {"units": "0", "tradeIDs": []},
+                    "short": {"units": "-200", "tradeIDs": ["456"]},
+                },
+            ]
+        }
+        mock_request.side_effect = lambda request: setattr(request, "response", response)
+
+        positions = get_positions()
+
+        self.assertEqual(
+            positions,
+            [
+                {
+                    "instrument": "EUR_USD",
+                    "direction": "LONG",
+                    "trade_id": "123",
+                },
+                {
+                    "instrument": "USD_JPY",
+                    "direction": "SHORT",
+                    "trade_id": "456",
+                },
+            ],
+        )
+        mock_request.assert_called_once()
 
     def setUp(self):
         """Set up a temporary directory for mock MC results."""
