@@ -709,3 +709,139 @@ def test_live_bots_construct_model_wrapper_read_only(bot):
             f"{bot.name}: live ModelWrapper must be constructed with read_only=True"
         )
 
+
+# ─── Phase 3.1 Stage C — SC-02: single-read byte identity (transparency only) ─
+def test_sc02_ready_populates_single_read_byte_identity(tmp_path, monkeypatch):
+    """SC-02 + spec §3.4: a READY load records a byte-bound artifact identity.
+
+    The identity must come from the authoritative adapter, called with the
+    *resolved* model/scaler paths, and must not disturb the load outcome.
+    """
+    import ml.prediction_adapter as adapter
+
+    model_path = _write_release(tmp_path, b"x")
+    wrapper, strategy = _FakeWrapper(), _FakeStrategy()
+    paths = ml.resolve_artifact_paths(model_path)
+
+    sentinel = object()  # stands in for LoadedModelIdentity
+    seen = {}
+
+    def _fake_load(*, model_path, scaler_path, clock):
+        seen["model_path"] = model_path
+        seen["scaler_path"] = scaler_path
+        seen["clock_is_tz_aware"] = clock.now().tzinfo is not None
+        return sentinel
+
+    monkeypatch.setattr(adapter, "load_model_with_identity", _fake_load)
+
+    result = _ensure(model_path, wrapper, strategy)
+
+    assert result.status == ml.ModelStatus.READY
+    assert result.loaded_identity is sentinel
+    assert result.identity_detail is None
+    assert seen["model_path"] == str(paths["model"])
+    assert seen["scaler_path"] == str(paths["scaler"])
+    assert seen["clock_is_tz_aware"] is True
+    # the wiring is unchanged by the identity capture
+    assert strategy.model is wrapper.model and strategy.scaler is wrapper.scaler
+
+
+def test_sc02_identity_is_post_wiring_second_read_not_instance_provenance(
+    tmp_path, monkeypatch
+):
+    """SC-02 evidence boundary — pinned so the field is never over-read.
+
+    ``_capture_loaded_identity`` runs AFTER the strategy engine is wired and reads
+    the artifacts a second time. It therefore binds the *bytes read at capture
+    time*, NOT a proof that the already-wired in-memory instance was built from
+    those bytes (i.e. it is post-load file identity, not instance provenance).
+    """
+    import ml.prediction_adapter as adapter
+
+    model_path = _write_release(tmp_path, b"y")
+    wrapper, strategy = _FakeWrapper(), _FakeStrategy()
+    seen = {}
+
+    def _fake_load(*, model_path, scaler_path, clock):
+        seen["wired_model"] = strategy.model  # already wired → post-load
+        seen["wired_scaler"] = strategy.scaler
+        return object()
+
+    monkeypatch.setattr(adapter, "load_model_with_identity", _fake_load)
+
+    result = _ensure(model_path, wrapper, strategy)
+
+    assert result.loaded_identity is not None
+    assert seen["wired_model"] is wrapper.model
+    assert seen["wired_scaler"] is wrapper.scaler
+
+
+def test_sc02_adapter_failure_is_fail_open_and_changes_nothing(tmp_path, monkeypatch):
+    """SC-A4: an adapter failure is swallowed; the load result is byte-identical."""
+    import ml.prediction_adapter as adapter
+
+    model_path = _write_release(tmp_path, b"z")
+
+    base_wrapper, base_strategy = _FakeWrapper(), _FakeStrategy()
+    baseline = _ensure(model_path, base_wrapper, base_strategy)
+
+    def _boom(*, model_path, scaler_path, clock):
+        raise RuntimeError("adapter exploded")
+
+    monkeypatch.setattr(adapter, "load_model_with_identity", _boom)
+
+    wrapper, strategy = _FakeWrapper(), _FakeStrategy()
+    result = _ensure(model_path, wrapper, strategy)
+
+    assert result.loaded_identity is None
+    assert result.identity_detail and "RuntimeError: adapter exploded" in result.identity_detail
+    assert result.status == baseline.status == ml.ModelStatus.READY
+    assert result.reason == baseline.reason and result.ok is True
+    assert result.model_hash == baseline.model_hash
+    assert strategy.model is wrapper.model and strategy.scaler is wrapper.scaler
+    assert wrapper.fit_calls == 0 and wrapper.save_calls == 0
+
+
+def test_sc02_adapter_module_unavailable_is_fail_open(tmp_path, monkeypatch):
+    """SC-02: if the adapter cannot even be imported, stay transparent (None + detail)."""
+    import sys
+
+    model_path = _write_release(tmp_path, b"w")
+    monkeypatch.setitem(sys.modules, "ml.prediction_adapter", None)
+
+    wrapper, strategy = _FakeWrapper(), _FakeStrategy()
+    result = _ensure(model_path, wrapper, strategy)
+
+    assert result.status == ml.ModelStatus.READY and result.ok is True
+    assert result.loaded_identity is None
+    assert result.identity_detail and result.identity_detail.startswith(
+        "identity module unavailable:"
+    )
+
+
+def test_sc02_real_adapter_failure_on_non_model_bytes_is_fail_open(tmp_path):
+    """SC-02 fail-open with the REAL adapter: `_write_release` writes non-model
+    bytes, so the adapter's xgboost/joblib load raises — the runtime must stay
+    READY with `loaded_identity=None` instead of propagating the error."""
+    model_path = _write_release(tmp_path, b"not-a-real-model")
+    wrapper, strategy = _FakeWrapper(), _FakeStrategy()
+
+    result = _ensure(model_path, wrapper, strategy)
+
+    assert result.status == ml.ModelStatus.READY and result.ok is True
+    assert result.loaded_identity is None
+    assert result.identity_detail  # the failure was captured, not raised
+
+
+def test_sc02_identity_fields_are_additive_only():
+    """The new fields default to None and never enter as_log_fields()."""
+    result = ml.ModelInitResult(
+        status=ml.ModelStatus.READY,
+        reason=ml.ModelReason.MODEL_READY,
+        profile="p",
+        host_id="h",
+    )
+    assert result.loaded_identity is None and result.identity_detail is None
+    assert "loaded_identity" not in result.as_log_fields()
+    assert "identity_detail" not in result.as_log_fields()
+

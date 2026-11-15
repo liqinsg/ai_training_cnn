@@ -2,7 +2,10 @@
 
 **Version:** 1.0
 **Date:** 2026-11-15
-**Status:** Implementation complete — **NOT committed, NOT deployed** (awaiting review)
+**Status:** Implementation complete. Code + first report committed as `c8bf4b9`
+(`phase31 stage C implementation`). This revision adds the review-requested
+targeted tests (SC-02 / C-4 / C-5) and restores strict C-5 precedence fidelity —
+**not yet committed**; deployment/retrain still pending review.
 **Contract:** `docs/PHASE3_1_CONTRACT.md` v1.3（SHA-256 `49975ef4…de7b`）
 **Spec:** `docs/PHASE3_1_STAGE_B_STRICT_SPEC.md` v3（Stage B 已验收）
 **Task order:** `docs/PHASE3_1_STAGE_C_IMPLEMENTATION_TASK.md`（SC-01…SC-06）
@@ -88,7 +91,13 @@ Entry Authorization。所有新增代码 **additive + fail-open**：异常一律
  6 files changed, 201 insertions(+), 52 deletions(-)
 ```
 
-新文件（未跟踪）：`docs/PHASE3_1_STAGE_C_IMPLEMENTATION_TASK.md`（任务单）、本报告。
+测试（本次复核补充）：
+- `tests/test_phase3_runtime_containment.py`（新增 SC-02 组，+6 用例）
+- `attribution_v2/tests/test_stage_c_transparency.py`（新增，C-4/C-5 组，32 用例）
+- `attribution_v2/data_bridge.py` 的 `_pick_prob` 增加"present-key wins"以**严格还原**
+  旧内联链语义（见 §6.4）。
+
+文档：`docs/PHASE3_1_STAGE_C_IMPLEMENTATION_TASK.md`（任务单）、本报告——均随 `c8bf4b9` 提交。
 
 ---
 
@@ -96,12 +105,14 @@ Entry Authorization。所有新增代码 **additive + fail-open**：异常一律
 
 | # | 命令 | 结果 |
 | --- | --- | --- |
-| V1 | `python -m py_compile`（全部 6 个被改文件） | **COMPILE_OK** |
-| V2 | `pytest tests/test_prediction_adapter.py tests/test_phase3_runtime_containment.py -q` | **140 passed**（Stage B 适配器 102 + 运行时遏制 38） |
-| V3 | `pytest tests -q`（cwd=`attribution_v2`） | **49 passed** |
+| V1 | `python -m py_compile`（全部被改文件 + 新增测试） | **COMPILE_OK** |
+| V2 | `pytest tests/test_prediction_adapter.py tests/test_phase3_runtime_containment.py -q` | **146 passed**（Stage B 适配器 102 + 运行时遏制 44） |
+| V3 | `pytest tests -q`（cwd=`attribution_v2`） | **81 passed** |
 | V4 | C-4/C-5 行为烟测 | `_prob_clip_with_unit(70)=(0.7,'0-100')`、`(0.4)=(0.4,'0-1')`、`(None)=(None,'none')`；`_prob_clip(70)=0.7`（行为不变）；`_pick_prob` 正确解析来源；`derive_xgb_p_up`：READY→`0.42`、非 READY（有 `X`/`raw_prob`）→`None`、`sig=None`→`None` |
 | V5 | 预存在失败隔离 | `git stash` 我的改动后重跑同一命令，结果**逐字相同**（见 §4 说明），证明**无新增失败** |
 | V6 | `git diff` 全量审阅（6 文件） | 仅日志 / 标签 / 新字段 / 辅助函数；无 Step 7 打分 / 票数 / 权重 / Entry Authorization 逻辑变更 |
+| V7 | **SC-02 自动化测试**（`tests/test_phase3_runtime_containment.py`，+6） | 成功路径：身份来自**解析后**的 model/scaler 路径 + tz-aware clock；**post-load 二次读边界**（身份在接线**之后**捕获 → 证明是文件字节身份、非实例 provenance）；适配器异常 fail-open；模块不可导入 fail-open；**真实适配器**在非模型字节上 fail-open；字段 additive 且不进 `as_log_fields()` |
+| V8 | **C-4 / C-5 自动化测试**（`attribution_v2/tests/test_stage_c_transparency.py`，32） | C-4：READY 用 `model_p_up`、钳位、非 READY 绝不从 `X`/`raw_prob` 合成、`None`/不可解析→`None`、**`None` 经 `process_candidate` 落到 `decision.degraded=True` 且 `missing_factors` 含 `xgb`**（端到端，非仅函数返回值）。C-5：`_prob_clip` 行为逐值不变、单位标签、来源优先级、**present-but-None 语义**、`last_prob_provenance` 来源+单位 |
 
 **关于全套收集错误（非本次引入）：**
 `python -m pytest tests` 在全仓库范围内有**预存在**的收集错误——
@@ -118,7 +129,7 @@ Entry Authorization。所有新增代码 **additive + fail-open**：异常一律
 | ID | 标准 | 结果 |
 | --- | --- | --- |
 | SC-A1 | 被改文件 `py_compile` 通过 | ✅ V1 |
-| SC-A2 | 相关 pytest 套件无新增失败 | ✅ V2/V3/V5 |
+| SC-A2 | 相关 pytest 套件无新增失败 | ✅ V2/V3/V5/V7/V8 |
 | SC-A3 | `git diff` 无 Step 7 打分 / 票数 / 权重 / Entry Authorization 逻辑变更 | ✅ V6 |
 | SC-A4 | 新增代码异常时 fail-open，返回值不变 | ✅ SC-02 双层 try/except；SC-05 默认/降级语义；v685 仅日志 |
 | SC-A5 | A.2 seam 有 superseded 标注且未被删除 | ✅ SC-01（正文未删一字） |
@@ -146,10 +157,16 @@ Entry Authorization。所有新增代码 **additive + fail-open**：异常一律
    由于真实 `Signal` 总带 `model_p_up`，实际数据损失可忽略；且 `attribution_v2` 未被
    v685 接线，不触及交易行为。若后续认为 `raw_prob`（同一模型输出、按方向还原）亦属
    READY 等价来源，可再批一次微调。
+4. **C-5 已还原为严格行为一致**：复核发现初版 `_pick_prob` 用 `is not None` 判断，
+   在「主键存在但值为 `None`」时会继续尝试别名，而旧内联链 `.get(key, default)` 会
+   停在 `None`。已改为 `if key in bot_candidate`，使语义**逐字一致**（并由 V8 的
+   `test_c5_pick_prob_matches_legacy_present_but_none_precedence` 锁定）。该边界在当前
+   真实调用者（`observe_candidate` / `batch_backtest`，均只写主键）下结果本就相同。
 
 ---
 
 ## 7. 状态
 
-- 交付完成，**未提交**。工作树状态见 `git status`。
-- 等待用户复核后再决定 commit / 部署。
+- 首轮实现 + 本文档已随 `c8bf4b9` 提交。
+- 本轮复核补充（SC-02/C-4/C-5 测试 + C-5 语义还原）在**工作树中，尚未提交**。
+- 等待用户/ChatGPT 复核后再决定提交、部署、重训。

@@ -218,11 +218,13 @@ class FactorDataBridge:
 
         ``source_key`` is the key that actually supplied the value (or ``None``
         when nothing was present); it is recorded so the mapping is never silent
-        (contract §4.1 / C-5). The selection order is identical to the previous
-        inline ``.get(...).get(...)`` chain.
+        (contract §4.1 / C-5). The selection order — and the "first *present* key
+        wins, even when its value is ``None``" rule — is byte-for-byte identical
+        to the previous inline ``.get(...).get(...)`` chain, so this refactor
+        cannot change which value a candidate maps to.
         """
         for key in (primary, *aliases):
-            if bot_candidate.get(key) is not None:
+            if key in bot_candidate:  # present key wins, mirroring `.get(key, default)`
                 return bot_candidate[key], key
         return None, None
 
