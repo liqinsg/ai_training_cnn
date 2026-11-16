@@ -29,6 +29,41 @@ from oandapyV20.endpoints.accounts import AccountDetails
 logger = get_logger("fx_trade_bot_utils")
 
 
+# ============================================================================
+# OANDA READ RETRY
+# ============================================================================
+# OANDA intermittently rejects a *burst* of read calls with HTTP 403
+# "Insufficient authorization to perform request" (observed cross-account,
+# cross-endpoint, in clusters — not a credential problem). Every read caller
+# here is fail-open (returns "not owned" / [] / None), so a single transient
+# rejection silently drops a gate or ownership check for that whole cycle.
+# Retry once with a short backoff and log the HTTP status code so the failure
+# mode is visible. WRITE endpoints (OrderCreate / TradeCRCDO) are deliberately
+# NOT wrapped — retrying an order would risk a duplicate fill.
+def _oanda_request(api, request, label: str = "", attempts: int = 2, base_delay: float = 0.6):
+    """``api.request()`` for READ endpoints: one retry + status-code logging."""
+    last_exc = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return api.request(request)
+        except Exception as e:  # noqa: BLE001 — re-raised below on the final attempt
+            last_exc = e
+            code = getattr(e, "code", None)
+            msg = getattr(e, "msg", None) or str(e)
+            if attempt < attempts:
+                logger.warning(
+                    f"⚠️  OANDA read failed [{label}] attempt {attempt}/{attempts} "
+                    f"(status={code}): {str(msg)[:160]} — retrying in {base_delay:.1f}s"
+                )
+                time.sleep(base_delay)
+            else:
+                logger.error(
+                    f"❌ OANDA read failed [{label}] after {attempts} attempts "
+                    f"(status={code}): {str(msg)[:200]}"
+                )
+    raise last_exc
+
+
 REASON_TAKE_PROFIT = "TAKE_PROFIT"
 REASON_TRAIL_STOP = "TRAIL_STOP"
 REASON_TIME_EXPIRY = "TIME_EXPIRY"
@@ -125,11 +160,13 @@ def forex_market_closed(
 
     # 3. Fresh check from OANDA
     try:
-        resp = api.request(
+        resp = _oanda_request(
+            api,
             PricingInfo(
                 accountID=oanda_account_id,
                 params={"instruments": target},
-            )
+            ),
+            label="PricingInfo/market-gate",
         )
         prices = resp.get("prices", [])
         if not prices:
@@ -247,11 +284,13 @@ def check_and_record_tp_cooldown(
     if cooldown_hours <= 0:
         return False
     try:
-        resp = api.request(
+        resp = _oanda_request(
+            api,
             TradesList(
                 oanda_account_id,
                 params={"state": "CLOSED", "count": 10},
-            )
+            ),
+            label="TradesList/tp-cooldown-check",
         )
     except Exception as e:
         logger.warning(f"TradesList failed for TP-cooldown check: {e!s}")
@@ -285,14 +324,18 @@ def check_and_record_tp_cooldown(
         return False
 
     try:
-        acct = api.request(AccountDetails(oanda_account_id))
+        acct = _oanda_request(
+            api, AccountDetails(oanda_account_id), label="AccountDetails/tp-cooldown"
+        )
         last_tid = int(acct["account"]["lastTransactionID"])
         min_tid = max(0, last_tid - 500)
-        tx_resp = api.request(
+        tx_resp = _oanda_request(
+            api,
             TransactionsSinceID(
                 oanda_account_id,
                 params={"id": str(min_tid), "count": 500},
-            )
+            ),
+            label="TransactionsSinceID/tp-cooldown",
         )
         tx_map = {tx["id"]: tx for tx in tx_resp.get("transactions", [])}
     except Exception as e:
@@ -331,14 +374,18 @@ def refresh_tp_cooldown_from_recent_tx(
         return []
     _NONE = Direction.NONE if Direction is not None else "NONE"
     try:
-        acct = api.request(AccountDetails(oanda_account_id))
+        acct = _oanda_request(
+            api, AccountDetails(oanda_account_id), label="AccountDetails/refresh-tp-cooldown"
+        )
         last_tid = int(acct["account"]["lastTransactionID"])
         min_tid = max(0, last_tid - 500)
-        tx_resp = api.request(
+        tx_resp = _oanda_request(
+            api,
             TransactionsSinceID(
                 oanda_account_id,
                 params={"id": str(min_tid), "count": 500},
-            )
+            ),
+            label="TransactionsSinceID/refresh-tp-cooldown",
         )
     except Exception as e:
         logger.warning(f"refresh_tp_cooldown: tx fetch failed: {e!s}")
@@ -394,8 +441,10 @@ def refresh_tp_cooldown_from_recent_tx(
 # POSITION HELPERS — FIXED: returns ERROR sentinel on failure
 # ============================================================================
 def _get_open_position(api, oanda_account_id, instrument):
-    resp = api.request(
-        PositionDetails(accountID=oanda_account_id, instrument=instrument)
+    resp = _oanda_request(
+        api,
+        PositionDetails(accountID=oanda_account_id, instrument=instrument),
+        label=f"PositionDetails/{instrument}",
     )
     pos = resp.get("position", {})
     long_units = pos.get("long", {}).get("units", "0")
@@ -445,7 +494,9 @@ def has_open_trade_with_tags(
     Returns: (found: bool, trade_or_None)
     """
     try:
-        resp = api.request(OpenTrades(accountID=oanda_account_id))
+        resp = _oanda_request(
+            api, OpenTrades(accountID=oanda_account_id), label="OpenTrades/ownership"
+        )
     except Exception as e:
         logger.error(f"❌ OpenTrades fetch FAILED: {e}")
         return False, None
@@ -496,7 +547,9 @@ def list_open_trades(
 ) -> list[dict]:
     """Return all open trades (optionally filtered by instrument) with clientExtensions."""
     try:
-        resp = api.request(OpenTrades(accountID=oanda_account_id))
+        resp = _oanda_request(
+            api, OpenTrades(accountID=oanda_account_id), label="OpenTrades/list"
+        )
     except Exception as e:
         logger.error(f"❌ OpenTrades fetch FAILED: {e}")
         return []
@@ -619,7 +672,9 @@ def get_account_equity(api, oanda_account_id: str) -> float | None:
     try:
         from oandapyV20.endpoints.accounts import AccountDetails
 
-        resp = api.request(AccountDetails(accountID=oanda_account_id))
+        resp = _oanda_request(
+            api, AccountDetails(accountID=oanda_account_id), label="AccountDetails/equity"
+        )
         return float(resp["account"]["balance"])
     except Exception as e:
         logger.error(
@@ -720,8 +775,10 @@ def open_oanda_order_simple(
     # Pre-flight price check
     entry_check_price = None
     try:
-        pr = api.request(
-            PricingInfo(accountID=oanda_account_id, params={"instruments": instrument})
+        pr = _oanda_request(
+            api,
+            PricingInfo(accountID=oanda_account_id, params={"instruments": instrument}),
+            label=f"PricingInfo/preflight/{instrument}",
         )["prices"][0]
         entry_check_price = float(
             pr["closeoutAsk"] if direction == "BUY" else pr["closeoutBid"]
@@ -1089,7 +1146,9 @@ def attach_tp_to_open_positions(
     force: bool = False,
 ) -> int:
     """Attach TP to trades missing one — runs only when explicitly called."""
-    resp = api.request(OpenTrades(accountID=oanda_account_id))
+    resp = _oanda_request(
+        api, OpenTrades(accountID=oanda_account_id), label="OpenTrades/tp-attach"
+    )
     trades = resp.get("trades", [])
     if instrument:
         trades = [t for t in trades if t["instrument"] == instrument]
@@ -1165,7 +1224,11 @@ class DynamicPositionManager:
 
     def _get_open_trades(self, instrument: str):
         try:
-            resp = self.api.request(OpenTrades(accountID=self.account_id))
+            resp = _oanda_request(
+                self.api,
+                OpenTrades(accountID=self.account_id),
+                label=f"OpenTrades/dyn-mgr/{instrument}",
+            )
             return [
                 t for t in resp.get("trades", []) if t.get("instrument") == instrument
             ]
@@ -1456,11 +1519,13 @@ class DynamicPositionManager:
 # REMAINING UTILITIES
 # ============================================================================
 def fetch_candles(api, oanda_instrument: str, gran: str, count: int = 100):
-    resp = api.request(
+    resp = _oanda_request(
+        api,
         InstrumentsCandles(
             instrument=oanda_instrument,
             params={"granularity": gran, "count": count, "price": "M"},
-        )
+        ),
+        label=f"InstrumentsCandles/{oanda_instrument}/{gran}",
     )
     df = pd.DataFrame(
         [
@@ -1708,11 +1773,13 @@ def build_trade_telegram(trade_lines, mc_summary=None):
 
 def fetch_weekly_ema100(oanda_instrument, api):
     try:
-        resp = api.request(
+        resp = _oanda_request(
+            api,
             InstrumentsCandles(
                 instrument=oanda_instrument,
                 params={"granularity": "W", "count": 105, "price": "M"},
-            )
+            ),
+            label=f"InstrumentsCandles/{oanda_instrument}/W",
         )
         candles = resp["candles"]
         if len(candles) < 100:

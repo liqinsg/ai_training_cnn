@@ -264,7 +264,12 @@ print("=" * 50)
 # COOLDOWN_FILE / RESULTS_DIR / PROFILE_LABEL / PROFILE_NAME were previously
 # derived from a per-profile if/elif block; the unified loader derives them from
 # the merged PROFILE dict so all four profiles are handled without duplication.
-COOLDOWN_FILE = BASE_DIR / f"cooldown_{PROFILE_NAME}.json"
+# Cooldown state is per (profile, environment). The DEMO and LIVE legs of the
+# same profile (e.g. `-p 2` vs `-p 2 --live`) otherwise share ONE file and
+# overwrite each other's locks on every cycle, which surfaced as spurious
+# short-side cooldowns. Suffixing the file by environment isolates them.
+_ENV_SUFFIX = "live" if getattr(args, "live", False) else "demo"
+COOLDOWN_FILE = BASE_DIR / f"cooldown_{PROFILE_NAME}_{_ENV_SUFFIX}.json"
 RESULTS_DIR = BASE_DIR / f"daily_results_{PROFILE_NAME}"
 
 P = config_bot.get_profile(profile_id)
@@ -812,7 +817,7 @@ def _load_fib_index_once():
         f"🧭 FIB-ZONE: loaded {len(fib_index)} pair records from MC+Fib "
         f"snapshot ({TODAY_STR}, tf={FIB_ZONE_TF}) | "
         f"ENABLED={FIB_ZONE_CFG.get('ENABLED')} MODE={FIB_ZONE_CFG.get('MODE')} "
-        f"CENTER={FIB_ZONE_CFG.get('CENTER_LO')}-{FIB_ZONE_CFG.get('CENTER_HI')} "
+        f"CENTER_EDGE=±{FIB_ZONE_CFG.get('CENTER_EDGE')} "
         f"LADDER={FIB_ZONE_CFG.get('SIZE_LADDER')} "
         f"TP_SCALE={FIB_ZONE_CFG.get('TP_SCALE_MIN')}-{FIB_ZONE_CFG.get('TP_SCALE_MAX')} "
         f"MIN_TP_PIPS={FIB_ZONE_CFG.get('MIN_TP_PIPS')}"
@@ -880,6 +885,12 @@ REQUIRE_DIRECTION_CONSENSUS = cfg_bot("REQUIRE_DIRECTION_CONSENSUS", True)
 CONSENSUS_THRESHOLD = cfg_bot("CONSENSUS_THRESHOLD", 2)
 XGB_BULLISH_THRESHOLD = cfg_bot("XGB_BULLISH_THRESHOLD", 0.55)
 MC_BULLISH_THRESHOLD = cfg_bot("MC_BULLISH_THRESHOLD_PCT", 55.0)
+# Symmetric bearish thresholds: a voter only casts SELL when it is genuinely
+# bearish, otherwise it ABSTAINS (NEUTRAL). Previously every reading below the
+# bullish threshold voted SELL, so a near-neutral voter (e.g. MC P_UP=54) still
+# pushed the 3-voter consensus short — a structural bearish bias.
+XGB_BEARISH_THRESHOLD = cfg_bot("XGB_BEARISH_THRESHOLD", 1.0 - XGB_BULLISH_THRESHOLD)
+MC_BEARISH_THRESHOLD = cfg_bot("MC_BEARISH_THRESHOLD_PCT", 100.0 - MC_BULLISH_THRESHOLD)
 ADX_SCALE_FACTOR = cfg_bot("ADX_SCALE_FACTOR", 2.0)
 ADX_FLOOR_ENABLED = cfg_bot("ADX_FLOOR_ENABLED", True)
 ADX_MIN_SCORE = cfg_bot("ADX_MIN_SCORE", 20.0)
@@ -898,6 +909,12 @@ _TREND_G_ON = cfg_bot("TREND_G_ENABLED", False)
 _TREND_G_ADX_MOD = cfg_bot("TREND_G_ADX_MODULATION", False)
 if not _TREND_G_ON:
     W_G = 0.0
+
+# G factor full-credit scale: the relative EMA_fast/EMA_slow separation that maps
+# to 100. Live M15 EMA20/EMA50 gaps run ~0.05%–0.16% (see D-GATE DIAG logs), so
+# 0.25% = full credit. The former `abs(_diff) * 500` capped G at ~0.8 for real
+# data — i.e. a factor carrying a real weight that never contributed.
+TREND_G_FULL_SCALE = cfg_bot("TREND_G_FULL_SCALE", 0.0025)
 
 _WEIGHT_SUM = W_S + W_R + W_G + W_A + W_X + W_M
 if abs(_WEIGHT_SUM - 1.00) > 0.001:
@@ -1569,9 +1586,19 @@ def calc_weighted_score(
     xgb_dir = (
         "NEUTRAL"
         if _xgb_missing
-        else ("BUY" if xgb_prob >= XGB_BULLISH_THRESHOLD else "SELL")
+        else (
+            "BUY"
+            if xgb_prob >= XGB_BULLISH_THRESHOLD
+            else "SELL" if xgb_prob <= XGB_BEARISH_THRESHOLD else "NEUTRAL"
+        )
     )
-    mc_dir = "BUY" if mc_pct_up >= MC_BULLISH_THRESHOLD else "SELL"
+    # Symmetric three-state: a near-neutral reading abstains instead of voting
+    # SELL (the old two-state rule made every sub-threshold value a SELL vote).
+    mc_dir = (
+        "BUY"
+        if mc_pct_up >= MC_BULLISH_THRESHOLD
+        else "SELL" if mc_pct_up <= MC_BEARISH_THRESHOLD else "NEUTRAL"
+    )
     # buy_votes = sum(1 for d in (strength_dir, xgb_dir, mc_dir) if d == "BUY")
     buy_votes = sum(bool(d == "BUY") for d in (strength_dir, xgb_dir, mc_dir))
     # sell_votes = sum(1 for d in (strength_dir, xgb_dir, mc_dir) if d == "SELL")
@@ -1668,7 +1695,11 @@ def calc_weighted_score(
     X = max(0.0, min(100.0, _xgb_aligned * 100.0))
     if X == 0.0 or _xgb_missing:
         X = max(0.0, min(100.0, S * 0.3 + R * 0.3))
-    M = max(0.0, min(100.0, mc_pct_up if mc_pct_up is not None else 50.0))
+    # M is scored in the direction of the trade, mirroring X: a high P_UP that
+    # contradicts a SELL consensus must not still hand the short a full MC score
+    # (the old direction-blind form systematically over-credited shorts).
+    _mc_aligned = mc_pct_up if direction == "BUY" else (100.0 - mc_pct_up)
+    M = max(0.0, min(100.0, _mc_aligned))
 
     G = 0.0
     if W_G > 0.0 and closes is not None and len(closes) >= 55:
@@ -1682,7 +1713,11 @@ def calc_weighted_score(
         _align = 1.0 if _diff > 0.0005 else (-1.0 if _diff < -0.0005 else 0.0)
         _trend_dir = "BUY" if _align > 0 else ("SELL" if _align < 0 else "NEUTRAL")
         _aligned = _trend_dir == direction
-        _raw = abs(_diff) * 500.0
+        _raw = (
+            abs(_diff) / TREND_G_FULL_SCALE * 100.0
+            if TREND_G_FULL_SCALE > 0
+            else 0.0
+        )
         _raw = max(0.0, min(100.0, _raw))
         G = _raw if _aligned else _raw * 0.2
         if TREND_G_ADX_MODULATION:
