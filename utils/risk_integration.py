@@ -72,7 +72,7 @@ import oandapyV20.endpoints.trades as trades_ep
 from oandapyV20.exceptions import V20Error
 
 import config as _config
-from config import OANDA_ACCOUNT_ID
+from config_oanda import OANDA_ACCOUNT_ID, request_with_retry
 from utils.trading_core import (
     oanda_client,
     format_price_for_instrument,
@@ -224,10 +224,12 @@ def reconcile_with_oanda(cluster: PyramidCluster, instrument: str) -> bool:
                                than skipping the cycle and retrying next time.
     """
     try:
-        resp = oanda_client.request(
+        resp = request_with_retry(
+            oanda_client,
             trades_ep.TradesList(
                 OANDA_ACCOUNT_ID, params={"instrument": instrument, "state": "OPEN"}
-            )
+            ),
+            label=f"TradesList/{instrument}",
         )
     except V20Error as e:
         raise RiskIntegrationError(

@@ -55,9 +55,7 @@ def main():
 
     # ─── CONNECT OANDA ───
     try:
-        from config_oanda import OANDA_API_TOKEN, OANDA_ENV
-        import oandapyV20
-        api = oandapyV20.API(access_token=OANDA_API_TOKEN, environment=OANDA_ENV)
+        from config_oanda import api
         print("\n✅ OANDA API connected")
     except Exception as e:
         print(f"\n❌ OANDA API unavailable: {e}")

@@ -12,12 +12,7 @@ from google import genai
 from google.genai import types
 import oandapyV20.endpoints.instruments as instruments
 import oandapyV20.endpoints.pricing as pricing
-from config import OANDA_ACCOUNT_ID
-
 from config import (
-    OANDA_ENV,
-    OANDA_API_TOKEN,
-    OANDA_ACCOUNT_ID,
     GEMINI_API_KEY,
     GEMINI_NEWS_MODEL,
     USE_GEMINI_AI,
@@ -26,7 +21,24 @@ from config import (
 # --------------------------
 # Initialize Clients
 # --------------------------
-oanda_client = API(access_token=OANDA_API_TOKEN, environment=OANDA_ENV)
+# OANDA access goes through config_oanda (the single gateway): it resolves the
+# correct Demo/Live token + client + account instead of the legacy hardcoded
+# `config.OANDA_ENV = "practice"`. Falls back to the config values if the
+# profile carries no client.
+from config_oanda import (
+    OANDA_ACCOUNT_ID,
+    OANDA_API_TOKEN,
+    OANDA_ENV,
+    get_oanda_profile,
+    request_with_retry,
+)
+
+_oanda_profile = get_oanda_profile()
+oanda_client = _oanda_profile["oanda_client"] or API(
+    access_token=OANDA_API_TOKEN, environment=OANDA_ENV
+)
+if _oanda_profile["account_ids"]:
+    OANDA_ACCOUNT_ID = _oanda_profile["account_ids"][0]
 gemini_client = genai.Client(api_key=GEMINI_API_KEY) if USE_GEMINI_AI else None
 
 
@@ -48,7 +60,7 @@ def format_price_for_instrument(price, instrument: str) -> str:
 def get_open_position(instrument: str):
     positions_module = importlib.import_module("oandapyV20.endpoints.positions")
     req = positions_module.OpenPositions(accountID=OANDA_ACCOUNT_ID)
-    oanda_client.request(req)
+    request_with_retry(oanda_client, req, label=f"OpenPositions/{instrument}")
     return next(
         (
             p
@@ -62,7 +74,7 @@ def get_open_position(instrument: str):
 def get_positions() -> list[dict[str, str]]:
     positions_module = importlib.import_module("oandapyV20.endpoints.positions")
     req = positions_module.OpenPositions(accountID=OANDA_ACCOUNT_ID)
-    oanda_client.request(req)
+    request_with_retry(oanda_client, req, label="OpenPositions")
 
     positions = []
     for position in req.response.get("positions", []):
@@ -121,8 +133,10 @@ def attach_sl_tp_to_open_trade(signal, instrument: str | None = None) -> bool:
 def verify_sl_tp_on_trade(trade_id: str, instrument: str) -> None:
     trades_mod = importlib.import_module("oandapyV20.endpoints.trades")
     try:
-        resp = oanda_client.request(
-            trades_mod.TradeDetails(OANDA_ACCOUNT_ID, trade_id)
+        resp = request_with_retry(
+            oanda_client,
+            trades_mod.TradeDetails(OANDA_ACCOUNT_ID, trade_id),
+            label=f"TradeDetails/{trade_id}",
         ).response
         sl = resp["trade"].get("stopLossOrder", {})
         tp = resp["trade"].get("takeProfitOrder", {})
@@ -141,10 +155,12 @@ def get_recent_range(
     inst_mod = importlib.import_module("oandapyV20.endpoints.instruments")
     try:
 
-        resp = oanda_client.request(
+        resp = request_with_retry(
+            oanda_client,
             inst_mod.InstrumentsCandles(
                 instrument, params={"count": lookback + 1, "granularity": granularity}
-            )
+            ),
+            label=f"InstrumentsCandles/{instrument}/{granularity}",
         ).response
         candles = [c for c in resp["candles"] if c["complete"]]
         if len(candles) < lookback:
@@ -168,10 +184,12 @@ def execute_market_trade(signal, units_override=None):
 
     pricing_mod = importlib.import_module("oandapyV20.endpoints.pricing")
     try:
-        resp = oanda_client.request(
+        resp = request_with_retry(
+            oanda_client,
             pricing_mod.PricingInfo(
                 OANDA_ACCOUNT_ID, {"instruments": signal.pair_to_trade}
-            )
+            ),
+            label=f"PricingInfo/{signal.pair_to_trade}",
         )
         ask = float(resp["prices"][0]["asks"][0]["price"])
         bid = float(resp["prices"][0]["bids"][0]["price"])
@@ -369,7 +387,9 @@ def get_candles(
 
     try:
         req = instruments.InstrumentsCandles(instrument=instrument, params=params)
-        resp = oanda_client.request(req)
+        resp = request_with_retry(
+            oanda_client, req, label=f"InstrumentsCandles/{instrument}/{granularity}"
+        )
         return resp.get("candles", [])
     except Exception as e:
         print(f"[OANDA] Error fetching candles: {str(e)}")
@@ -382,7 +402,9 @@ def get_latest_price(instrument: str) -> float | None:
         req = pricing.PricingInfo(
             accountID=OANDA_ACCOUNT_ID, params={"instruments": instrument}
         )
-        resp = oanda_client.request(req)
+        resp = request_with_retry(
+            oanda_client, req, label=f"PricingInfo/{instrument}"
+        )
         prices = resp.get("prices", [])
         if not prices:
             return None
@@ -399,7 +421,7 @@ def close_position(instrument: str) -> bool:
 
     try:
         pos_req = positions_mod.OpenPositions(accountID=OANDA_ACCOUNT_ID)
-        oanda_client.request(pos_req)
+        request_with_retry(oanda_client, pos_req, label=f"OpenPositions/{instrument}")
 
         position = next(
             (

@@ -1,16 +1,13 @@
-import oandapyV20
 from oandapyV20.endpoints.accounts import AccountList, AccountSummary
-from config_oanda import OANDA_API_TOKEN, OANDA_ENV
-
-# Initialize OANDA client directly (no utils import)
-api = oandapyV20.API(access_token=OANDA_API_TOKEN, environment=OANDA_ENV)
+# OANDA access goes through config_oanda (the single gateway).
+from config_oanda import api, request_with_retry
 
 
 def check_all_accounts():
     try:
         # Step 1: Fetch list of all sub-account IDs
         account_list_request = AccountList()
-        list_response = api.request(account_list_request)
+        list_response = request_with_retry(api, account_list_request, label="AccountList")
         accounts = list_response.get("accounts", [])
 
         if not accounts:
@@ -27,7 +24,9 @@ def check_all_accounts():
 
             try:
                 summary_request = AccountSummary(acc_id)
-                summary = api.request(summary_request).get("account", {})
+                summary = request_with_retry(
+                    api, summary_request, label=f"AccountSummary/{acc_id}"
+                ).get("account", {})
 
                 currency = summary.get("currency", "N/A")
                 balance = summary.get("balance", "N/A")

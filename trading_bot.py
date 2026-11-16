@@ -1,6 +1,7 @@
 import json, time, os
-from config import OANDA_ACCOUNT_ID, OANDA_ENV, OANDA_API_TOKEN, DEMO_MODE
-import oandapyV20
+from config import DEMO_MODE
+# OANDA access goes through config_oanda (the single gateway).
+from config_oanda import OANDA_ACCOUNT_ID, api
 from oandapyV20.endpoints import orders, trades
 from oandapyV20.endpoints.instruments import InstrumentsCandles
 
@@ -9,8 +10,6 @@ PAIR = "EUR_USD"
 RISK_PIPS = 15
 CHECK_INTERVAL = 5
 last = "WAIT"
-
-api = oandapyV20.API(access_token=OANDA_API_TOKEN, environment=OANDA_ENV)
 
 
 def get_pos():

@@ -45,6 +45,7 @@ Do not hardcode these values elsewhere in the codebase.
 import os
 import re
 import sys
+import time
 from dotenv import load_dotenv
 from pathlib import Path
 import oandapyV20
@@ -150,6 +151,53 @@ api = default_profile["api"]
 
 
 # ────────────────────────────────────────────────────────────────
+# OANDA 读请求重试 (transient-failure work-around)
+# ────────────────────────────────────────────────────────────────
+def request_with_retry(
+    client, request, label: str = "", attempts: int = 3, base_delay: float = 1.0
+):
+    """Run an OANDA request, retrying transient failures.
+
+    OANDA / the egress path in front of it intermittently answers with
+    * HTTP 403 "Insufficient authorization to perform request"
+    * HTTP 5xx, or a plain-HTML "Internal Server Error" body (not JSON)
+    even when the very same token succeeds on the next call (observed ~1 in 3).
+    Those are blips, not credential errors, so retrying with a linear backoff
+    turns them into a success instead of a hard failure.
+
+    Only READ endpoints may be passed here. Never wrap order-creating calls
+    (OrderCreate / TradeCRCDO) when the caller would re-issue the *side effect* —
+    a retried order can double-fill.
+
+    Returns the decoded response (same as ``client.request``); re-raises the
+    last exception if every attempt fails.
+    """
+    last_exc = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return client.request(request)
+        except Exception as exc:  # noqa: BLE001 — re-raised on the final attempt
+            last_exc = exc
+            code = getattr(exc, "code", None)
+            msg = getattr(exc, "msg", None) or str(exc)
+            # Collapse multi-line HTML error pages into a single short line.
+            brief = " ".join(str(msg).split())[:160]
+            if attempt < attempts:
+                delay = base_delay * attempt
+                print(
+                    f"[OANDA RETRY] {label} attempt {attempt}/{attempts} failed "
+                    f"(status={code}): {brief} — retrying in {delay:.1f}s"
+                )
+                time.sleep(delay)
+            else:
+                print(
+                    f"[OANDA RETRY] {label} failed after {attempts} attempts "
+                    f"(status={code}): {brief}"
+                )
+    raise last_exc
+
+
+# ────────────────────────────────────────────────────────────────
 # 市场状态检查 (Market Status Check)
 # ────────────────────────────────────────────────────────────────
 
@@ -179,8 +227,10 @@ def is_market_open(instrument: str = "EUR_USD", env_override: str = None) -> boo
 
     try:
         params = {"instruments": instrument}
-        resp = client.request(
-            oanda_pricing.PricingInfo(accountID=account_id, params=params)
+        resp = request_with_retry(
+            client,
+            oanda_pricing.PricingInfo(accountID=account_id, params=params),
+            label=f"PricingInfo/{instrument}",
         )
         prices = resp.get("prices", [])
         if not prices:
@@ -206,7 +256,9 @@ def _discover_accounts(token: str, env_name: str, label: str):
 
     try:
         client = oandapyV20.API(access_token=token, environment=env_name)
-        resp = client.request(oanda_accounts.AccountList())
+        resp = request_with_retry(
+            client, oanda_accounts.AccountList(), label=f"AccountList/{label}"
+        )
         accounts = resp.get("accounts", [])
         print(f"✅ {label}: TOKEN VALID → {len(accounts)} account(s) visible")
         for acc in accounts:
@@ -247,17 +299,27 @@ def _compare_accounts(config_ids, discovered_accounts, label: str):
         for aid in sorted(extra):
             print(f"   {aid}")
 
-    exact = config_set == discovered_set
-    print(
-        f"\n{'✅' if exact else '❌'} {label}: {'EXACT MATCH' if exact else 'MISMATCH'}"
-    )
-    return exact
+    # A missing configured account is a real failure (wrong token / env).
+    # "Extra" accounts OANDA exposes but we don't configure are harmless and
+    # must NOT turn a healthy setup into a FAIL (previously they did).
+    ok = len(missing) == 0
+    verdict = "ALL CONFIGURED ACCOUNTS VISIBLE" if ok else "MISSING ACCOUNTS"
+    print(f"\n{'✅' if ok else '❌'} {label}: {verdict}")
+    if ok and extra:
+        print(
+            f"   ℹ️  {len(extra)} extra account(s) visible but not configured — ignored"
+        )
+    return ok
 
 
 def _fetch_summary(account_id, token, env_name):
     try:
         client = oandapyV20.API(access_token=token, environment=env_name)
-        resp = client.request(oanda_accounts.AccountSummary(account_id))["account"]
+        resp = request_with_retry(
+            client,
+            oanda_accounts.AccountSummary(account_id),
+            label=f"AccountSummary/{account_id}",
+        )["account"]
         print(f"\n   📊 {account_id}")
         print(f"      Currency    : {resp.get('currency', '?')}")
         print(f"      Balance     : {resp.get('balance', '?')}")
@@ -311,7 +373,9 @@ def validate_oanda_setup(env_override: str = None, quiet: bool = False) -> dict:
         client = oandapyV20.API(
             access_token=profile["token"], environment=profile["env"]
         )
-        resp = client.request(oanda_accounts.AccountList())
+        resp = request_with_retry(
+            client, oanda_accounts.AccountList(), label=f"AccountList/{profile['env']}"
+        )
         visible_ids = [
             acc.get("id", "") for acc in resp.get("accounts", []) if acc.get("id")
         ]
@@ -390,6 +454,19 @@ if __name__ == "__main__":
         sys.argv.remove("--summary")
 
     env_arg = None
+    # Friendly aliases: `--live` / `--demo` / `--practice` behave like `--env X`.
+    # (Previously `--live` was silently ignored and validation always ran on
+    #  PRACTICE — the CLI only looked at `--env`.)
+    for flag, env_name in (
+        ("--live", "live"),
+        ("--demo", "practice"),
+        ("--practice", "practice"),
+    ):
+        if flag in sys.argv:
+            sys.argv.remove(flag)
+            env_arg = env_name
+
+    # Explicit `--env X` wins over any alias.
     if "--env" in sys.argv:
         idx = sys.argv.index("--env")
         if idx + 1 < len(sys.argv):

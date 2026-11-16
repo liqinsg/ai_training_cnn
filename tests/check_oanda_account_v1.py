@@ -1,11 +1,11 @@
 import sys
-import oandapyV20
 from oandapyV20.endpoints.accounts import AccountSummary
-from utils.oanda_execution import api, OANDA_ACCOUNT_ID
+# OANDA access goes through config_oanda (the single gateway).
+from config_oanda import OANDA_ACCOUNT_ID, api, request_with_retry
 
 def check_account(account_id: str):
     r = AccountSummary(account_id)
-    resp = api.request(r)
+    resp = request_with_retry(api, r, label=f"AccountSummary/{account_id}")
     print('✅ ACCOUNT OK:', resp['account']['id'], '—', resp['account']['currency'])
 
 def main():

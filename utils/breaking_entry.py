@@ -12,8 +12,8 @@ On GBP/JPY ~215, that is ~107 pips — a tight but realistic consolidation box.
 """
 
 import importlib
-from oandapyV20 import API
-from config import OANDA_ACCOUNT_ID, OANDA_ENV, OANDA_API_TOKEN
+# OANDA access goes through config_oanda (the single gateway).
+from config_oanda import OANDA_ACCOUNT_ID, api as oanda_client, request_with_retry
 
 try:
     orders = importlib.import_module("oandapyV20.endpoints.orders")
@@ -21,8 +21,6 @@ try:
 except Exception:
     orders = None
     instruments_module = None
-
-oanda_client = API(access_token=OANDA_API_TOKEN, environment=OANDA_ENV)
 
 
 # Canonical price formatter — duplicated from main.py intentionally
@@ -44,7 +42,7 @@ def get_open_units(instrument: str) -> tuple[float, float]:
     try:
         positions_module = importlib.import_module("oandapyV20.endpoints.positions")
         req = positions_module.OpenPositions(accountID=OANDA_ACCOUNT_ID)
-        oanda_client.request(req)
+        request_with_retry(oanda_client, req, label=f"OpenPositions/{instrument}")
         for pos in req.response.get("positions", []):
             if pos.get("instrument") == instrument:
                 return (
@@ -78,7 +76,9 @@ def detect_protracted_range(
         request = instruments_module.InstrumentsCandles(
             instrument=instrument, params=params
         )
-        oanda_client.request(request)
+        request_with_retry(
+            oanda_client, request, label=f"InstrumentsCandles/{instrument}/{granularity}"
+        )
         candles = [c for c in request.response.get("candles", []) if c.get("complete")]
         if len(candles) < duration_hours:
             return None

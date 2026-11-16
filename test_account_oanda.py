@@ -1,14 +1,12 @@
-import oandapyV20
-from config import OANDA_ACCOUNT_ID, OANDA_API_TOKEN, OANDA_ENV
+from config_oanda import OANDA_ACCOUNT_ID, OANDA_ENV, api, request_with_retry
 
 print(f"Testing Account: {OANDA_ACCOUNT_ID} | Env: {OANDA_ENV}")
-api = oandapyV20.API(access_token=OANDA_API_TOKEN, environment=OANDA_ENV)
 
 try:
     from oandapyV20.endpoints.accounts import AccountDetails
 
     OANDA_ACCOUNT_ID = "101-003-39389016-003"
-    resp = api.request(AccountDetails(OANDA_ACCOUNT_ID))
+    resp = request_with_retry(api, AccountDetails(OANDA_ACCOUNT_ID), label="AccountDetails")
 
     print("✅ SUCCESS — Account works!")
     print(f"Name: {resp['account']['alias']} | Balance: {resp['account']['balance']}")

@@ -1,4 +1,3 @@
-import os
 from abc import ABC, abstractmethod
 from ml_confirmation import ml_filter, is_ml_weighted_dominance_enabled
 from range_detector import is_sideways
@@ -81,11 +80,11 @@ def check_sideways_and_skip(instrument: str) -> tuple[bool, str]:
         return False, reason
 
 
-OANDA_ACCOUNT_ID = getattr(_config, "OANDA_ACCOUNT_ID", None) or os.getenv(
-    "OANDA_ACCOUNT_ID"
-)
+# --- Account ID — single gateway (config_oanda) ---
+from config_oanda import OANDA_ACCOUNT_ID
+
 if not OANDA_ACCOUNT_ID:
-    print("[STRATEGY] WARNING: OANDA_ACCOUNT_ID not found in config.py or environment.")
+    print("[STRATEGY] WARNING: OANDA_ACCOUNT_ID not found via config_oanda.")
 
 JPY_TRADE_PAIRS = [p for p in TRADE_PAIRS if p.endswith("_JPY")]
 if _dropped := [p for p in TRADE_PAIRS if not p.endswith("_JPY")]:

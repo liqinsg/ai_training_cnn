@@ -10,7 +10,6 @@ import oandapyV20.endpoints.instruments as instruments
 from google import genai
 from google.genai import types
 
-import config as _config
 from config import (
     SIGNAL_TIMEFRAMES,
     SL_BUFFER_PIPS,
@@ -46,15 +45,12 @@ from utils.strategy_config import (
     ENABLE_ATR_NORMALIZED_STRENGTH,
 )
 
-# --- Account ID safe lookup ---
-OANDA_ACCOUNT_ID = getattr(_config, "OANDA_ACCOUNT_ID", None) or os.getenv(
-    "OANDA_ACCOUNT_ID"
-)
+# --- Account ID — single gateway (config_oanda) ---
+from config_oanda import OANDA_ACCOUNT_ID
+
 assert (
     OANDA_ACCOUNT_ID
-), "[HELPERS] FATAL: OANDA_ACCOUNT_ID not found in config.py or environment."
-# if not OANDA_ACCOUNT_ID:
-#     print("[HELPERS] WARNING: OANDA_ACCOUNT_ID not found in config.py or environment.")
+), "[HELPERS] FATAL: OANDA_ACCOUNT_ID not found via config_oanda."
 
 # =====================================================================
 # Global MACD per-timeframe parameter override.
@@ -791,7 +787,7 @@ def confirmed_breakout(
 
 
 def get_live_prices(instrument: str) -> Optional[Dict[str, float]]:
-    from utils import oanda_client
+    from config_oanda import api, request_with_retry
 
     try:
         pricing_module = __import__(
@@ -800,7 +796,7 @@ def get_live_prices(instrument: str) -> Optional[Dict[str, float]]:
         req = pricing_module.PricingInfo(
             accountID=OANDA_ACCOUNT_ID, params={"instruments": instrument}
         )
-        oanda_client.request(req)
+        request_with_retry(api, req, label=f"PricingInfo/{instrument}")
         prices = req.response["prices"][0]
         return {
             "ask": float(prices["asks"][0]["price"]),

@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from oandapyV20.endpoints.trades import TradesList
 from oandapyV20.endpoints.positions import PositionDetails
 from oanda_config import oanda_config
-from utils.trading_core import api
+from config_oanda import api, request_with_retry
 
 
 def check_recent_closed_no_open(instrument, cooldown_mins=60):
@@ -15,8 +15,10 @@ def check_recent_closed_no_open(instrument, cooldown_mins=60):
 
     # Step 1: Check if position is OPEN
     try:
-        pos = api.request(
-            PositionDetails(oanda_config.ACCOUNT_ID, instrument=instrument)
+        pos = request_with_retry(
+            api,
+            PositionDetails(oanda_config.ACCOUNT_ID, instrument=instrument),
+            label=f"PositionDetails/{instrument}",
         )
         pos_data = pos.get("position", {})
         long_units = abs(float(pos_data.get("long", {}).get("units", 0)))
@@ -27,10 +29,12 @@ def check_recent_closed_no_open(instrument, cooldown_mins=60):
 
     # Step 2: Get ALL trades (open + closed) for this instrument, latest first
     try:
-        resp = api.request(
+        resp = request_with_retry(
+            api,
             TradesList(
                 oanda_config.ACCOUNT_ID, params={"instrument": instrument, "count": 5}
-            )
+            ),
+            label=f"TradesList/{instrument}",
         )
         trades = resp.get("trades", [])
     except Exception:

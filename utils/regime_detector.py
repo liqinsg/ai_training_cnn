@@ -14,12 +14,11 @@ and range width as a % of price to quantify how tight the range is.
 """
 
 import os
-from oandapyV20 import API
 import oandapyV20.endpoints.instruments as instruments_ep
 from retry import with_retry
+# OANDA access goes through config_oanda (the single gateway).
+from config_oanda import api as oanda_client
 from config import (
-    OANDA_API_TOKEN,
-    OANDA_ENV,
     ADX_TREND_THRESHOLD,
     ADX_BREAKOUT_THRESHOLD,
     ATR_GRANULARITY,
@@ -29,8 +28,6 @@ from config import (
 REGIME_TRENDING = "TRENDING"
 REGIME_RANGING = "RANGING"
 REGIME_BREAKOUT = "BREAKOUT_WATCH"
-
-oanda_client = API(access_token=OANDA_API_TOKEN, environment=OANDA_ENV)
 
 
 def compute_adx(pair: str, period: int = 14) -> dict | None:

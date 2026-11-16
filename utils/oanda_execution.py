@@ -1,17 +1,16 @@
 # utils/oanda_execution.py — 100% MATCHES YOUR OUTPUT
 import time
 from oandapyV20.endpoints.orders import OrderCreate
-import oandapyV20
-from config_oanda import OANDA_ACCOUNT_ID, OANDA_ENV, OANDA_API_TOKEN
+# OANDA access goes through config_oanda (the single gateway): it owns the
+# Demo/Live client + token resolution and the read-retry helper.
+from config_oanda import OANDA_ACCOUNT_ID, api, request_with_retry
 from oandapyV20.endpoints.accounts import AccountSummary
-
-api = oandapyV20.API(access_token=OANDA_API_TOKEN, environment=OANDA_ENV)
 
 
 def check_oanda_account(account_id: str = None):
     try:
         r = AccountSummary(account_id)
-        resp = api.request(r)
+        resp = request_with_retry(api, r, label=f"AccountSummary/{account_id}")
         print("✅ ACCOUNT OK:", resp["account"]["id"], "—", resp["account"]["currency"])
     except Exception as e:
         print("❌ FORBIDDEN / MISMATCH:", e)

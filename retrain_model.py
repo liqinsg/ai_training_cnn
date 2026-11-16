@@ -16,7 +16,6 @@ import xgboost as xgb
 from sklearn.metrics import accuracy_score, roc_auc_score
 
 import config
-from config_oanda import OANDA_API_TOKEN, OANDA_ENV
 from data_pipeline import FeatureConfig, FeatureEngine, DataFetcher, ModelWrapper
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -125,9 +124,8 @@ def fetch_pair_data(fetcher, pair, oanda):
 
 # ── FETCH ALL DATA ──────────────────────────────────────
 def fetch_all_data():
-    from oandapyV20 import API
+    from config_oanda import api
 
-    api = API(access_token=OANDA_API_TOKEN, environment=OANDA_ENV)
     fetcher = DataFetcher(
         use_oanda=True, oanda_api=api, oanda_granularity=OANDA_GRANULARITY
     )

@@ -22,11 +22,8 @@ BASE_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(BASE_DIR))
 
 import config
-from config_oanda import OANDA_API_TOKEN, OANDA_ACCOUNT_ID, OANDA_ENV
+from config_oanda import api, request_with_retry
 from telegram_message import send_telegram_message
-import oandapyV20
-
-api = oandapyV20.API(access_token=OANDA_API_TOKEN, environment=OANDA_ENV)
 
 # ==========================================
 # ⚙️ ARG PARSE + TIMEFRAME CONFIG
@@ -93,11 +90,13 @@ def forex_market_closed():
     try:
         from oandapyV20.endpoints.instruments import InstrumentsCandles
 
-        resp = api.request(
+        resp = request_with_retry(
+            api,
             InstrumentsCandles(
                 instrument="EUR_USD",
                 params={"count": 1, "granularity": OANDA_GRANULARITY},
-            )
+            ),
+            label="InstrumentsCandles/EUR_USD",
         )
         return not bool(resp.get("candles"))
     except Exception:

@@ -1,21 +1,16 @@
 import os
 import importlib
-from oandapyV20 import API
 import oandapyV20.endpoints.instruments as instruments
-from utils import oanda_client
 from typing import Optional
+# OANDA access goes through config_oanda (the single gateway).
+from config_oanda import OANDA_ACCOUNT_ID, api as oanda_client, request_with_retry
 from config import (
-    OANDA_ENV,
-    OANDA_API_TOKEN,
-    OANDA_ACCOUNT_ID,
     TRADE_PAIRS,
     SIGNAL_TIMEFRAMES,
     SL_BUFFER_PIPS,
     SPREAD_PIPS,
     # TP_PIPS,
 )
-
-oanda_client = API(access_token=OANDA_API_TOKEN, environment=OANDA_ENV)
 
 JPY_PIP = 0.01
 MIN_MARKET_STRENGTH = 0.05
@@ -58,7 +53,9 @@ def get_candles(instrument: str, granularity: str, count: int) -> list:
     params = {"count": count, "granularity": granularity}
     try:
         req = instruments.InstrumentsCandles(instrument=instrument, params=params)
-        oanda_client.request(req)
+        request_with_retry(
+            oanda_client, req, label=f"InstrumentsCandles/{instrument}/{granularity}"
+        )
         return [c for c in req.response.get("candles", []) if c["complete"]]
     except Exception as e:
         print(f"  [STRATEGY] Candle fetch failed {instrument} {granularity}: {e}")

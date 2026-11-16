@@ -12,23 +12,18 @@ Pair = close/cancel only that instrument.
 
 import os
 import argparse
-from oandapyV20 import API
 import oandapyV20.endpoints.positions as positions
 import oandapyV20.endpoints.orders as orders
 
-from config_oanda import OANDA_ENV, OANDA_API_TOKEN, OANDA_ACCOUNT_ID
+# OANDA access goes through config_oanda (the single gateway).
+from config_oanda import OANDA_ACCOUNT_ID, api as oanda_client, request_with_retry
 
-oanda_env = OANDA_ENV
-oanda_client = API(
-    access_token=OANDA_API_TOKEN,
-    environment=oanda_env,
-)
 account_id = OANDA_ACCOUNT_ID
 
 
 def cancel_pending_orders(instrument: str | None = None):
     req = orders.OrderList(accountID=account_id)
-    oanda_client.request(req)
+    request_with_retry(oanda_client, req, label="OrderList")
 
     pending_orders = req.response.get("orders", [])
 
@@ -71,7 +66,7 @@ def cancel_pending_orders(instrument: str | None = None):
 
 def close_open_positions(instrument: str | None = None):
     req = positions.OpenPositions(accountID=account_id)
-    oanda_client.request(req)
+    request_with_retry(oanda_client, req, label="OpenPositions")
 
     open_positions = req.response.get("positions", [])
 

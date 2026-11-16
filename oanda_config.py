@@ -1,6 +1,6 @@
 # oanda_config.py
-# OANDA API & account settings — single source for all OANDA calls
-from config import OANDA_ENV, OANDA_API_TOKEN, OANDA_ACCOUNT_ID
+# OANDA API & account settings — sourced from config_oanda (the single gateway).
+from config_oanda import OANDA_ENV, OANDA_API_TOKEN, OANDA_ACCOUNT_ID
 
 
 class OandaConfig:

@@ -14,11 +14,8 @@ def send(c):
 def close_all():
     print("CLOSED")
     try:
-        from config import OANDA_ACCOUNT_ID, OANDA_ENV, OANDA_API_TOKEN
-        import oandapyV20
+        from config_oanda import OANDA_ACCOUNT_ID, api
         from oandapyV20.endpoints import trades, orders
-
-        api = oandapyV20.API(access_token=OANDA_API_TOKEN, environment=OANDA_ENV)
         [
             api.request(trades.TradeClose(OANDA_ACCOUNT_ID, tradeID=t["id"]))
             for t in api.request(
