@@ -210,6 +210,11 @@ These are **authorization prerequisites**, not approved decisions. Creating this
 
 **Minimum gate to finalise document 08:** `OPEN-01`, `OPEN-02`, `OPEN-03`, and `OPEN-04` must be resolved. `OPEN-07` is **not** a Doc 08 gate; it blocks Doc 09.
 
+**Owner-confirmed documentation-architecture decision (signed 2026-11-16).** Document 08 (Dataset & Label Specification) scope = **target, horizon, label construction, sample eligibility** (`OPEN-01`–`OPEN-04`); dataset **splitting** and **cross-instrument evaluation** belong to **Doc 09**. `OPEN-07` therefore does **not** gate Doc 08.
+
+> **Owner:** owner · **Date:** 2026-11-16 · **Decision:** Doc 08 scope = option 1 (target / horizon / label / sample-eligibility) — **ACCEPTED**.
+> This is a **documentation-architecture** decision only. It does **not** approve `OPEN-01`–`OPEN-09` (all remain `OPEN`) and does **not** authorize creating Document 08 or any execution.
+
 ## 6. Source conflicts and cross-document findings
 
 Recorded per the spec's conflict rule. **Not silently resolved.** Documents `00`–`06` are **not** edited by this register.
