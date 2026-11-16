@@ -45,6 +45,7 @@ import argparse
 import json
 import logging
 import math
+import os
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -91,6 +92,7 @@ LABEL_THRESHOLD = 0.0      # OPEN-03
 BAR_MINUTES = 15           # M15
 GRANULARITY = "M15"
 DEFAULT_COUNT = 5000       # OANDA v20 max candles per request
+ENV_COUNT_KEY = "PHASE33_DEMO_COUNT"   # run.env override (loaded via config_oanda)
 
 # ── PRIOR (Agent-proposed, §8.3 / §12) ───────────────────────────────────────
 BOOTSTRAP_B = 2000
@@ -862,10 +864,27 @@ def _self_test() -> int:
     return 0
 
 
+def _env_default_count() -> int:
+    """`--count` fallback from run.env (via config_oanda) then DEFAULT_COUNT."""
+    try:
+        import config_oanda  # noqa: F401,PLC0415 — loads .env + run.env via dotenv
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("config_oanda unavailable for env count (%s)", exc)
+    raw = os.environ.get(ENV_COUNT_KEY, "").strip()
+    if not raw:
+        return DEFAULT_COUNT
+    try:
+        return int(raw)
+    except ValueError:
+        logger.warning("%s=%r is not an int — using %d", ENV_COUNT_KEY, raw, DEFAULT_COUNT)
+        return DEFAULT_COUNT
+
+
 def _parse_args(argv: Optional[Sequence[str]]) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Phase 3.3 Doc 09 experiment harness (research/Demo only).")
     p.add_argument("--self-test", action="store_true", help="offline synthetic check; no OANDA/network")
-    p.add_argument("--count", type=int, default=DEFAULT_COUNT, help=f"bars per instrument (max 5000; default {DEFAULT_COUNT})")
+    p.add_argument("--count", type=int, default=None,
+                   help=f"bars per instrument (max 5000; default: run.env {ENV_COUNT_KEY} else {DEFAULT_COUNT})")
     p.add_argument("--profile", type=int, default=None, help="config_bot profile id to narrow the whitelist (default: union)")
     p.add_argument("--pairs", type=str, default=None, help="comma-separated OANDA-native instrument override")
     p.add_argument("--candidates", type=str, default=None, help="comma-separated candidate subset (default: all 33)")
@@ -881,8 +900,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     args = _parse_args(argv)
     if args.self_test:
         return _self_test()
-    if args.count > DEFAULT_COUNT:
+    count = args.count if args.count is not None else _env_default_count()
+    if count > DEFAULT_COUNT:
         raise SystemExit(f"--count exceeds the OANDA v20 maximum of {DEFAULT_COUNT}")
+    logger.info("count=%d bars/instrument (CLI=%s, run.env[%s]=%s)",
+                count, args.count, ENV_COUNT_KEY, os.environ.get(ENV_COUNT_KEY, "unset"))
 
     univ = resolve_universe(args.profile)
     pairs = ([p.strip().upper() for p in args.pairs.split(",") if p.strip()]
@@ -894,7 +916,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if univ["excluded_by_whitelist"]:
         logger.info("excluded by whitelist: %s", ", ".join(univ["excluded_by_whitelist"]))
 
-    pooled = _fetch_pooled(pairs, args.count)
+    pooled = _fetch_pooled(pairs, count)
     fingerprint = dataset_fingerprint(pooled)
     logger.info("dataset fingerprint (sha256): %s", fingerprint)
 

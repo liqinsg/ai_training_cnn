@@ -1239,7 +1239,10 @@ fetcher = DataFetcher(
 feat_engine = FeatureEngine(FEAT_CFG)
 strat_engine = StrategyEngine(STRAT_CFG, model=None, feature_list=[])
 atr_mod = ATRModule(period=getattr(FEAT_CFG, "atr_period", cfg_bot("ATR_PERIOD", 14)))
-MODEL_PATH = BASE_DIR / "trade_model_xgb.pkl"
+# Model stem override — FX_BOT_MODEL_STEM=models_fcv2/trade_model_xgb points this
+# process at a separate artifact set without touching the default
+# trade_model_xgb.* used by the live leg.  Default unchanged (reversible).
+MODEL_PATH = BASE_DIR / f"{os.getenv('FX_BOT_MODEL_STEM', 'trade_model_xgb')}.pkl"
 # Phase 3.0 §5.2: the live runtime constructs the wrapper read-only, so no live
 # code path can train or write / republish model artifacts.  ensure_model()
 # re-asserts this as defence-in-depth.  Offline training (retrain_model.py)
@@ -1263,7 +1266,19 @@ def _build_pair_features(raw):
     if USE_FEATURE_CONTRACT_V2:
         from ml.feature_contract import build_features as _contract_build
 
-        return _contract_build(raw)
+        feats = _contract_build(raw)
+        # The Feature Contract frame carries ONLY the 33 ordered feature columns —
+        # no OHLC/Volume. The bot's non-ML consumers still expect OHLC on the SAME
+        # frame: pivot resample (_eval_pivots -> _resample_daily: Open/High/Low/
+        # Close/Volume), the last-close fallback (pair_data[pair]["df"]["Close"]),
+        # and evaluate_trend_and_tp (df["Close"]). Re-attach the raw OHLCV columns
+        # so those paths work unchanged. The ML path selects columns BY NAME
+        # (predict_p_up -> _build_matrix -> X[feature_list]), so the extra columns
+        # are ignored there — the 33-feature vector is unchanged.
+        ohlcv = raw.reindex(feats.index)[
+            ["Open", "High", "Low", "Close", "Volume"]
+        ]
+        return feats.join(ohlcv)
     return feat_engine.build(raw)
 
 

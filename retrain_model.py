@@ -33,12 +33,22 @@ logger = logging.getLogger(__name__)
 TIMEFRAME = "15m"
 OANDA_GRANULARITY_MAP = {"15m": "M15", "1H": "H1", "H4": "H4"}
 OANDA_GRANULARITY = OANDA_GRANULARITY_MAP.get(TIMEFRAME, "M15")
-LOOKBACK_BARS = 500
+LOOKBACK_BARS = int(os.getenv("RETRAIN_BARS", "500"))
 TARGET_HORIZON = 6
 TARGET_THRESHOLD = 0.0005
 TRAIN_TEST_SPLIT = 0.20
 
-DEFAULT_PAIRS = config.DEFAULT_PAIRS
+# Universe override — RETRAIN_PROFILE=<n> selects that profile's whitelist from
+# forex_pairs.json (e.g. 2 → 13 pairs); unset keeps the legacy 6-pair default.
+# Env-driven so a scoped retrain needs no code edit and the shipped default is
+# byte-identical.
+_RETRAIN_PROFILE = os.getenv("RETRAIN_PROFILE", "").strip()
+if _RETRAIN_PROFILE:
+    import config_bot
+
+    DEFAULT_PAIRS = list(config_bot.get_profile(int(_RETRAIN_PROFILE))["WHITELIST"])
+else:
+    DEFAULT_PAIRS = config.DEFAULT_PAIRS
 YAHOO_TO_OANDA = config.YAHOO_TO_OANDA
 
 FEAT_CFG = FeatureConfig(
@@ -83,12 +93,20 @@ def _build_pair_features(raw, feat_engine):
     return feat_engine.build(raw)
 
 
-MODEL_STEM = BASE_DIR / "trade_model_xgb"
+# Output stem override — FX_MODEL_STEM=models_fcv2/trade_model_xgb writes the
+# whole quartet (json / features.json / cfg.json / scaler.joblib) into that
+# directory, leaving the default trade_model_xgb.* (live, 34 features) untouched.
+MODEL_STEM = BASE_DIR / os.getenv("FX_MODEL_STEM", "trade_model_xgb")
 OUTPUT_XGB = MODEL_STEM.with_suffix(".json")
-OUTPUT_SCALER = BASE_DIR / "scaler.joblib"
+OUTPUT_SCALER = MODEL_STEM.parent / "scaler.joblib"
 OUTPUT_FEAT = MODEL_STEM.with_suffix(".features.json")
 OUTPUT_CFG = MODEL_STEM.with_suffix(".cfg.json")
 LEGACY_PKL = MODEL_STEM.with_suffix(".pkl")
+
+# Backup retention — save_model() snapshots the previous quartet before each
+# rewrite; keep only the newest N per artifact type so the directory cannot
+# grow unbounded under the daily retrain cron. Override with FX_BACKUP_KEEP.
+BACKUP_KEEP = int(os.getenv("FX_BACKUP_KEEP", "3"))
 
 
 # ── FETCH SINGLE PAIR ────────────────────────────────────
@@ -117,7 +135,7 @@ def fetch_all_data():
 
     all_dfs = []
     for pair in DEFAULT_PAIRS:
-        oanda = YAHOO_TO_OANDA[pair]
+        oanda = YAHOO_TO_OANDA.get(pair, pair)
         logger.info(f"📥 Fetching {pair} ({OANDA_GRANULARITY})...")
 
         raw = fetch_pair_data(fetcher, pair, oanda)
@@ -129,11 +147,25 @@ def fetch_all_data():
 
         # Clean NaN/Inf
         df = df.replace([np.inf, -np.inf], np.nan)
-        df = df.ffill().bfill().fillna(0)
 
-        # ── Build TARGET: Did price go UP > threshold in N bars?
-        df["future_return"] = df["Close"].shift(-TARGET_HORIZON) / df["Close"] - 1
-        df["target"] = (df["future_return"] > TARGET_THRESHOLD).astype(int)
+        if USE_FEATURE_CONTRACT_V2:
+            # The Feature Contract v2 frame carries ONLY the 33 feature columns
+            # (no OHLC), so the target is derived from the raw close the fetcher
+            # returned, index-aligned to the contract frame.  Contract warm-up
+            # rows stay NaN — no ffill/bfill/fillna(0); Doc 08 mandates strict
+            # row-level NaN removal instead of fabricating values.
+            close = raw["Close"].reindex(df.index)
+            df["future_return"] = close.shift(-TARGET_HORIZON) / close - 1
+            df["target"] = (df["future_return"] > TARGET_THRESHOLD).astype(int)
+            keep = [c for c in df.columns if c not in ("future_return", "target")]
+            df = df.dropna(subset=keep + ["future_return", "target"])
+        else:
+            # Legacy path — unchanged.
+            df = df.ffill().bfill().fillna(0)
+
+            # ── Build TARGET: Did price go UP > threshold in N bars?
+            df["future_return"] = df["Close"].shift(-TARGET_HORIZON) / df["Close"] - 1
+            df["target"] = (df["future_return"] > TARGET_THRESHOLD).astype(int)
 
         df["pair"] = pair
         all_dfs.append(df)
@@ -254,12 +286,35 @@ def train_model(df):
 
 
 # ── SAVE ─────────────────────────────────────────────────
+def _prune_backups(keep=BACKUP_KEEP):
+    """Keep only the newest `keep` timestamped *_bak_* snapshots per artifact.
+
+    Stamps are %Y%m%d_%H%M, so a name sort == chronological order.
+    """
+    removed = 0
+    for p in (OUTPUT_XGB, OUTPUT_SCALER, OUTPUT_FEAT, OUTPUT_CFG, LEGACY_PKL):
+        baks = sorted(
+            p.parent.glob(f"{p.stem}_bak_*{p.suffix}"), key=lambda q: q.name
+        )
+        for old in baks[: max(0, len(baks) - keep)]:
+            try:
+                old.unlink()
+                removed += 1
+            except OSError as e:
+                logger.warning(f"  ⚠️ could not remove backup {old}: {e}")
+    if removed:
+        logger.info(f"🧹 pruned {removed} old backup(s) (keep={keep})")
+
+
 def save_model(model, scaler, feature_cols):
     stamp = datetime.now().strftime("%Y%m%d_%H%M")
+    MODEL_STEM.parent.mkdir(parents=True, exist_ok=True)
     for p in (OUTPUT_XGB, OUTPUT_SCALER, OUTPUT_FEAT, OUTPUT_CFG, LEGACY_PKL):
         if p.exists():
             bak = p.with_name(f"{p.stem}_bak_{stamp}{p.suffix}")
             shutil.copy2(p, bak)
+
+    _prune_backups()
 
     # Delegate to the canonical writer so the artifact quartet
     # (.json / scaler.joblib / .features.json / .cfg.json) is always emitted
