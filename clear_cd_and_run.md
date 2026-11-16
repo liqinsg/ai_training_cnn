@@ -14,13 +14,21 @@ cd "$SCRIPT_DIR" || exit 1
 
 echo "════════════════════════════════════════"
 echo "🧹 清除 Profile${PROFILE} 冷却文件..."
-rm -f cooldown_profile${PROFILE}.json
-echo "✅ 已清除 cooldown_profile${PROFILE}.json"
+# cooldown 按 (profile, 环境) 分文件：DEMO / LIVE 各一份。
+# `cooldown_profile${PROFILE}.json` 是隔离前的旧名，一并清掉避免残留。
+rm -f "cooldown_profile${PROFILE}_demo.json" \
+      "cooldown_profile${PROFILE}_live.json" \
+      "cooldown_profile${PROFILE}.json"
+echo "✅ 已清除 cooldown_profile${PROFILE}_{demo,live}.json (含旧名)"
 
 echo ""
 echo "🏃 运行 Profile${PROFILE}..."
 echo "════════════════════════════════════════"
-/home/ubuntu/miniconda3/envs/ai-sprint/bin/python fx_trade_bot_v685_2.py -p ${PROFILE} --max-entries 10
+# FCV2 模型环境变量必须与 crontab 一致，否则本次会静默落回 legacy 34 特征模型，
+# 审的就不是线上那条路径。
+cd "$SCRIPT_DIR" && \
+FX_BOT_MODEL_STEM=models_fcv2/trade_model_xgb OPT_USE_FEATURE_CONTRACT_V2=1 \
+/home/ubuntu/miniconda3/envs/ai-sprint/bin/python fx_trade_bot_v685.py -p ${PROFILE} --max-entries 10
 
 echo ""
 echo "════════════════════════════════════════"
@@ -33,11 +41,9 @@ echo "════════════════════════�
 
 ## 🔧 执行步骤
 ```bash
-# 1. 保存脚本
-nano clear_cd_and_run.sh
-# → 粘贴上面代码 → Ctrl+O → Enter → Ctrl+X
+# 1. 脚本已在仓库中（clear_cd_and_run.sh），无需重新粘贴
 
-# 2. 加执行权限
+# 2. 加执行权限（首次）
 chmod +x clear_cd_and_run.sh
 
 # 3. 跑 Profile4（你现在最关心的）
