@@ -8,9 +8,9 @@
 - numpy: 1.26.4 | pandas: 2.2.3
 - xgboost: 2.0.3
 - scikit-learn: 1.5.2
-- instruments: `EUR_USD, USD_JPY`
+- instruments: `EUR_USD, GBP_USD, AUD_USD, USD_CHF, USD_JPY, GBP_JPY`
 - requested bars per instrument: 5000 | granularity: M15
-- label fingerprint (sha256): `f496d9eda912db9e9e18aeb683a9db439377927816ed90c28f424bf68fb0c8b9`
+- label fingerprint (sha256): `9dbf82a708f3a70c520dd362874403fb34ceff2c1189f64d9e565d0ccd8d0dad`
 
 ## 1. Frozen parameters in force
 
@@ -27,63 +27,67 @@
 
 | instrument | raw | −unclosed | −warm-up NaN | −label/gap | eligible | UP | NON-UP |
 |---|---|---|---|---|---|---|---|
-| EUR_USD | 5000 | 1 | 95 | 72 | 4832 | 2288 | 2544 |
-| USD_JPY | 5000 | 1 | 95 | 72 | 4832 | 2568 | 2264 |
-| **TOTAL** | **10000** | **2** | **190** | **144** | **9664** | **4856** | **4808** |
+| EUR_USD | 5000 | 1 | 95 | 72 | 4832 | 2289 | 2543 |
+| GBP_USD | 5000 | 1 | 95 | 72 | 4832 | 2415 | 2417 |
+| AUD_USD | 5000 | 1 | 95 | 72 | 4832 | 2345 | 2487 |
+| USD_CHF | 5000 | 1 | 95 | 73 | 4831 | 2535 | 2296 |
+| USD_JPY | 5000 | 1 | 95 | 72 | 4832 | 2567 | 2265 |
+| GBP_JPY | 5000 | 1 | 95 | 72 | 4832 | 2503 | 2329 |
+| **TOTAL** | **30000** | **6** | **570** | **433** | **28991** | **14654** | **14337** |
 
 Bucket priority: warm-up NaN first, then label-unavailable / non-contiguous; buckets are disjoint.
 
 ## 3. `OPEN-04b` support baseline
 
-- smallest class: **4808** (threshold 1000) → **PASS**
-- majority-class share: **50.25%** (cap 70.00%) → **PASS**
+- smallest class: **14337** (threshold 1000) → **PASS**
+- majority-class share: **50.55%** (cap 70.00%) → **PASS**
 
 ## 4. Baseline model (XGBoost) — sanity run only
 
 - ordered 80/20 chronological holdout; CV = `TimeSeriesSplit(n_splits=5)` on the training portion.
 - scaler is fit **fold-locally** (leakage-safe default); purge/embargo is Doc 09.
-- total 9664 | train 7731 | test 1933 | split at 2026-11-01 23:45:00+00:00
-- UP share — train 50.16% | test 50.59%
+- total 28991 | train 23192 | test 5799 | split at 2026-11-02 00:00:00+00:00
+- UP share — train 50.94% | test 48.97%
 
 ### Cross-validation (mean ± std over folds)
 
 | metric | mean | std |
 |---|---|---|
-| accuracy | 0.5219 | 0.0238 |
-| precision | 0.5252 | 0.0153 |
-| recall | 0.4932 | 0.0812 |
+| accuracy | 0.5137 | 0.0252 |
+| precision | 0.5280 | 0.0391 |
+| recall | 0.5204 | 0.0645 |
 
 | fold | n | accuracy | precision | recall |
 |---|---|---|---|---|
-| 1 | 1288 | 0.4837 | 0.5140 | 0.3785 |
-| 2 | 1288 | 0.5349 | 0.5070 | 0.5977 |
-| 3 | 1288 | 0.5241 | 0.5187 | 0.4590 |
-| 4 | 1288 | 0.5116 | 0.5464 | 0.4575 |
-| 5 | 1288 | 0.5551 | 0.5398 | 0.5735 |
+| 1 | 3865 | 0.4810 | 0.4920 | 0.4661 |
+| 2 | 3865 | 0.4911 | 0.4864 | 0.6001 |
+| 3 | 3865 | 0.5514 | 0.5705 | 0.4972 |
+| 4 | 3865 | 0.5245 | 0.5786 | 0.4452 |
+| 5 | 3865 | 0.5206 | 0.5124 | 0.5933 |
 
 ### Holdout
 
-- Accuracy: **0.4790** | Precision (UP): **0.4853** | Recall (UP): **0.4898**
+- Accuracy: **0.4961** | Precision (UP): **0.4879** | Recall (UP): **0.5824**
 
 | | predicted NON-UP | predicted UP |
 |---|---|---|
-| **actual NON-UP** | 447 | 508 |
-| **actual UP** | 499 | 479 |
+| **actual NON-UP** | 1223 | 1736 |
+| **actual UP** | 1186 | 1654 |
 
 ### Top 10 features by importance
 
 | feature | importance |
 |---|---|
-| `utc_day_of_week` | 0.0407 |
-| `horizon_vol_12h` | 0.0386 |
-| `atr_ma` | 0.0383 |
-| `horizon_vol_6h` | 0.0367 |
-| `macd_signal` | 0.0360 |
-| `atr` | 0.0352 |
-| `dist_low_24h` | 0.0347 |
-| `dist_high_24h` | 0.0343 |
-| `dist_high_6h` | 0.0337 |
-| `dist_high_12h` | 0.0337 |
+| `utc_hour` | 0.0418 |
+| `utc_day_of_week` | 0.0393 |
+| `horizon_vol_12h` | 0.0390 |
+| `dist_high_6h` | 0.0377 |
+| `horizon_vol_6h` | 0.0361 |
+| `atr_pct` | 0.0354 |
+| `dist_high_24h` | 0.0350 |
+| `dist_low_24h` | 0.0346 |
+| `rsi` | 0.0341 |
+| `atr_ratio` | 0.0339 |
 
 ## 5. Boundary
 
