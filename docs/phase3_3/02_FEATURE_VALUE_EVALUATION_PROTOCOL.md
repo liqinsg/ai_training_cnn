@@ -33,7 +33,7 @@ Technical correctness (Phase 3.2, done) is a **precondition**, not evidence of p
 |---|---|
 | Split type | time-series (chronological) only; never random shuffle |
 | Scheme | walk-forward with expanding/rolling train, fixed test windows |
-| **purge / embargo** | mandatory gap between train and test equal to the **label horizon** (purge) plus an **embargo** buffer, so no train label window overlaps a test window |
+| **purge / embargo** | mandatory gap between train and test equal to the **label horizon** (purge) plus an **embargo** buffer, so no train label window overlaps a test window. The label horizon is **6 bars** (M15; `target_horizon = 6`): each label at *t* spans [*t*, *t*+6], so the purge must be **≥ 6 bars**, plus the embargo buffer. |
 | Fold-local preprocessing | any scaling/encoding fit **only** on the train fold; never on the test fold |
 | Final holdout | one untouched, never-inspected tail segment reserved for confirmation |
 | Cross-instrument isolation | at a shared timestamp, train and test must not mix instruments whose label windows overlap |

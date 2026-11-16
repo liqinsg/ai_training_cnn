@@ -58,7 +58,7 @@ Registered by the external review (2026-11-16); ownership and disposition are fo
 | ID | Risk | Level | Note / next action |
 |---|---|---|---|
 | **R1** | Feature Contract Identity scope | High | FCID covers feature order + 9 frozen params; it does **not by itself** prove code, dependency, tzdb or data-source identity. Keep FCID **and** the evidence bundle **and** env pin; do not over-interpret FCID as full production-environment identity. |
-| **R2** | Evidence bundle vs. current repo state | Medium | Bundle baseline is commit `7868a50`; HEAD has since advanced to `d6db32c`. Confirm whether later commits touch any bundled file. |
+| **R2** | Evidence bundle vs. current repo state | Medium | Bundle baseline is commit `7868a50`; current HEAD is `1e670a5`. **Verified:** `git diff --name-only 7868a50..1e670a5` shows **no change to any bundled file** (Doc 01–04, Calendar Contract, `REPORT.md`, `PARITY_P1P2_REPORT.md`, `ml/feature_contract.py`, `tests/test_feature_contract.py`) → evidence bundle identity `3a6ea118b5520dba` remains valid at HEAD. |
 | **R3** | Data leakage in Phase 3.3 | High | Controlled by `02_FEATURE_VALUE_EVALUATION_PROTOCOL.md` §4–§5 (purge/embargo, fold-local preprocessing, untouched holdout, cross-instrument isolation). |
 | **R4** | Multiple-comparison / selection bias | Medium | Controlled by `02_…PROTOCOL.md` §9 (trial budget, FDR/Bonferroni, holdout re-confirmation). |
 | **R5** | "Default-OFF" ≠ zero side effect | Medium | The `USE_FEATURE_CONTRACT_V2` switch is default OFF, but import/init/file-read/config-load on the legacy path has **not** been proven unchanged. **Open item** — verify before any activation discussion. |
@@ -70,4 +70,4 @@ Registered by the external review (2026-11-16); ownership and disposition are fo
 | P3–P5 | full parity, activation | new authorization (aligned bundle) |
 | `is_london` / `is_ny` | 2 feature admissions | owner defines session semantics |
 | R5 (legacy-path side-effect check) | activation safety | verification task |
-| R2 (bundle-vs-HEAD drift) | evidence validity | confirm no bundled file changed after `7868a50` |
+| R2 (bundle-vs-HEAD drift) | evidence validity | **verified at HEAD `1e670a5`** — no bundled file changed (see §5); bundle `3a6ea118b5520dba` still valid |

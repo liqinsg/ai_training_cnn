@@ -69,7 +69,7 @@ A full statement of the boundary is in `04_AUTHORIZATION_BOUNDARY.md`.
 
 ## 5. Upstream status carried forward (not to be overstated)
 
-- Phase 3.2 is closed **at the feature level only**: 33 `TECHNICALLY ELIGIBLE (feature-level)`, 2 `EXCLUDE`, 2 `DEFER`.
+- Phase 3.2 **Step6** (Candidate Freeze) is **completed and owner-signed at the feature level**. **Step7** (Phase 3.3 handover) is **prepared but remains pending Phase 3.3 owner acceptance**. The 33 feature candidates retain their signed feature-level freeze status: 33 `TECHNICALLY ELIGIBLE (feature-level)`, 2 `EXCLUDE`, 2 `DEFER`.
 - `TECHNICALLY ELIGIBLE` means the candidate passed its technical definition and eligibility checks; it is **not** evidence of predictive value.
 - No model activation, no prediction-schema freeze, no implementation authorization, no trading-behavior authorization is granted by this handover.
 
@@ -82,7 +82,7 @@ A full statement of the boundary is in `04_AUTHORIZATION_BOUNDARY.md`.
 | `02_FEATURE_VALUE_EVALUATION_PROTOCOL.md` | how predictive value is evaluated (baselines, ablation, out-of-time, cost, leakage control, multiple-comparison control) |
 | `03_BLOCKER_AND_DEFERRED_ITEMS.md` | P3–P5, session, legacy-artifact mismatch, and registered risks R1–R5 |
 | `04_AUTHORIZATION_BOUNDARY.md` | what Phase 3.3 may / may not do; conditions to unlock |
-| `05_P3_P5_LEGACY_BUNDLE_NEGATIVE_VALIDATION.md` | read-only negative validation of the legacy bundle (separate, already executed) |
+| `05_P3_P5_LEGACY_BUNDLE_NEGATIVE_VALIDATION.md` | read-only negative validation of the legacy bundle — **executed 2026-11-16, with recorded evidence** (not a plan) |
 
 ## 7. Acceptance
 
@@ -94,8 +94,11 @@ Suggested close-out wording for the Phase 3.2 → 3.3 boundary (non-overstated):
 
 > Phase 3.2 completed through feature-level candidate freeze. P1/P2 parity is PASS. P3–P5 remain `NOT VERIFIED` and are retained as downstream activation blockers. No model activation, prediction-schema freeze, implementation authorization, or trading-behavior authorization is granted.
 
+> **Governance distinction:** Phase 3.3 Owner Acceptance accepts the **research handover only**. It is **not** owner approval of any future Phase 3.3 implementation action — model training, artifact publication, and inference wiring must each be authorized separately. (The may / may-not boundary is stated in `04_AUTHORIZATION_BOUNDARY.md`.)
+
 ## 8. Record discipline
 
 - This package is **append-only**: new state is recorded by appending; approved wording is not rewritten.
 - Phase 3.3 may select or reject candidates **for predictive reasons only**; it **must not** silently alter any technical definition or the Feature Contract Identity.
+- Predictive rejection or selection in Phase 3.3 shall be recorded as a **downstream disposition** (a Phase 3.3 Candidate Disposition Register). It shall **not** rewrite the signed Phase 3.2 candidate register, alter the frozen feature definitions, or silently change the Feature Contract Identity. (Example: a candidate that is technically eligible but rejected for lack of predictive value is recorded as *eligible / rejected-for-value* — the original 33-column list and `FCV2` are unchanged.)
 - Any change to a definition, parameter, or the identity requires returning to the Phase 3.2 owner decision process.
