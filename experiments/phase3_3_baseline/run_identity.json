@@ -1,0 +1,34 @@
+{
+  "fingerprint": "f496d9eda912db9e9e18aeb683a9db439377927816ed90c28f424bf68fb0c8b9",
+  "count_requested": 5000,
+  "pairs": [
+    "EUR_USD",
+    "USD_JPY"
+  ],
+  "total": {
+    "n_raw": 10000,
+    "n_dropped_unclosed": 2,
+    "n_closed": 9998,
+    "n_dropped_warmup_nan": 190,
+    "n_dropped_label_or_gap": 144,
+    "n_eligible": 9664,
+    "n_up": 4856,
+    "n_non_up": 4808
+  },
+  "support": {
+    "min_class_count": 4808,
+    "majority_share": 0.5024834437086093,
+    "support_ok": true,
+    "imbalance_ok": true
+  },
+  "holdout": {
+    "accuracy": 0.47904811174340406,
+    "precision": 0.48530901722391084,
+    "recall": 0.4897750511247444,
+    "tn": 447,
+    "fp": 508,
+    "fn": 499,
+    "tp": 479,
+    "n": 1933
+  }
+}
