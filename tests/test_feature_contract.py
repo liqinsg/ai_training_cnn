@@ -378,6 +378,7 @@ def test_module_stays_unwired():
 # ── L3 runtime wiring (reversible, default-OFF) ──────────────────────────────
 
 _LIVE_BOTS = [BASE_DIR / "fx_trade_bot.py", BASE_DIR / "fx_trade_bot_v685.py"]
+_RETRAIN = BASE_DIR / "retrain_model.py"
 
 
 @pytest.mark.parametrize("bot", _LIVE_BOTS, ids=lambda p: p.name)
@@ -404,6 +405,35 @@ def test_helper_contract_branch_is_lazy_and_fail_closed(bot):
     src = bot.read_text(encoding="utf-8")
     start = src.index("def _build_pair_features(raw):")
     body = src[start:src.index("last_closed = {}", start)]
+    assert "if USE_FEATURE_CONTRACT_V2:" in body
+    assert "from ml.feature_contract import build_features" in body
+    assert "try:" not in body
+    assert "except" not in body
+
+
+# ── L3 training-path wiring (reversible, default-OFF) ────────────────────────
+
+def test_retrain_exposes_default_off_v2_switch():
+    """P1/P2 parity: the training path carries the same default-OFF switch."""
+    src = _RETRAIN.read_text(encoding="utf-8")
+    assert 'USE_FEATURE_CONTRACT_V2 = _opt("USE_FEATURE_CONTRACT_V2", False)' in src
+
+
+def test_retrain_feature_builds_are_routed_through_helper():
+    """The single per-pair build goes through _build_pair_features; the only
+    direct FeatureEngine.build call left is the legacy branch inside it."""
+    src = _RETRAIN.read_text(encoding="utf-8")
+    assert src.count("feat_engine.build(") == 1
+    assert src.count("_build_pair_features(") == 2  # 1 def + 1 call site
+    assert "return feat_engine.build(raw)" in src
+
+
+def test_retrain_helper_contract_branch_is_lazy_and_fail_closed():
+    """The contract import is lazy (inside the switch branch) and the build is
+    not wrapped in a swallowing try/except."""
+    src = _RETRAIN.read_text(encoding="utf-8")
+    start = src.index("def _build_pair_features(raw, feat_engine):")
+    body = src[start:src.index("MODEL_STEM = BASE_DIR", start)]
     assert "if USE_FEATURE_CONTRACT_V2:" in body
     assert "from ml.feature_contract import build_features" in body
     assert "try:" not in body

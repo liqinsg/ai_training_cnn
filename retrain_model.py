@@ -4,6 +4,7 @@ RETRAIN XGBoost Model on RECENT market data
 Produces: trade_model_xgb.json, scaler.joblib, trade_model_xgb.features.json
 """
 
+import os
 import sys
 import logging
 import numpy as np
@@ -55,6 +56,33 @@ FEAT_CFG = FeatureConfig(
     train_lookback_bars=LOOKBACK_BARS,
 )
 
+# ── Phase 3.2 Feature Contract v2 (reversible, default OFF) ──────────────
+# Mirrors the live bots' wiring (fx_trade_bot*.py): when ON, per-pair features
+# are built by the Phase 3.2 Feature Contract (ml/feature_contract.py) instead
+# of the legacy FeatureEngine, so the training path and the inference path share
+# one implementation (train/inference parity P1/P2, Doc 03 §10). Default OFF
+# keeps the legacy training path byte-identical. No silent fallback: contract
+# errors propagate (fail closed).
+def _opt(name, default):
+    raw = os.getenv(f"OPT_{name}")
+    if raw is not None:
+        return raw.strip().lower() in ("1", "true", "yes", "on")
+    return bool(default)
+
+
+USE_FEATURE_CONTRACT_V2 = _opt("USE_FEATURE_CONTRACT_V2", False)
+
+
+def _build_pair_features(raw, feat_engine):
+    """Per-pair feature frame: legacy FeatureEngine by default, Phase 3.2 Feature
+    Contract behind USE_FEATURE_CONTRACT_V2 (lazy import; fail-closed)."""
+    if USE_FEATURE_CONTRACT_V2:
+        from ml.feature_contract import build_features as _contract_build
+
+        return _contract_build(raw)
+    return feat_engine.build(raw)
+
+
 MODEL_STEM = BASE_DIR / "trade_model_xgb"
 OUTPUT_XGB = MODEL_STEM.with_suffix(".json")
 OUTPUT_SCALER = BASE_DIR / "scaler.joblib"
@@ -96,7 +124,7 @@ def fetch_all_data():
         if raw.empty:
             continue
 
-        df = feat_engine.build(raw)
+        df = _build_pair_features(raw, feat_engine)
         df = df.copy()
 
         # Clean NaN/Inf

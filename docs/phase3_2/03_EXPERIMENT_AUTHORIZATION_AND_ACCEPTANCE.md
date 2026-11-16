@@ -115,3 +115,61 @@ Stop the affected experiment if:
 - Any production artifact or trading behavior would be changed.
 
 A stop is a result, not permission to improvise a repair.
+
+---
+
+## 10. P1/P2 Train–Inference Parity Preregistration (appended 2026-11-16)
+
+**Experiment ID:** `PARITY-P1P2-01`
+**Preregistration timestamp:** 2026-11-16 (written before any run; no result was inspected first).
+**Authorization:** owner "全部授权" = L2-B + L3 (Revision Plan §14.1). Bounded **offline / no-network / read-only** only. It does **not** authorize training, artifact writes, deployment, READY activation or trading-behaviour changes.
+
+### 10.1 Objective
+
+Under the new Feature Contract, demonstrate that the **training path** and the **inference path** produce, from identical raw OHLCV:
+
+- **P1 — raw input consistency:** identical accept/reject on identical invalid fixtures; and
+- **P2 — raw feature-output consistency:** identical pre-scaling feature row — names / order / dtype / missingness exact; floats within `|A − B| ≤ atol + rtol·|B|` (`atol = 1e-10`, `rtol = 1e-8`).
+
+P1 and P2 are reported **separately**; neither substitutes for the other. P3–P5 stay `NOT VERIFIED`.
+
+### 10.2 Fixtures (frozen; must not be replaced after seeing results)
+
+**Valid fixtures:** the five deterministic fixtures already preregistered for Step 4, reused verbatim from `experiments/phase3_2_feature_convergence/convergence_experiment.py::fixture_ohlc` — `up`, `down`, `varying`, `alternating`, `adx_break`; 800 M15 bars; fixed UTC index starting `2026-01-05 00:00`; each identified by `sha256(OHLC)`.
+
+**Invalid fixtures** (derived deterministically from a valid base; each identified by a name + base sha256):
+
+| # | Case |
+|---|---|
+| 1 | duplicate timestamp (final row appended again) |
+| 2 | non-monotonic index (reversed) |
+| 3 | missing required column (`High`) |
+| 4 | non-finite `Inf` in `High` |
+| 5 | non-finite `NaN` in `Close` |
+| 6 | non-positive price (`Low = 0`) |
+| 7 | `High < Low` |
+| 8 | `High/Low` not bounding `Open/Close` |
+| 9 | naive (tz-less) index |
+| 10 | too few bars (1 row) |
+| 11 | empty batch |
+
+### 10.3 Two path entries
+
+- **Training entry:** `retrain_model._build_pair_features(raw, feat_engine)` with switch `USE_FEATURE_CONTRACT_V2` ON (env `OPT_USE_FEATURE_CONTRACT_V2`; default OFF). Wired in this session under the same default-OFF, revertible, fail-closed pattern as the bots.
+- **Inference entry:** `fx_trade_bot.py` / `fx_trade_bot_v685.py::_build_pair_features` with `USE_FEATURE_CONTRACT_V2` ON. Those modules are **not importable offline** (module-level config/engine construction plus a possible outbound cooldown refresh), so the harness (a) **statically asserts** each bot ON-branch source is exactly `from ml.feature_contract import build_features as _contract_build` + `return _contract_build(raw)` with no other transform, and (b) invokes `ml.feature_contract.build_features(raw)` to obtain the inference-side output. Recorded as an **explicit deviation** (source-verified, not imported).
+- Both ON-branches call the single shared implementation `ml/feature_contract.build_features`; parity therefore reduces to (i) routing identity and (ii) determinism of that function.
+
+### 10.4 Comparison and acceptance
+
+- **P1:** for each invalid fixture both entries must yield the **same outcome** (both reject with `InputContractError`, or both accept). Divergence = FAIL.
+- **P2:** for each valid fixture compare raw contract frames: `list(columns)` exact, `dtypes` exact, per-cell missingness exact, and for every finite pair the float tolerance. Report **per feature, per fixture** — no aggregate may hide a failure. Any schema/missingness mismatch or tolerance breach = FAIL.
+- **Secondary (supporting, not substituting P2):** confirm both endpoints apply the same post-build cleaning chain (`replace([inf,-inf],nan) → ffill → bfill → fillna(0)`).
+- Tolerances are frozen here and **must not be relaxed** after results.
+
+### 10.5 Recorded identity
+
+Record git commit + dirty/clean (and the files touched), Python / numpy / pandas / xgboost / tzdata / pytz versions, `zoneinfo.TZPATH`, every fixture `sha256`, and this preregistration timestamp.
+
+### 10.6 Verdict rules
+
+P1 PASS iff all invalid fixtures agree. P2 PASS iff all valid fixtures × all features pass schema + tolerance. `FULL_PARITY_STATUS` **remains `NOT VERIFIED`** because P3–P5 are unverifiable without an active model / scaler / `.features.json` bundle; P3–P5 must not be marked pass/waived/`NOT REQUIRED`.

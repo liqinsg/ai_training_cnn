@@ -30,6 +30,8 @@ A `DEFER` candidate cannot be frozen as technically eligible.
 
 **Status update (2026-11-15, appended — L2-B):** prerequisite 10 is now met — production history length is approved at 800 bars (RC-02, Doc 04, L2-B), supported by the Step 4 convergence report. The `atr_ecdf_50bar` tie-sensitivity finding is resolved as a documented R-class behaviour (Doc 02 §3.1), not an open blocker, and the frozen production length sits in its stable region. Freeze is still withheld because prerequisite 8 (train/inference parity P1/P2) is `NOT VERIFIED`; this is the remaining gating item.
 
+**Status update (2026-11-16, appended — P1/P2 parity):** prerequisite 8 is now met **at the feature level**. Experiment `PARITY-P1P2-01` (protocol preregistered in Doc 03 §10) ran offline on this host and returned **P1 = PASS** (11/11 invalid fixtures → identical accept/reject on both paths) and **P2 = PASS** (5 deterministic fixtures × all 33 features: column names/order/dtype/missingness exact; every finite cell within `1e-10 + 1e-8·|B|`). Report: `experiments/phase3_2_feature_convergence/PARITY_P1P2_REPORT.md`. The training path (`retrain_model.py`) and the inference path (`fx_trade_bot*.py`) both route, under the default-OFF switch `USE_FEATURE_CONTRACT_V2`, into the single implementation `ml/feature_contract.build_features`, so parity follows from routing identity + determinism of that function. This satisfies prerequisite 8 **for the feature contract only**: P3–P5 (scaler / model-tensor / prediction-output) remain `NOT VERIFIED` (no active model / scaler / `.features.json` bundle in the repository), so `FULL_PARITY_STATUS` stays `NOT VERIFIED` and the freeze **remains withheld**. No candidate is frozen by this update.
+
 ## 3. Candidate freeze register
 
 | Candidate | Proposed name | Matrix disposition | Formula decision | Backend decision | Warm-up decision | Correctness/parity | Convergence | Production-length support | Final status |
@@ -47,26 +49,26 @@ A `DEFER` candidate cannot be frozen as technically eligible.
 | lower_wick | lower_wick | ACCEPTABLE AS-IS | PENDING | PENDING | PENDING | NOT RUN | N/A / PENDING | NOT ESTABLISHED | NOT FROZEN |
 | range | range | ACCEPTABLE AS-IS | PENDING | PENDING | PENDING | NOT RUN | N/A / PENDING | NOT ESTABLISHED | NOT FROZEN |
 | direction | direction | REDEFINE | PENDING | PENDING | PENDING | NOT RUN | N/A / PENDING | NOT ESTABLISHED | NOT FROZEN |
-| atr | atr | DEFER | BLOCKED | BLOCKED | BLOCKED | NOT RUN | NOT ESTABLISHED | NOT ESTABLISHED | DEFER |
-| atr_pct | atr_pct | DEFER | BLOCKED | BLOCKED | BLOCKED | NOT RUN | NOT ESTABLISHED | NOT ESTABLISHED | DEFER |
-| atr_percentile | atr_ecdf_50bar | REDEFINE | BLOCKED: ATR | BLOCKED: ATR | BLOCKED: ATR | NOT RUN | NOT ESTABLISHED | NOT ESTABLISHED | DEFER |
-| atr_ma | atr_ma | DEFER | BLOCKED: ATR | BLOCKED: ATR | BLOCKED: ATR | NOT RUN | NOT ESTABLISHED | NOT ESTABLISHED | DEFER |
-| atr_expanding | atr_above_sma14 | DEFER | BLOCKED: ATR | BLOCKED: ATR | BLOCKED: ATR | NOT RUN | NOT ESTABLISHED | NOT ESTABLISHED | DEFER |
-| atr_ratio | atr_ratio | DEFER | BLOCKED: ATR | BLOCKED: ATR | BLOCKED: ATR | NOT RUN | NOT ESTABLISHED | NOT ESTABLISHED | DEFER |
-| rsi | rsi | DEFER | BLOCKED | BLOCKED | BLOCKED | NOT RUN | NOT ESTABLISHED | NOT ESTABLISHED | DEFER |
-| rsi_slope | rsi_slope_45m | DEFER | BLOCKED: RSI | BLOCKED: RSI | BLOCKED: RSI | NOT RUN | NOT ESTABLISHED | NOT ESTABLISHED | DEFER |
+| atr | atr | REDEFINE | RESOLVED (FD-03) | RESOLVED (FD-03) | RESOLVED (FD-03) | P1/P2 PASS | PASS | 800 bars (RC-02) | NOT FROZEN |
+| atr_pct | atr_pct | REDEFINE | RESOLVED (FD-03) | RESOLVED (FD-03) | RESOLVED (FD-03) | P1/P2 PASS | PASS | 800 bars (RC-02) | NOT FROZEN |
+| atr_percentile | atr_ecdf_50bar | REDEFINE | RESOLVED (FD-03 §3.1) | RESOLVED (FD-03) | RESOLVED (FD-03) | P1/P2 PASS | PASS | 800 bars (RC-02) | NOT FROZEN |
+| atr_ma | atr_ma | REDEFINE | RESOLVED (FD-03) | RESOLVED (FD-03) | RESOLVED (FD-03) | P1/P2 PASS | PASS | 800 bars (RC-02) | NOT FROZEN |
+| atr_expanding | atr_above_sma14 | REDEFINE | RESOLVED (FD-03) | RESOLVED (FD-03) | RESOLVED (FD-03) | P1/P2 PASS | PASS | 800 bars (RC-02) | NOT FROZEN |
+| atr_ratio | atr_ratio | REDEFINE | RESOLVED (FD-03) | RESOLVED (FD-03) | RESOLVED (FD-03) | P1/P2 PASS | PASS | 800 bars (RC-02) | NOT FROZEN |
+| rsi | rsi | REDEFINE | RESOLVED (FD-04) | RESOLVED (FD-04) | RESOLVED (FD-04) | P1/P2 PASS | PASS | 800 bars (RC-02) | NOT FROZEN |
+| rsi_slope | rsi_slope_45m | REDEFINE | RESOLVED (FD-04) | RESOLVED (FD-04) | RESOLVED (FD-04) | P1/P2 PASS | PASS | 800 bars (RC-02) | NOT FROZEN |
 | adx | adx | REDEFINE | PENDING | PENDING | PENDING | NOT RUN | NOT ESTABLISHED | NOT ESTABLISHED | NOT FROZEN |
-| MACD_12_26_9 | macd | DEFER | BLOCKED | BLOCKED | BLOCKED | NOT RUN | NOT ESTABLISHED | NOT ESTABLISHED | DEFER |
-| MACDh_12_26_9 | macd_hist | DEFER | BLOCKED: MACD | BLOCKED: MACD | BLOCKED: MACD | NOT RUN | NOT ESTABLISHED | NOT ESTABLISHED | DEFER |
-| MACDs_12_26_9 | macd_signal | DEFER | BLOCKED: MACD | BLOCKED: MACD | BLOCKED: MACD | NOT RUN | NOT ESTABLISHED | NOT ESTABLISHED | DEFER |
+| MACD_12_26_9 | macd | REDEFINE | RESOLVED (FD-05) | RESOLVED (FD-05) | RESOLVED (FD-05) | P1/P2 PASS | PASS | 800 bars (RC-02) | NOT FROZEN |
+| MACDh_12_26_9 | macd_hist | REDEFINE | RESOLVED (FD-05) | RESOLVED (FD-05) | RESOLVED (FD-05) | P1/P2 PASS | PASS | 800 bars (RC-02) | NOT FROZEN |
+| MACDs_12_26_9 | macd_signal | REDEFINE | RESOLVED (FD-05) | RESOLVED (FD-05) | RESOLVED (FD-05) | P1/P2 PASS | PASS | 800 bars (RC-02) | NOT FROZEN |
 | dist_high_24 | dist_high_6h | REDEFINE | PENDING | PENDING | PENDING | NOT RUN | N/A / PENDING | NOT ESTABLISHED | NOT FROZEN |
 | dist_low_24 | dist_low_6h | REDEFINE | PENDING | PENDING | PENDING | NOT RUN | N/A / PENDING | NOT ESTABLISHED | NOT FROZEN |
 | dist_high_48 | dist_high_12h | REDEFINE | PENDING | PENDING | PENDING | NOT RUN | N/A / PENDING | NOT ESTABLISHED | NOT FROZEN |
 | dist_low_48 | dist_low_12h | REDEFINE | PENDING | PENDING | PENDING | NOT RUN | N/A / PENDING | NOT ESTABLISHED | NOT FROZEN |
 | dist_high_96 | dist_high_24h | REDEFINE | PENDING | PENDING | PENDING | NOT RUN | N/A / PENDING | NOT ESTABLISHED | NOT FROZEN |
 | dist_low_96 | dist_low_24h | REDEFINE | PENDING | PENDING | PENDING | NOT RUN | N/A / PENDING | NOT ESTABLISHED | NOT FROZEN |
-| vol_sma_ratio | vol_sma_ratio | DEFER | BLOCKED: volume semantics | BLOCKED | BLOCKED | NOT RUN | NOT ESTABLISHED | NOT ESTABLISHED | DEFER |
-| vol_trend | vol_trend | DEFER | BLOCKED: volume semantics | BLOCKED | BLOCKED | NOT RUN | NOT ESTABLISHED | NOT ESTABLISHED | DEFER |
+| vol_sma_ratio | vol_sma_ratio | EXCLUDE | N/A (FD-07) | N/A (FD-07) | N/A (FD-07) | N/A | N/A | N/A | EXCLUDE |
+| vol_trend | vol_trend | EXCLUDE | N/A (FD-07) | N/A (FD-07) | N/A (FD-07) | N/A | N/A | N/A | EXCLUDE |
 | hour | utc_hour | REDEFINE | PENDING | PENDING | PENDING | NOT RUN | N/A / PENDING | NOT ESTABLISHED | NOT FROZEN |
 | day_of_week | utc_day_of_week | REDEFINE | PENDING | PENDING | PENDING | NOT RUN | N/A / PENDING | NOT ESTABLISHED | NOT FROZEN |
 | is_london | is_london | DEFER | BLOCKED: session definition | BLOCKED | BLOCKED | NOT RUN | NOT ESTABLISHED | NOT ESTABLISHED | DEFER |
@@ -109,3 +111,37 @@ The final ordered model schema requires both:
 ## 7. Authorization boundary
 
 This freeze template does not authorize production code changes, model training, artifact writes, deployment, READY activation or trading behavior changes. A later implementation task must cite the approved decisions and carry its own scope and acceptance criteria.
+
+## 8. DEFER candidate adjudication (appended 2026-11-16 — closes "DEFER limbo")
+
+Purpose: give every candidate that was left `DEFER` in §3 a **formal disposition** with a stated reason and an evidence citation, so that no candidate remains in limbo. This section performs **attribution adjudication + register update only**; it does **not** alter any already-approved technical definition and it does **not** freeze any candidate.
+
+**Scope note (register reconciliation):** §4 task b of the handover names 15 rows. The register's `DEFER` final-status set is 14 rows; the 15th name (`atr_percentile`) carried the documented internal inconsistency — its *matrix disposition* was `REDEFINE` while its *final status* was `DEFER`. That inconsistency is corrected below: `atr_percentile` is adjudicated with its ATR peers as `REDEFINE`.
+
+### 8.1 Adjudication register
+
+| Candidate | Prior state | Disposition | Reason | Evidence |
+|---|---|---|---|---|
+| atr | DEFER | **RESOLVE → REDEFINE** | Definition already owner-approved; the former blocker was backend ambiguity (pandas_ta vs manual fallback), which the new single-backend contract removes | Doc 02 FD-03; Doc 03 §10; `PARITY_P1P2_REPORT.md` (P2 PASS) |
+| atr_pct | DEFER | **RESOLVE → REDEFINE** | Derived from canonical ATR; same backend-ambiguity removal | Doc 02 FD-03; `PARITY_P1P2_REPORT.md` |
+| atr_percentile | DEFER (final) / REDEFINE (matrix) | **RESOLVE → REDEFINE** (inconsistency fixed) | `atr_ecdf_50bar` definition approved (ECDF window 50, inclusive-rank); tie-sensitivity is documented R-class behaviour, not a blocker | Doc 02 FD-03 + §3.1; Doc 03 §10; `PARITY_P1P2_REPORT.md` |
+| atr_ma | DEFER | **RESOLVE → REDEFINE** | Derived (SMA-14 of ATR); same backend-ambiguity removal | Doc 02 FD-03; `PARITY_P1P2_REPORT.md` |
+| atr_expanding | DEFER | **RESOLVE → REDEFINE** | Resolved as `atr_above_sma14` boolean under approved ATR family | Doc 02 FD-03; `PARITY_P1P2_REPORT.md` |
+| atr_ratio | DEFER | **RESOLVE → REDEFINE** | Derived (ATR ratio, window 28); same backend-ambiguity removal | Doc 02 FD-03; `PARITY_P1P2_REPORT.md` |
+| rsi | DEFER | **RESOLVE → REDEFINE** | Definition approved (Wilder n=14; flat → 50); backend ambiguity removed | Doc 02 FD-04; `PARITY_P1P2_REPORT.md` |
+| rsi_slope | DEFER | **RESOLVE → REDEFINE** | Definition approved (`rsi_slope_45m = RSI[t]-RSI[t-3]`) | Doc 02 FD-04; `PARITY_P1P2_REPORT.md` |
+| MACD_12_26_9 | DEFER | **RESOLVE → REDEFINE** | Definition approved (EMA 12/26/9, `adjust=False`, first-value seed) | Doc 02 FD-05; `PARITY_P1P2_REPORT.md` |
+| MACDh_12_26_9 | DEFER | **RESOLVE → REDEFINE** | Produced in the same shared valid range as MACD | Doc 02 FD-05; `PARITY_P1P2_REPORT.md` |
+| MACDs_12_26_9 | DEFER | **RESOLVE → REDEFINE** | Produced in the same shared valid range as MACD | Doc 02 FD-05; `PARITY_P1P2_REPORT.md` |
+| vol_sma_ratio | DEFER / BLOCKED | **EXCLUDE** | FD-07 excludes volume features for the new contract; register no longer says BLOCKED | Doc 02 FD-07; Revision Plan §10.1 |
+| vol_trend | DEFER / BLOCKED | **EXCLUDE** | FD-07 excludes volume features for the new contract; register no longer says BLOCKED | Doc 02 FD-07; Revision Plan §10.1 |
+| is_london | DEFER | **KEEP DEFER** | Session-window definition for this local feature is not yet owner-approved; the Calendar Contract explicitly does **not** define it, and the adjacent gap classifier remains fail-closed | Calendar Contract §7 (status), §9; Revision Plan §5.2 |
+| is_ny | DEFER | **KEEP DEFER** | Same as `is_london` | Calendar Contract §7 (status), §9; Revision Plan §5.2 |
+
+### 8.2 Consequences
+
+- The two volume rows move from `BLOCKED` to `EXCLUDE`; the register (§3) now carries `EXCLUDE` for `vol_sma_ratio`/`vol_trend`.
+- The ATR/RSI/MACD families move from `DEFER` to `REDEFINE`, with `Correctness/parity = P1/P2 PASS`, `Convergence = PASS` and `Production-length support = 800 bars (RC-02)` recorded in §3.
+- `atr_percentile`'s matrix disposition and final status are now consistent (`REDEFINE`).
+- `is_london`/`is_ny` remain `DEFER`; they are **not** eligible and must not enter Phase 3.3 until the session definition is approved and the feature is adjudicated.
+- **No candidate is frozen by this adjudication.** A `REDEFINE` disposition is a *definition/direction* decision, not technical eligibility: prerequisites 6, 7, 11 and the P3–P5 parity layers remain to be satisfied, and owner approval is still required before any candidate becomes `TECHNICALLY ELIGIBLE`.
