@@ -2,8 +2,8 @@
 
 **Document ID:** `PHASE3_3_EXPERIMENT_EXECUTION_PLAN`
 **Date:** 2026-11-16
-**Revision:** R3 — targeted review round (B0 split, timestamp-based splitting/isolation, inference & calibration detail). See §15.
-**Status:** `DRAFT — PRIORS ASSIGNED, PENDING OWNER APPROVAL`
+**Revision:** R4 — protocol freeze for Demo preparation (Owner-accepted 2026-11-16). See §15.8.
+**Status:** `FROZEN (experimental protocol) — OWNER-ACCEPTED 2026-11-16 for Demo preparation` · inference validity remains `NOT VERIFIED — provisional`
 **Nature:** Preregistration of the Phase 3.3 predictive-value experiment design — *how* the Doc 08 dataset is split, evaluated and verified. Not a model-implementation specification and **not** an authorization.
 **Upstream:** `06_RESEARCH_CONTRACT.md` (§4–§11), `07_OWNER_DECISION_REGISTER.md`, `08_DATASET_AND_LABEL_SPECIFICATION.md`; frozen freeze record `docs/phase3_2/05_TECHNICALLY_ELIGIBLE_CANDIDATE_FREEZE.md`.
 
@@ -186,7 +186,7 @@ Rules:
 - Currency pairs are **not** statistically independent; a pooled score must never be read as independent replication.
 - A **generalisation claim** (Q5, `06` §1) is made **only** if LOPO holds; otherwise the disposition is at most `CONDITIONAL`.
 - LOPO reuses the **same** global fold boundaries (§4): for each held-out pair, training uses all other pairs and the identical `train_k / test_k` index windows.
-- The evaluation instrument set is the Doc 08 whitelist status quo (`config.DEFAULT_PAIRS`), which remains `[PENDING DATA PROFILING SCAN]`.
+- The evaluation instrument set is **resolved** (Owner 2026-11-16): the **intersection** of the `mc_data.yml` `pairs` list and the `config_bot.py` whitelist (`forex_pairs.json` `WHITELIST` buckets ∪ `DEFAULT_PAIRS`, normalised to OANDA-native names). That intersection is **13 pairs**: `AUD_JPY, EUR_JPY, GBP_JPY, USD_JPY, AUD_USD, EUR_USD, GBP_USD, USD_CHF, GBP_AUD, EUR_CHF, AUD_CHF, GBP_CHF, EUR_AUD`. `mc_data.yml` symbols outside the whitelist are excluded by construction (Demo loader, §4.7). Dataset identity (period, final candle, `sha256`) remains per-run evidence (§10).
 
 ## 6. Baseline comparison matrix (revised)
 
@@ -381,7 +381,17 @@ Stop — or mark `BLOCKED` — the affected experiment if (`06` §11, Doc 08):
 | `OPEN-08` | Transaction costs | — | `OPEN (out of scope here)` | Doc 11/14 | *(blank)* |
 | `OPEN-09` | Minimum evidence for `SELECTED` | — | `OPEN (out of scope here)` | Doc 13 | *(blank)* |
 
-Creating this plan authorizes nothing. Execution requires a separate, explicit Owner authorization naming datasets, universe, compute, trial budget, and whether any training is permitted (`06` §14, `07` §4).
+**Owner-provided run decisions (2026-11-16)** — supplied with the Demo-preparation authorization (§15.8). These are **Owner decisions**, not Agent priors:
+
+| Item | Value | Tag | Effect |
+|---|---|---|---|
+| Instrument universe | `mc_data.yml` `pairs` ∩ `config_bot.py` whitelist, OANDA-native = **13 pairs** (§5) | `FROZEN (Owner)` | fixes the `OPEN-07` evaluation set |
+| Compute budget | Oracle VM: **4 vCPU / 24 GB RAM** | `FROZEN (Owner)` | bounds `B`, learner choice; forbids a global grid search |
+| Training policy | training allowed **only** as an in-fold single fit + internal-CV, train-fold-only calibration (§7); **no** global hyper-parameter grid search | `FROZEN (Owner)` | consistent with the §6 learner and §7 calibration rules |
+
+The `PRIOR` rows above remain Agent-proposed defaults: they are **frozen for the run once execution begins** and Owner-overridable **only before** execution. They are **not** relabelled as Owner-approved values.
+
+Creating this plan (or freezing its protocol) authorizes nothing. Execution still requires a separate, explicit Owner authorization naming datasets, universe, compute, trial budget, and whether any training is permitted (`06` §14, `07` §4).
 
 ## 13. Relation to the baseline sanity run
 
@@ -389,9 +399,9 @@ Creating this plan authorizes nothing. Execution requires a separate, explicit O
 
 ## 14. Status and boundary
 
-- **Status:** `DRAFT — PRIORS ASSIGNED, PENDING OWNER APPROVAL` (Revision R3).
-- All `PRIOR` values are **Agent-proposed defaults**, not Owner decisions; each is Owner-overridable before execution and frozen once the run begins.
-- This document authorizes **nothing**: no dataset generation, no training, no artifact writes, no `USE_FEATURE_CONTRACT_V2` default-ON, no READY / live-hook wiring, no deployment, no trading-behavior change (`04_AUTHORIZATION_BOUNDARY.md`, `06` §2/§14).
+- **Status:** `FROZEN (experimental protocol) — OWNER-ACCEPTED 2026-11-16 for Demo preparation` (Revision R4). Inference validity remains `NOT VERIFIED — provisional` (§8.3).
+- All `PRIOR` values are **Agent-proposed defaults**, not Owner decisions; each is Owner-overridable before execution and frozen once the run begins. Freezing the *protocol* does **not** convert priors into Owner-approved values.
+- This document authorizes **nothing**: no dataset generation, no training, no artifact writes, no `USE_FEATURE_CONTRACT_V2` default-ON, no READY / live-hook wiring, no deployment, no trading-behavior change (`04_AUTHORIZATION_BOUNDARY.md`, `06` §2/§14). The Owner-provided run decisions (§12) scope the *Demo* only; they are **not** an execution authorization.
 - No document `00`–`08` and no source code is modified by this plan.
 
 ## 15. Revision log and change report
@@ -403,6 +413,7 @@ Creating this plan authorizes nothing. Execution requires a separate, explicit O
 | **R1** | Initial draft with `FROZEN / PRIOR / OPEN` convention |
 | **R2** | Targeted correction: baseline matrix, purge/embargo semantics, executable fold structure, statistical inference |
 | **R3** | Targeted review round: B0 split, timestamp-based splitting/isolation, inference & calibration detail |
+| **R4** | **Protocol freeze for Demo preparation**: Owner acceptance recorded; instrument universe and compute/training constraints fixed (§12, §15.8) |
 
 ### 15.1 Change summary (R2)
 
@@ -472,8 +483,16 @@ Creating this plan authorizes nothing. Execution requires a separate, explicit O
 1. `L_b` is a prior, **not** a validated autocorrelation length; block-bootstrap and BH-FDR outputs remain `NOT VERIFIED — provisional`.
 2. `B0b` persistence rule (`PRIOR-B1`) and calibration policy (`PRIOR-C1`) are Agent-proposed; Owner may override.
 3. `PRIOR-R1` reference set still Agent-proposed (unchanged from R2).
-4. Instrument whitelist / dataset identity remain `[PENDING DATA PROFILING SCAN]` (Doc 08 §10).
+4. Instrument **universe** resolved in R4 (§5 = 13 pairs); **dataset identity** (period, final candle, `sha256`) remains per-run evidence (Doc 08 §10).
 5. `06` `C-01` / `C-02` remain recorded in `07` §6 and are **not** edited here.
 6. `OPEN-08` / `OPEN-09` remain out of scope (Doc 11/14 / Doc 13).
 
-**Freeze note:** on Owner acceptance, Doc 09's *experimental protocol* (splits, baselines, metrics, families, calibration, reporting) can be frozen for Demo preparation. Freezing the protocol does **not** freeze the inference procedure's validity — significance claims stay `NOT VERIFIED — provisional` until the block-bootstrap procedure is itself validated.
+### 15.8 Freeze record (R4)
+
+- **Owner acceptance:** 2026-11-16 — the experimental protocol (splits, purge/embargo, baselines B0a/B0b/B1–B4, metrics, families, calibration, reporting) is **frozen** for Demo preparation.
+- **Owner-provided run decisions fixed** (§12): instrument universe = 13 pairs (`mc_data.yml` ∩ `config_bot.py` whitelist); compute budget = 4 vCPU / 24 GB; training = in-fold single fit + train-fold-only calibration, **no** global grid search.
+- **Not frozen / still open:** the inference procedure's *validity* (`L_b` is an unvalidated prior → all significance output stays `NOT VERIFIED — provisional`); `PRIOR-R1` / `PRIOR-B1` / `PRIOR-C1` remain Agent priors; `06` `C-01` / `C-02` untouched; `OPEN-08` / `OPEN-09` out of scope.
+- **Authorizes nothing.** This freeze enables *Demo preparation* only — building the harness. Running the Demo (fetching OANDA data, in-fold training, writing research outputs) requires a **separate explicit Owner execution authorization** naming dataset, universe, compute, trial budget, and permitted training (`06` §14, `07` §4).
+- Docs `00`–`08` and source code remain unchanged by this revision.
+
+**Freeze note:** freezing the protocol does **not** freeze the inference procedure's validity — significance claims stay `NOT VERIFIED — provisional` until the block-bootstrap procedure is itself validated.
