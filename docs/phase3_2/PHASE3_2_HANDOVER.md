@@ -199,8 +199,15 @@ python3 experiments/phase3_2_feature_convergence/convergence_experiment.py
 - **登记表不一致已修:** `atr_percentile` 的 matrix disposition 与 final status 现统一为 `REDEFINE`（记入 §8 scope note）。
 - **未冻结任何候选**（REDEFINE ≠ eligible；待 prerequisite 6/7/11 与 P3–P5 parity 及 owner 签署）。
 
+### Step6 — Candidate Freeze（feature 级已签署）
+
+- **owner 决策 + 签署（2026-11-16）:** **只冻结 feature 级契约**；P3–P5 记为下游 activation blocker，不豁免、不降级、不标 `NOT REQUIRED`（Revision Plan §248）。owner 已签署。
+- **Doc 05 §2:** 追加 owner freeze-scope 决策状态记录。
+- **Doc 05 §3 登记表已回填:** 33 项 in-contract 特征 → `TECHNICALLY ELIGIBLE (feature-level)`（Formula `RESOLVED (FD-02..06)`、Backend `feature_contract.py`、Warm-up `FD-09`、`P1/P2 PASS`、`PASS`、`800 bars (RC-02)`）；`vol_*` → `EXCLUDE`；`is_london`/`is_ny` → `DEFER`。
+- **Doc 05 §5 已签发:** `Status = FROZEN (feature-level)`；`Feature Contract Identity = FCV2-bffdb0005083f95e`；`Evidence bundle = 3a6ea118b5520dba`；`Owner approver = owner`，`Approval date = 2026-11-16`。
+
 ### 仍阻塞
 
-- P3–P5 parity（缺 active bundle）→ `FULL_PARITY_STATUS = NOT VERIFIED`。
-- `is_london`/`is_ny` → 待 owner 批准 session 定义。
-- Doc 05 §5 冻结字段（候选清单 / 有序 schema / `Feature Contract Identity` / 证据包 hash / owner 签署）仍为空。
+- P3–P5 parity（缺 active bundle）→ `FULL_PARITY_STATUS = NOT VERIFIED`（作为 feature 级冻结的下游 activation blocker 记录，未豁免）。
+- `is_london`/`is_ny` → 待 owner 批准 session interval/boundaries。
+- **Step7（Phase 3.3 交接）** 未开始 —— 仅交接 `TECHNICALLY ELIGIBLE` 候选做预测价值评估。
