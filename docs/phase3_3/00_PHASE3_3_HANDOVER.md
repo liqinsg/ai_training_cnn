@@ -88,11 +88,15 @@ A full statement of the boundary is in `04_AUTHORIZATION_BOUNDARY.md`.
 
 Phase 3.3 owner acceptance record:
 
-> _(placeholder — to be filled by owner)_
-
-Suggested close-out wording for the Phase 3.2 → 3.3 boundary (non-overstated):
-
-> Phase 3.2 completed through feature-level candidate freeze. P1/P2 parity is PASS. P3–P5 remain `NOT VERIFIED` and are retained as downstream activation blockers. No model activation, prediction-schema freeze, implementation authorization, or trading-behavior authorization is granted.
+> **Accepted by:** owner
+> **Acceptance date:** 2026-11-16
+> **Status:** ACCEPTED — **research handover only**
+>
+> Phase 3.2 completed through the feature-level **Step6** candidate freeze (owner-signed 2026-11-16). **Step7** — the Phase 3.3 handover of the **33 technically-eligible feature candidates**, together with their frozen technical identity and evidence — is **accepted for predictive-value research only**, as scoped in §3.
+>
+> P1/P2 parity is PASS. P3–P5 remain `NOT VERIFIED`; `FULL_PARITY_STATUS = NOT VERIFIED`. These are retained **un-waived** as downstream activation blockers.
+>
+> **Not granted by this acceptance:** final `PredictionResult` / prediction schema; model training; artifact write / overwrite / publish; `USE_FEATURE_CONTRACT_V2` default ON; live-prediction (READY / `live_hook`) wiring; deployment; trading-behavior change. Each requires a separate, explicit owner authorization.
 
 > **Governance distinction:** Phase 3.3 Owner Acceptance accepts the **research handover only**. It is **not** owner approval of any future Phase 3.3 implementation action — model training, artifact publication, and inference wiring must each be authorized separately. (The may / may-not boundary is stated in `04_AUTHORIZATION_BOUNDARY.md`.)
 
