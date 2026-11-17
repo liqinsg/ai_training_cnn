@@ -73,7 +73,8 @@
                 0.25,
                 0.125
             ],
-            "MIN_LOT": 1000,
+            "MIN_LOT_LIVE": 1,
+            "MIN_LOT_DEMO": 1000,
             "TP_ROOM_REF": 0.5,
             "TP_SCALE_MIN": 0.5,
             "TP_SCALE_MAX": 1.0,

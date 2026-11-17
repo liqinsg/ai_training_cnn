@@ -819,6 +819,7 @@ def _load_fib_index_once():
         f"ENABLED={FIB_ZONE_CFG.get('ENABLED')} MODE={FIB_ZONE_CFG.get('MODE')} "
         f"CENTER_EDGE=±{FIB_ZONE_CFG.get('CENTER_EDGE')} "
         f"LADDER={FIB_ZONE_CFG.get('SIZE_LADDER')} "
+        f"MIN_LOT={FIB_ZONE_CFG.get('MIN_LOT')} "
         f"TP_SCALE={FIB_ZONE_CFG.get('TP_SCALE_MIN')}-{FIB_ZONE_CFG.get('TP_SCALE_MAX')} "
         f"MIN_TP_PIPS={FIB_ZONE_CFG.get('MIN_TP_PIPS')}"
     )
@@ -1068,6 +1069,17 @@ if args.lots is not None:
 log.info(f"⚙️ Profile: {PROFILE_ID}")
 log.info(f"🔑 Account: {_account_source} → {OANDA_ACCOUNT_ID} [{_ENV_LABEL}]")
 log.info(f"📦 Lot size: {DEFAULT_LOT_SIZE}  (source: {_lot_source})")
+
+# ─── Fib Zone sizing floor is per-environment ───
+# The overlay only ever SHRINKS from the base lot above; this floor is the
+# lower bound of that shrink. live → 1 unit (so --lots 1 stays 1 all the way
+# down the ladder); demo → 1000 units. There is NO upper cap: the floor wins
+# if it happens to be larger than the base lot.
+_FIB_MIN_LOT_KEY = "MIN_LOT_LIVE" if LIVE_MODE else "MIN_LOT_DEMO"
+FIB_ZONE_CFG["MIN_LOT"] = FIB_ZONE_CFG.get(
+    _FIB_MIN_LOT_KEY, 1 if LIVE_MODE else 1000
+)
+log.info(f"🎚️ Fib min lot: {FIB_ZONE_CFG['MIN_LOT']} units [{_ENV_LABEL}]")
 
 _prof = get_oanda_profile("live" if LIVE_MODE else "practice")
 api = _prof["oanda_client"]

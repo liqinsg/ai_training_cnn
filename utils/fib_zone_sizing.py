@@ -3,7 +3,7 @@
 The Fib Zone is an EXECUTION overlay only. It is allowed to touch exactly three
 things:
 
-    1. position size         -> size_units
+    1. position size         -> size_units (shrink-only, floored by MIN_LOT)
     2. take-profit distance  -> tp_pips  (shrink-only, never amplifies)
     3. skip                  -> only for degenerate / breakout records
 
@@ -54,7 +54,8 @@ _CFG_FALLBACK: Dict[str, Any] = {
     "MODE": "filter",
     "CENTER_EDGE": 2,
     "SIZE_LADDER": [1.0, 0.5, 0.25, 0.125],
-    "MIN_LOT": 1000,
+    "MIN_LOT_LIVE": 1,
+    "MIN_LOT_DEMO": 1000,
     "TP_ROOM_REF": 0.5,
     "TP_SCALE_MIN": 0.5,
     "TP_SCALE_MAX": 1.0,
@@ -401,16 +402,31 @@ def compute_zone_plan(
 
         center_edge = _as_int(_cfg_get(cfg_dict, "CENTER_EDGE", 2), 2)
         ladder = _size_ladder(cfg_dict)
-        min_lot = _as_int(_cfg_get(cfg_dict, "MIN_LOT", 1000), 1000)
+        min_lot = _as_int(_cfg_get(cfg_dict, "MIN_LOT", 1), 1)
 
+        # One-sided, direction-aware ladder. The equilibrium (ratio 0.5) splits
+        # zone `CENTER_EDGE` (below) from zone `CENTER_EDGE + 1` (above):
+        #   * SELL -> full lot at / above equilibrium, then step DOWN on the
+        #     discount side (zone 2 -> 0.5, zone 1 -> 0.25, zone 0 -> 0.125).
+        #     Short the highs, cut size as price sinks into the discount.
+        #   * BUY  -> the exact mirror: full lot at / below equilibrium, then
+        #     step DOWN on the premium side (zone 3 -> 0.5, zone 4 -> 0.25,
+        #     zone 5 -> 0.125).
+        # Only the floor (MIN_LOT) can raise a size back up.
         is_short = normalized == "SELL"
+        centre_below = center_edge          # last zone at / below equilibrium
+        centre_above = center_edge + 1      # first zone above equilibrium
         if is_short:
-            late_distance = max(0, center_edge - zone_index)
+            late_distance = max(0, centre_above - zone_index)
         else:
-            late_distance = max(0, zone_index - center_edge - 1)
+            late_distance = max(0, zone_index - centre_below)
 
         size_scale = ladder[min(late_distance, len(ladder) - 1)]
         raw_units = _size_units(base_lot, size_scale)
+        # Base lot at the peak zone, stepping down away from equilibrium on the
+        # unfavourable side only. NO upper cap — the ladder (scales <= 1.0) only
+        # shrinks, and MIN_LOT is the floor (live=1, demo=1000). Whatever the
+        # floor says is what it is, even if it exceeds the base lot.
         size_units = max(raw_units, min_lot)
 
         room = ratio_pos if is_short else (1.0 - ratio_pos)
