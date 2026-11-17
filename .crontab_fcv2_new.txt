@@ -5,24 +5,31 @@
 #   OPT_USE_FEATURE_CONTRACT_V2=1
 # Legacy demo lines (fx_trade_bot.py, 34-feature) kept commented below
 # for one-step rollback. Backup: .cron_backup_*.txt
+# 2026-11-17: 所有 fx_trade_bot_v685.py 腿（含实盘腿）加上 OPT_USE_PROB_SIZING=1
+#   → 执行覆盖层改走 §14 概率路线（MC 开仓门控 + 方向确信度仓位 + regime 定仓
+#   + 目标分位带 TP）；=0 或不设则回到 fib overlay（一键回滚）。
+#   bot 运行时段保持 */15 * * * 1-5（本地）不变，休市由 market halt 探针跳过。
 # ═══════════════════════════════════════════════════════════════
 # PF-A — Trend
-*/15 * * * 1-5 cd $HOME/projects/ai_training_cnn && FX_BOT_MODEL_STEM=models_fcv2/trade_model_xgb OPT_USE_FEATURE_CONTRACT_V2=1 /usr/local/bin/jitter-run.sh -m 1 -- /home/ubuntu/miniconda3/envs/ai-sprint/bin/python fx_trade_bot_v685.py -p 1 >> logs/bot_fcv2_p1.log 2>&1
+*/15 * * * 1-5 cd $HOME/projects/ai_training_cnn && FX_BOT_MODEL_STEM=models_fcv2/trade_model_xgb OPT_USE_FEATURE_CONTRACT_V2=1 OPT_USE_PROB_SIZING=1 /usr/local/bin/jitter-run.sh -m 1 -- /home/ubuntu/miniconda3/envs/ai-sprint/bin/python fx_trade_bot_v685.py -p 1 >> logs/bot_fcv2_p1.log 2>&1
 #LEGACY-DEMO */15 * * * 1-5 cd $HOME/projects/ai_training_cnn && /usr/local/bin/jitter-run.sh -m 1 -- /home/ubuntu/miniconda3/envs/ai-sprint/bin/python fx_trade_bot.py -p 1 >> logs/bot_profile1_A.log 2>&1
 
 # PF-B — Balanced
-*/15 * * * 1-5 cd $HOME/projects/ai_training_cnn && FX_BOT_MODEL_STEM=models_fcv2/trade_model_xgb OPT_USE_FEATURE_CONTRACT_V2=1 /usr/local/bin/jitter-run.sh -m 2 -- /home/ubuntu/miniconda3/envs/ai-sprint/bin/python fx_trade_bot_v685.py -p 2 >> logs/bot_fcv2_p2.log 2>&1
+*/15 * * * 1-5 cd $HOME/projects/ai_training_cnn && FX_BOT_MODEL_STEM=models_fcv2/trade_model_xgb OPT_USE_FEATURE_CONTRACT_V2=1 OPT_USE_PROB_SIZING=1 /usr/local/bin/jitter-run.sh -m 2 -- /home/ubuntu/miniconda3/envs/ai-sprint/bin/python fx_trade_bot_v685.py -p 2 >> logs/bot_fcv2_p2.log 2>&1
+*/15 * * * 1-5 cd $HOME/projects/ai_training_cnn && FX_BOT_MODEL_STEM=models_fcv2/trade_model_xgb OPT_USE_FEATURE_CONTRACT_V2=1 OPT_USE_PROB_SIZING=1 /usr/local/bin/jitter-run.sh -m 2 -- /home/ubuntu/miniconda3/envs/ai-sprint/bin/python fx_trade_bot_v685.py --live -p 2 --lots 4 -a 3 >> logs/bot_fcv2_p2_live.log 2>&1
 #LEGACY-DEMO */15 * * * 1-5 cd $HOME/projects/ai_training_cnn && /usr/local/bin/jitter-run.sh -m 2 -- /home/ubuntu/miniconda3/envs/ai-sprint/bin/python fx_trade_bot.py -p 2 >> logs/bot_profile2_B.log 2>&1
 
 # PF-C — Conservative
-*/15 * * * 1-5 cd $HOME/projects/ai_training_cnn && FX_BOT_MODEL_STEM=models_fcv2/trade_model_xgb OPT_USE_FEATURE_CONTRACT_V2=1 /usr/local/bin/jitter-run.sh -m 3 -- /home/ubuntu/miniconda3/envs/ai-sprint/bin/python fx_trade_bot_v685.py -p 3 >> logs/bot_fcv2_p3.log 2>&1
+*/15 * * * 1-5 cd $HOME/projects/ai_training_cnn && FX_BOT_MODEL_STEM=models_fcv2/trade_model_xgb OPT_USE_FEATURE_CONTRACT_V2=1 OPT_USE_PROB_SIZING=1 /usr/local/bin/jitter-run.sh -m 3 -- /home/ubuntu/miniconda3/envs/ai-sprint/bin/python fx_trade_bot_v685.py -p 3 >> logs/bot_fcv2_p3.log 2>&1
+#*/15 * * * 1-5 cd $HOME/projects/ai_training_cnn && FX_BOT_MODEL_STEM=models_fcv2/trade_model_xgb OPT_USE_FEATURE_CONTRACT_V2=1 OPT_USE_PROB_SIZING=1 /usr/local/bin/jitter-run.sh -m 3 -- /home/ubuntu/miniconda3/envs/ai-sprint/bin/python fx_trade_bot_v685.py -p 3 --live >> logs/bot_fcv2_p3_live.log 2>&1
 #LEGACY-DEMO */15 * * * 1-5 cd $HOME/projects/ai_training_cnn && /usr/local/bin/jitter-run.sh -m 3 -- /home/ubuntu/miniconda3/envs/ai-sprint/bin/python fx_trade_bot.py -p 3 >> logs/bot_profile3_C.log 2>&1
 #*/15 * * * 1-5 cd $HOME/projects/ai_training_cnn && /usr/local/bin/jitter-run.sh -m 6 -- /home/ubuntu/miniconda3/envs/ai-sprint/bin/python fx_trade_bot_v685.py -p 3 --live -a 3 >> logs/bot_profile3_Clive.log 2>&1
 
 #*/15 * * * 1-5 /usr/local/bin/jitter-run.sh -m 3 -- $HOME/projects/ai_training_cnn/launch_dual_bot.sh
 
 # PF-D — Structure
-*/15 * * * 1-5 cd $HOME/projects/ai_training_cnn && FX_BOT_MODEL_STEM=models_fcv2/trade_model_xgb OPT_USE_FEATURE_CONTRACT_V2=1 /usr/local/bin/jitter-run.sh -m 4 -- /home/ubuntu/miniconda3/envs/ai-sprint/bin/python fx_trade_bot_v685.py -p 4 >> logs/bot_fcv2_p4.log 2>&1
+*/15 * * * 1-5 cd $HOME/projects/ai_training_cnn && FX_BOT_MODEL_STEM=models_fcv2/trade_model_xgb OPT_USE_FEATURE_CONTRACT_V2=1 OPT_USE_PROB_SIZING=1 /usr/local/bin/jitter-run.sh -m 4 -- /home/ubuntu/miniconda3/envs/ai-sprint/bin/python fx_trade_bot_v685.py -p 4 >> logs/bot_fcv2_p4.log 2>&1
+#*/15 * * * 1-5 cd $HOME/projects/ai_training_cnn && FX_BOT_MODEL_STEM=models_fcv2/trade_model_xgb OPT_USE_FEATURE_CONTRACT_V2=1 OPT_USE_PROB_SIZING=1 /usr/local/bin/jitter-run.sh -m 4 -- /home/ubuntu/miniconda3/envs/ai-sprint/bin/python fx_trade_bot_v685.py -p 4 --live >> logs/bot_fcv2_p4_live.log 2>&1
 #LEGACY-DEMO */15 * * * 1-5 cd $HOME/projects/ai_training_cnn && /usr/local/bin/jitter-run.sh -m 4 -- /home/ubuntu/miniconda3/envs/ai-sprint/bin/python fx_trade_bot.py -p 4 >> logs/bot_profile4_D.log 2>&1
 #*/15 * * * 1-5 cd $HOME/projects/ai_training_cnn && /usr/local/bin/jitter-run.sh -m 5 -- /home/ubuntu/miniconda3/envs/ai-sprint/bin/python fx_trade_bot.py -p 4 --live >> logs/bot_profile4_D_live.log 2>&1
 
@@ -37,8 +44,22 @@
 0 0 * * 1-5 cd $HOME/projects/ai_training_cnn && /home/ubuntu/miniconda3/envs/ai-sprint/bin/python retrain_model.py >> logs/bot_cron.log 2>&1
 
 
-# MC data updates                                                                                                                                                                           
-0 8 * * *  $HOME/projects/fx_monte_carlo/run_fx_mc.sh >> $HOME/projects/fx_monte_carlo/mc_cron.log 2>&1
+
+# ─── MC data updates — 每 6 小时一组，严格按伦敦时间 (00/06/12/18 London) ───────
+# 2026-11-17: 原为 `0 8 * * *`（=SG 08:00）。SG 全年 UTC+8，而伦敦有夏令时，
+#   故 08:00 只在冬令时等于伦敦 00:00，BST 期间会漂成伦敦 01:00 —— 即原调度
+#   并未真正踩伦敦 0 点。本机 cron (Debian 3.0) 不支持按时区调度（man crontab:
+#   TZ 只影响命令环境，不影响触发时刻），故改为「每小时触发 + 命令内判时」。
+#
+# 触发条件 = 伦敦小时 ∈ {00,06,12,18}  或  UTC 小时 = 00（夏令时桥接）。
+#   * 冬令时：伦敦 == UTC，UTC 00 与伦敦 00 是同一时刻 → 仍 4 次/天，不重复触发。
+#   * 夏令时：伦敦 00:00 = UTC 前一天 23:00，仅靠伦敦基准会留下当日无快照的空窗；
+#     补一次 UTC 00:00 桥接 → 5 次/天，当日快照零空窗。
+# 说明：MC 生产端与 bot 消费端的「日」标签都用 UTC（文件名 mc_D_all_pairs_<UTC日>_<UTC HHMM>.json），
+#   与恒定 UTC+8 的 SG 不同，因此这里必须按 London ∪ UTC 双基准判断。
+# 注：run_fx_mc.sh 内部用 `date +%u` 判断周一以生成周线(W)，TZ=Europe/London 令其按伦敦周几判断；
+#   伦敦周一当天每次触发都会重跑 W（幂等覆盖同名文件，仅多耗 CPU）。
+0 * * * * LH=$(env TZ=Europe/London date +\%H); UH=$(date -u +\%H); if [ "$LH" = 00 ] || [ "$LH" = 06 ] || [ "$LH" = 12 ] || [ "$LH" = 18 ] || [ "$UH" = 00 ]; then TZ=Europe/London $HOME/projects/fx_monte_carlo/run_fx_mc.sh >> $HOME/projects/fx_monte_carlo/mc_cron.log 2>&1; fi
 # gemini_ai — JPY dynamic gate demo (profile4 / practice)
 #*/15 * * * 1-5 cd $HOME/projects/gemini_ai && /usr/local/bin/jitter-run.sh -m 5 -- /home/ubuntu/miniconda3/envs/ai-sprint/bin/python scheduled_runner_v31.py --live -a 1 -p 4 >> logs/gemini_ai_p4.log 2>&1
 

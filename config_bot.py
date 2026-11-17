@@ -89,6 +89,59 @@ def merge_fib_zone_cfg(profile_id: Optional[int] = None) -> Dict:
 FIB_ZONE_CFG: Dict = merge_fib_zone_cfg()
 
 
+# ─── Prob Zone execution overlay（概率路线 · §14）───
+# 取代 fib 旧口径（zone_index → K）的仓位/TP 路线。所有旋钮集中在这一个 dict。
+# Merge order: PROB_ZONE_DEFAULTS → global.prob_zone → profile.prob_zone
+# §14.8 候选初值（待回测标定，非冻结）；REQUIRE_ALIGNED / REGIME_MIN_MULT /
+# MC_MIN_ALIGNED_PCT 为本仓库 Owner 裁定补充项。
+PROB_ZONE_DEFAULTS: Dict = {
+    "ENABLED": False,
+    # §14.3.1 方向确信度映射
+    "S0": 0.10,
+    "S1": 0.40,
+    "F_LO": 0.25,
+    # §14.3.2 风险封顶
+    "R_REF": 2.0,
+    "C_LO": 0.25,
+    # 环境相关手数下限（bot 启动时按 live/demo 选定 MIN_LOT）
+    "MIN_LOT_LIVE": 1,
+    "MIN_LOT_DEMO": 1000,
+    "MIN_TP_PIPS": 10,
+    # 开仓门控：MC 对齐概率低于该值 → skip
+    "REQUIRE_ALIGNED": True,
+    "MC_MIN_ALIGNED_PCT": 50.0,
+    # regime 定仓：consolidation/range/neutral → 最低仓
+    "REGIME_MIN_MULT": 0.25,
+    # TP：目标分位带留余量 + 上限倍数（2.0 = 最多放大到 base_tp 的 2 倍）
+    "TP_BAND_MARGIN": 0.20,
+    "TP_MAX_MULT": 2.0,
+    # §14.6 verdict 门控：strict 锁 F_LO / soft 折减 VERDICT_SOFT_MULT / off
+    "VERDICT_MODE": "soft",
+    "VERDICT_SOFT_MULT": 0.5,
+    # §14.7 默认不 skip（只缩仓）；置 True 则不可用数据直接跳过候选
+    "FAILCLOSED_SKIP": False,
+}
+
+
+def merge_prob_zone_cfg(profile_id: Optional[int] = None) -> Dict:
+    """Return the fully merged Prob Zone cfg (defaults → global → profile)."""
+    merged = dict(PROB_ZONE_DEFAULTS)
+    global_prob = GLOBAL.get("prob_zone")
+    if isinstance(global_prob, dict):
+        merged.update(global_prob)
+    if profile_id is not None:
+        profile = PROFILES.get(str(profile_id)) or {}
+        profile_prob = profile.get("prob_zone")
+        if isinstance(profile_prob, dict):
+            merged.update(profile_prob)
+    return merged
+
+
+# Module-level export (defaults + global) — cfg_bot() picks the profile-aware
+# copy out of the merged profile dict when a run starts.
+PROB_ZONE_CFG: Dict = merge_prob_zone_cfg()
+
+
 # ─── Helper: nested get ───
 def get_global(dotted_key: str):
     """Get global config by dotted path: get_global('risk_trade.SL_MIN_PIPS')"""
@@ -145,6 +198,20 @@ def build_profile_cfg(profile_id: int) -> Dict:
         ),
         "REQUIRE_STRONG_MOMENTUM": GLOBAL["monte_carlo"].get(
             "REQUIRE_STRONG_MOMENTUM", True
+        ),
+        # MC scoring — M amplification + directionless regime amplitude modulation.
+        # Weights are NOT touched; these only reshape the MC factor itself.
+        "MC_M_GAIN": p.get(
+            "MC_M_GAIN", GLOBAL["monte_carlo"].get("MC_M_GAIN", 3.0)
+        ),
+        "MC_M_DEADZONE": p.get(
+            "MC_M_DEADZONE", GLOBAL["monte_carlo"].get("MC_M_DEADZONE", 3.0)
+        ),
+        "OPT_MC_REGIME_MOD": p.get(
+            "OPT_MC_REGIME_MOD", GLOBAL["monte_carlo"].get("OPT_MC_REGIME_MOD", True)
+        ),
+        "MC_REGIME_RANGE_MULT": p.get(
+            "MC_REGIME_RANGE_MULT", GLOBAL["monte_carlo"].get("MC_REGIME_RANGE_MULT", 0.7)
         ),
         "D_GATE_ENABLED": p["D_GATE_ENABLED"],
         "D_GATE_BUFFER_PCT": p.get("D_GATE_BUFFER_PCT", d["D_GATE_BUFFER_PCT"]),
@@ -217,6 +284,8 @@ def build_profile_cfg(profile_id: int) -> Dict:
         ),
         # fib_zone execution overlay — defaults → global.fib_zone → profile.fib_zone
         "FIB_ZONE_CFG": merge_fib_zone_cfg(profile_id),
+        # prob_zone execution overlay (§14 概率路线) — defaults → global → profile
+        "PROB_ZONE_CFG": merge_prob_zone_cfg(profile_id),
     }
     return cfg
 

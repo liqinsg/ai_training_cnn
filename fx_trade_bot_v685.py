@@ -7,6 +7,7 @@
 import contextlib
 import sys
 import os
+import time
 import subprocess
 
 from utils.logging_utils import get_logger
@@ -64,6 +65,7 @@ from fx_trade_bot_utils_v1 import (
     PositionStatus,
 )
 from fx_trade_bot_ml import ensure_model
+from oandapyV20.endpoints.pricing import PricingInfo
 
 # from portfolio_balance import balance_from_config
 from sl_zone_hierarchy import compute_sl_zone
@@ -72,6 +74,11 @@ from utils.fib_zone_sizing import (
     format_zone_audit,
     load_fib_index,
     to_mc_key,
+)
+from utils.prob_zone_sizing import (
+    compute_prob_plan,
+    format_prob_audit,
+    load_prob_index,
 )
 from config_oanda import (
     # api,
@@ -598,6 +605,52 @@ def market_reopen_hint(now_utc=None):
     return why, reopen, day
 
 
+# // FIX-2026-11-17: OANDA tradeable probe (v685-only, does NOT touch
+# utils/trading_core.py). forex_market_closed() above is a PURE CLOCK test
+# (Europe/London weekday+hour): it cannot see weekday holidays, exchange halts,
+# or the Fri/Sun 21:00-22:00 London open/close boundary, so it both stops
+# sessions that are actually open and misses weekday halts. Ask OANDA directly:
+# PricingInfo reports tradeable=True/False per instrument. The probe is
+# authoritative; when the probe itself FAILS (network / transient 403 burst) we
+# return None so the caller falls back to the clock — an intermittent error must
+# never be reported as "closed".
+_MARKET_PROBE_INSTRUMENT = (os.getenv("MARKET_PROBE", "EUR_USD") or "EUR_USD").strip()
+
+
+def probe_market_open(api, account_id, instrument=None, attempts=2, base_delay=0.6):
+    """Return True (tradeable), False (halted/closed) or None (probe failed).
+
+    None means "could not tell" — callers MUST fall back to the clock guard and
+    must never treat None as closed.
+    """
+    inst = instrument or _MARKET_PROBE_INSTRUMENT
+    for attempt in range(1, attempts + 1):
+        try:
+            r = api.request(
+                PricingInfo(accountID=account_id, params={"instruments": inst})
+            )
+        except Exception as e:  # noqa: BLE001 — return None below on final attempt
+            code = getattr(e, "code", None)
+            msg = getattr(e, "msg", None) or str(e)
+            if attempt < attempts:
+                log.warning(
+                    f"⚠️ Market probe [{inst}] attempt {attempt}/{attempts} "
+                    f"(status={code}): {str(msg)[:160]} — retrying in {base_delay:.1f}s"
+                )
+                time.sleep(base_delay)
+            else:
+                log.error(
+                    f"❌ Market probe [{inst}] failed after {attempts} attempts "
+                    f"(status={code}): {str(msg)[:200]}"
+                )
+        else:
+            prices = r.get("prices") or []
+            if not prices:
+                return False
+            return bool(prices[0].get("tradeable", False))
+    return None
+
+
 def resolve_weekly_ema100(cached_ema, filter_enabled):
     """Return the Weekly EMA100 level to filter on, or None to skip that filter.
 
@@ -826,6 +879,49 @@ def _load_fib_index_once():
     return fib_index
 
 
+# ─── PROB ZONE EXECUTION OVERLAY (§14 概率路线) ──────────────────────────────
+# 与 fib overlay 互斥：USE_PROB_SIZING 打开时走概率路线（§14 仓位 + MC 开仓门控
+# + regime 定仓 + 目标分位带 TP），关闭时沿用 fib overlay。两者都只允许改
+# size_units / tp_pips / skip，绝不触碰方向、打分、SL 或 MC 融合。
+# 分辨率顺序：env OPT_USE_PROB_SIZING > config OPT_USE_PROB_SIZING > prob_zone.ENABLED
+PROB_ZONE_CFG = cfg_bot("PROB_ZONE_CFG", config_bot.PROB_ZONE_DEFAULTS)
+PROB_ZONE_TF = "D"
+
+
+def _load_prob_index_once():
+    """加载一次 MC 快照 ``results`` 索引（每轮 1 次文件 IO，绝不每对重读）。
+
+    概率路线关闭 / 数据不可用 → ``{}``，run 退回 fib（或 v685）仓位与 TP。
+    """
+    if not USE_PROB_SIZING:
+        log.info(
+            "🎲 PROB-ZONE: DISABLED (OPT_USE_PROB_SIZING=0) — "
+            "fib / v685 sizing+TP used unchanged"
+        )
+        return {}
+    prob_index = load_prob_index(TODAY_STR, PROB_ZONE_TF)
+    if not prob_index:
+        log.warning(
+            f"⚠️ PROB-ZONE: no usable MC snapshot for {TODAY_STR} "
+            f"(tf={PROB_ZONE_TF}) — overlay INACTIVE, fib / v685 fallback"
+        )
+        return {}
+    log.info(
+        f"🎲 PROB-ZONE: loaded {len(prob_index)} pair records from MC snapshot "
+        f"({TODAY_STR}, tf={PROB_ZONE_TF}) | "
+        f"S0={PROB_ZONE_CFG.get('S0')} S1={PROB_ZONE_CFG.get('S1')} "
+        f"F_LO={PROB_ZONE_CFG.get('F_LO')} R_REF={PROB_ZONE_CFG.get('R_REF')} "
+        f"C_LO={PROB_ZONE_CFG.get('C_LO')} MIN_LOT={PROB_ZONE_CFG.get('MIN_LOT')} "
+        f"MIN_ALIGNED={PROB_ZONE_CFG.get('MC_MIN_ALIGNED_PCT')} "
+        f"REGIME_MIN_MULT={PROB_ZONE_CFG.get('REGIME_MIN_MULT')} "
+        f"VERDICT_MODE={PROB_ZONE_CFG.get('VERDICT_MODE')} "
+        f"VERDICT_SOFT_MULT={PROB_ZONE_CFG.get('VERDICT_SOFT_MULT')} "
+        f"TP_MARGIN={PROB_ZONE_CFG.get('TP_BAND_MARGIN')} "
+        f"TP_MAX_MULT={PROB_ZONE_CFG.get('TP_MAX_MULT')}"
+    )
+    return prob_index
+
+
 def cfg_mod(name, default):  # [OPT-12] was cfg(): shadowed `cfg = C.get_profile(...)`
     return getattr(config, name, default)
 
@@ -836,6 +932,12 @@ def _opt(name, default):
     if raw is not None:
         return raw.strip().lower() in ("1", "true", "yes", "on")
     return bool(cfg_bot(f"OPT_{name}", default))
+
+
+# Prob-route overlay master switch. Default OFF (prob_zone.ENABLED=false) so the
+# §14 route is opt-in: enable with OPT_USE_PROB_SIZING=1 (env) or
+# OPT_USE_PROB_SIZING=true / prob_zone.ENABLED=true in config_profile.json.
+USE_PROB_SIZING = _opt("USE_PROB_SIZING", PROB_ZONE_CFG.get("ENABLED", False))
 
 
 # ─── INIT FOLDERS & LOGGING ──────────────────────────────────────────────────
@@ -892,6 +994,18 @@ MC_BULLISH_THRESHOLD = cfg_bot("MC_BULLISH_THRESHOLD_PCT", 55.0)
 # pushed the 3-voter consensus short — a structural bearish bias.
 XGB_BEARISH_THRESHOLD = cfg_bot("XGB_BEARISH_THRESHOLD", 1.0 - XGB_BULLISH_THRESHOLD)
 MC_BEARISH_THRESHOLD = cfg_bot("MC_BEARISH_THRESHOLD_PCT", 100.0 - MC_BULLISH_THRESHOLD)
+# [MC-SCORE] MC factor amplification + regime amplitude modulation.
+# M is a direction-aligned probability living in ~[39, 61], so on its own it
+# moves FINAL by only ~1-2 pts (W_M=0.08). We amplify it around the 50 midline
+# (dead-zone ±MC_M_DEADZONE suppresses noise) and then let the DIRECTIONLESS MC
+# regime text scale its magnitude: momentum/overbought/oversold (edge present)
+# -> ×1.0; consolidation/neutral (no edge) -> ×MC_REGIME_RANGE_MULT. The weight
+# W_M itself is NOT changed. Set OPT_MC_REGIME_MOD=0 to disable only the regime
+# part; set MC_M_GAIN=1.0 to restore the legacy unamplified M.
+MC_M_GAIN = float(cfg_bot("MC_M_GAIN", 3.0))
+MC_M_DEADZONE = float(cfg_bot("MC_M_DEADZONE", 3.0))
+MC_REGIME_MOD = _opt("MC_REGIME_MOD", True)
+MC_REGIME_RANGE_MULT = float(cfg_bot("MC_REGIME_RANGE_MULT", 0.7))
 ADX_SCALE_FACTOR = cfg_bot("ADX_SCALE_FACTOR", 2.0)
 ADX_FLOOR_ENABLED = cfg_bot("ADX_FLOOR_ENABLED", True)
 ADX_MIN_SCORE = cfg_bot("ADX_MIN_SCORE", 20.0)
@@ -1076,10 +1190,15 @@ log.info(f"📦 Lot size: {DEFAULT_LOT_SIZE}  (source: {_lot_source})")
 # down the ladder); demo → 1000 units. There is NO upper cap: the floor wins
 # if it happens to be larger than the base lot.
 _FIB_MIN_LOT_KEY = "MIN_LOT_LIVE" if LIVE_MODE else "MIN_LOT_DEMO"
-FIB_ZONE_CFG["MIN_LOT"] = FIB_ZONE_CFG.get(
-    _FIB_MIN_LOT_KEY, 1 if LIVE_MODE else 1000
-)
+FIB_ZONE_CFG["MIN_LOT"] = FIB_ZONE_CFG.get(_FIB_MIN_LOT_KEY, 1 if LIVE_MODE else 1000)
 log.info(f"🎚️ Fib min lot: {FIB_ZONE_CFG['MIN_LOT']} units [{_ENV_LABEL}]")
+
+# Same per-environment floor for the §14 prob overlay (live → 1, demo → 1000).
+PROB_ZONE_CFG["MIN_LOT"] = PROB_ZONE_CFG.get(_FIB_MIN_LOT_KEY, 1 if LIVE_MODE else 1000)
+log.info(
+    f"🎚️ Prob min lot: {PROB_ZONE_CFG['MIN_LOT']} units [{_ENV_LABEL}] | "
+    f"prob-route overlay {'ON' if USE_PROB_SIZING else 'OFF (fib overlay active)'}"
+)
 
 _prof = get_oanda_profile("live" if LIVE_MODE else "practice")
 api = _prof["oanda_client"]
@@ -1209,7 +1328,9 @@ if ALLOWED_PAIRS is not None:
         f"ALLOWED: {ALLOWED_PAIRS}"
     )
 else:
-    log.info("ℹ️  No ALLOWED_PAIRS set — full 8-pair pool enabled (no whitelist filter)")
+    log.info(
+        "ℹ️  No ALLOWED_PAIRS set — full 8-pair pool enabled (no whitelist filter)"
+    )
 
 MC_MAX_AGE_HOURS = cfg_bot("MC_MAX_AGE_HOURS", 24)
 SIMULATIONS = cfg_bot("MC_SIMULATIONS", 5000)
@@ -1304,9 +1425,7 @@ def _build_pair_features(raw):
         # so those paths work unchanged. The ML path selects columns BY NAME
         # (predict_p_up -> _build_matrix -> X[feature_list]), so the extra columns
         # are ignored there — the 33-feature vector is unchanged.
-        ohlcv = raw.reindex(feats.index)[
-            ["Open", "High", "Low", "Close", "Volume"]
-        ]
+        ohlcv = raw.reindex(feats.index)[["Open", "High", "Low", "Close", "Volume"]]
         return feats.join(ohlcv)
     return feat_engine.build(raw)
 
@@ -1544,7 +1663,9 @@ def build_top_pairs(
             if not oanda_inst:
                 rejected.append(f"{candidate['raw']} → {pair}: missing OANDA mapping")
             elif pair in seen:
-                rejected.append(f"{candidate['raw']} → {pair}: duplicate normalized pair")
+                rejected.append(
+                    f"{candidate['raw']} → {pair}: duplicate normalized pair"
+                )
             else:
                 seen.add(pair)
                 mapping_hits.append((pair, oanda_inst))
@@ -1575,6 +1696,27 @@ def build_top_pairs(
     return selected, candidates
 
 
+def _mc_regime_factor(regime_str: str) -> float:
+    """Directionless amplitude modifier derived from the MC regime text.
+
+    The regime hint carries NO sign — it only tells us whether price is in a
+    trending/momentum state (an edge is present) or a consolidation/neutral
+    state (no edge). So it scales M's magnitude rather than voting a direction:
+    momentum / overbought / oversold -> 1.0 (keep full amplitude);
+    consolidation / range / neutral  -> MC_REGIME_RANGE_MULT (attenuate).
+    Unrecognised text (incl. P2's fused label) also returns 1.0 — we never
+    invent attenuation we cannot justify from the hint.
+    """
+    if not MC_REGIME_MOD:
+        return 1.0
+    s = (regime_str or "").upper()
+    if "MOMENTUM" in s or "OVERBOUGHT" in s or "OVERSOLD" in s:
+        return 1.0
+    if "CONSOLIDATION" in s or "RANGE" in s or "NEUTRAL" in s:
+        return MC_REGIME_RANGE_MULT
+    return 1.0
+
+
 def calc_weighted_score(
     pair: str,
     gap: float,
@@ -1583,6 +1725,7 @@ def calc_weighted_score(
     xgb_prob: float,
     mc_pct_up: float,
     closes=None,
+    regime_str: str = "",
 ):
     MIN_FINAL_SCORE = min_conv
     strength_dir = (
@@ -1711,7 +1854,18 @@ def calc_weighted_score(
     # contradicts a SELL consensus must not still hand the short a full MC score
     # (the old direction-blind form systematically over-credited shorts).
     _mc_aligned = mc_pct_up if direction == "BUY" else (100.0 - mc_pct_up)
-    M = max(0.0, min(100.0, _mc_aligned))
+    # [MC-SCORE] The raw aligned P_UP lives in ~[39, 61], so M barely moves
+    # FINAL. Amplify around the 50 midline (a ±MC_M_DEADZONE dead-zone keeps
+    # near-neutral readings pinned at 50 instead of amplifying noise), then
+    # scale by the directionless regime hint. W_M is deliberately untouched.
+    _mc_dev = _mc_aligned - 50.0
+    if abs(_mc_dev) <= MC_M_DEADZONE:
+        _mc_amp = 50.0
+    else:
+        _mc_dev_eff = _mc_dev - (MC_M_DEADZONE if _mc_dev > 0 else -MC_M_DEADZONE)
+        _mc_amp = 50.0 + _mc_dev_eff * MC_M_GAIN
+    _rg_factor = _mc_regime_factor(regime_str)
+    M = max(0.0, min(100.0, _mc_amp * _rg_factor))
 
     G = 0.0
     if W_G > 0.0 and closes is not None and len(closes) >= 55:
@@ -1726,9 +1880,7 @@ def calc_weighted_score(
         _trend_dir = "BUY" if _align > 0 else ("SELL" if _align < 0 else "NEUTRAL")
         _aligned = _trend_dir == direction
         _raw = (
-            abs(_diff) / TREND_G_FULL_SCALE * 100.0
-            if TREND_G_FULL_SCALE > 0
-            else 0.0
+            abs(_diff) / TREND_G_FULL_SCALE * 100.0 if TREND_G_FULL_SCALE > 0 else 0.0
         )
         _raw = max(0.0, min(100.0, _raw))
         G = _raw if _aligned else _raw * 0.2
@@ -1745,6 +1897,8 @@ def calc_weighted_score(
         "A": round(A, 1),
         "X": round(X, 1),
         "M": round(M, 1),
+        "M_RAW": round(max(0.0, min(100.0, _mc_amp)), 1),
+        "RG": round(_rg_factor, 2),
         "FINAL": round(FINAL, 1),
         "PASS": FINAL >= MIN_FINAL_SCORE,
         "THRESHOLD": round(MIN_FINAL_SCORE, 1),
@@ -1768,16 +1922,34 @@ def main():
     log.info(f"🔑 OANDA Account ID: {OANDA_ACCOUNT_ID}")
 
     # // FIX-2026-10-10: report the reason + next open instead of a silent return.
-    if forex_market_closed():
+    # // FIX-2026-11-17: ask OANDA whether the instrument is tradeable FIRST;
+    # only fall back to the pure-clock guard when the probe cannot tell (None).
+    _closed = None
+    if _opt("MARKET_PROBE", True):
+        _probe = probe_market_open(api, OANDA_ACCOUNT_ID)
+        if _probe is not None:
+            _closed = not _probe
+            _gate_src = (
+                "OANDA probe: tradeable"
+                if _probe
+                else "OANDA probe: NOT tradeable (halt)"
+            )
+    if _closed is None:
+        # probe disabled, or probe failed → clock guard (never fail closed here)
+        _closed = forex_market_closed()
+        _gate_src = "clock guard (no probe / probe failed)"
+    log.info(f"🕒 MARKET GATE: {'CLOSED' if _closed else 'OPEN'} — {_gate_src}")
+
+    if _closed:
         if args.ignore_market_closed:
             log.warning(
-                "📅 Market is CLOSED (weekend/holiday) but --ignore-market-closed "
+                f"📅 Market is CLOSED ({_gate_src}) but --ignore-market-closed "
                 "was given → continuing full pipeline (debug mode)."
             )
         else:
             why, reopen, day = market_reopen_hint()
             log.info(
-                f"📅 Market is CLOSED ({why}) → exits. "
+                f"📅 Market is CLOSED ({why} | {_gate_src}) → exits. "
                 f"Reopens: {day} 21:00 UTC "
                 f"(= {reopen.strftime('%Y-%m-%d %H:%M')} UTC). "
                 f"Use --ignore-market-closed to run the pipeline anyway."
@@ -1860,7 +2032,9 @@ def main():
 
     if _skip_signal_generation:
         # ── Minimal Step 6 snapshot so Step 5 (Dynamic Exit) has pair_data ──
-        log.info("⏭️ MAX_OPEN reached — skipping Steps 1-4 (Strength/MC/D-Gate/Scoring)")
+        log.info(
+            "⏭️ MAX_OPEN reached — skipping Steps 1-4 (Strength/MC/D-Gate/Scoring)"
+        )
         pair_data_minimal = {}
         for _p in ALL_PAIRS:
             _o = YAHOO_TO_OANDA.get(_p)
@@ -2443,8 +2617,16 @@ def main():
     )
 
     def _revise_owned_position(
-        pair, oanda_inst, owned_trade, open_side, entry, current,
-        pip_size_val, decimals, profit_pips, atr_val,
+        pair,
+        oanda_inst,
+        owned_trade,
+        open_side,
+        entry,
+        current,
+        pip_size_val,
+        decimals,
+        profit_pips,
+        atr_val,
         min_profit_pips_for_sl=15.0,
         atr_tp_mult=3.0,
     ):
@@ -2487,8 +2669,11 @@ def main():
                 log.warning(f"⚠️ {pair}: compute_sl_zone failed — skip SL revise: {_e}")
 
         new_tp_by_atr = round(
-            current + atr_tp_mult * atr_val if open_side == "long"
-            else current - atr_tp_mult * atr_val,
+            (
+                current + atr_tp_mult * atr_val
+                if open_side == "long"
+                else current - atr_tp_mult * atr_val
+            ),
             decimals,
         )
         if open_side == "long":
@@ -2508,7 +2693,9 @@ def main():
         if not sl_changed and not tp_changed:
             return
 
-        parts = [f"🔧 REVISE {pair} #{trade_id} {open_side.upper()} profit={profit_pips:.1f}p"]
+        parts = [
+            f"🔧 REVISE {pair} #{trade_id} {open_side.upper()} profit={profit_pips:.1f}p"
+        ]
         if sl_changed:
             old_sl_s = "NONE" if curr_sl is None else f"{curr_sl:.{decimals}f}"
             parts.append(f"SL: {old_sl_s} → {revised_sl:.{decimals}f}")
@@ -2519,7 +2706,10 @@ def main():
 
         if sl_changed and revised_sl is not None:
             update_order_sl(
-                api, OANDA_ACCOUNT_ID, trade_id, oanda_inst,
+                api,
+                OANDA_ACCOUNT_ID,
+                trade_id,
+                oanda_inst,
                 revised_sl,
                 send_telegram=send_telegram_message,
                 dry_run=DRY_RUN_MODE,
@@ -2529,7 +2719,10 @@ def main():
             )
         if tp_changed and revised_tp is not None:
             update_order_tp(
-                api, OANDA_ACCOUNT_ID, trade_id, oanda_inst,
+                api,
+                OANDA_ACCOUNT_ID,
+                trade_id,
+                oanda_inst,
                 revised_tp,
                 send_telegram=send_telegram_message,
                 dry_run=DRY_RUN_MODE,
@@ -2565,6 +2758,8 @@ def main():
     # ─── Fib Zone overlay: load the MC+Fib bundle ONCE for the whole run ─────
     # One file read via interface.py; every pair below reads from this index.
     fib_index = _load_fib_index_once()
+    # ─── Prob Zone overlay (§14): same single-read discipline ────────────────
+    prob_index = _load_prob_index_once()
 
     for pair in signal_eval_pairs:
         if pair not in pair_data:
@@ -2615,16 +2810,15 @@ def main():
             _dec = 3 if "JPY" in pair else 5
             _pip = pip_cache[pair]
             _profit_pips = (
-                (current - _entry) / _pip if _open_side == "long"
+                (current - _entry) / _pip
+                if _open_side == "long"
                 else (_entry - current) / _pip
             )
-            _strength_flip = (
-                (_open_side == "long" and gap < -0.5)
-                or (_open_side == "short" and gap > 0.5)
+            _strength_flip = (_open_side == "long" and gap < -0.5) or (
+                _open_side == "short" and gap > 0.5
             )
-            _mc_flip = (
-                (_open_side == "long" and mc_pct_up_now < 45)
-                or (_open_side == "short" and mc_pct_up_now > 55)
+            _mc_flip = (_open_side == "long" and mc_pct_up_now < 45) or (
+                _open_side == "short" and mc_pct_up_now > 55
             )
             _flip_count = sum([_strength_flip, _mc_flip])
 
@@ -2634,21 +2828,33 @@ def main():
                     f"gap={gap:+.2f}, mc_pct_up={mc_pct_up_now:.0f}%, "
                     f"profit={_profit_pips:.1f}p"
                 )
-                log.warning(f"🔄 QUICK-FLIP EXIT {pair} ({_open_side.upper()}): {_detail}")
+                log.warning(
+                    f"🔄 QUICK-FLIP EXIT {pair} ({_open_side.upper()}): {_detail}"
+                )
                 if close_wrap(oanda, reason_code="DIRECTION_FLIP", detail_msg=_detail):
                     owned_trade = None
                     owned_trade_by_oanda[oanda] = None
                     open_pos_by_oanda[oanda] = False
                     open_pos_count = max(0, open_pos_count - 1)
                     trade_lines[pair] = f"📤 {pair} quick-flip\n└─ {_detail}"
-                    log.info(f"✅ {pair}: quick-flip closed — proceeding to re-entry eval")
+                    log.info(
+                        f"✅ {pair}: quick-flip closed — proceeding to re-entry eval"
+                    )
                 else:
                     log.error(f"❌ {pair}: quick-flip close FAILED — keeping position")
 
             if owned_trade is not None:
                 _revise_owned_position(
-                    pair, oanda, owned_trade, _open_side, _entry, current,
-                    _pip, _dec, _profit_pips, atr_val,
+                    pair,
+                    oanda,
+                    owned_trade,
+                    _open_side,
+                    _entry,
+                    current,
+                    _pip,
+                    _dec,
+                    _profit_pips,
+                    atr_val,
                 )
                 continue
 
@@ -2700,8 +2906,16 @@ def main():
             )
 
         _df_closes = pair_data[pair]["df"]["Close"].dropna().reset_index(drop=True)
+        _regime_str = mc_cache.get(pair, {}).get("regime", "")
         direction, w = calc_weighted_score(
-            pair, gap, rsi_val, adx_val, prob_raw, mc_pct_up, closes=_df_closes
+            pair,
+            gap,
+            rsi_val,
+            adx_val,
+            prob_raw,
+            mc_pct_up,
+            closes=_df_closes,
+            regime_str=_regime_str,
         )
         if direction and w:
             tag = "✅" if w["PASS"] else "❌"
@@ -2713,6 +2927,11 @@ def main():
                 f"A={w['A']:5.1f}×{W_A:.2f}={w['A']*W_A:4.1f}  "
                 f"X={w['X']:5.1f}×{W_X:.2f}={w['X']*W_X:4.1f}  "
                 f"M={w['M']:5.1f}×{W_M:.2f}={w['M']*W_M:4.1f}  | FINAL={w['FINAL']:.2f}"
+            )
+            log.info(
+                f"🎛️ MC-DIAG {pair}: P_UP={mc_pct_up:.1f}% "
+                f"| M_raw={w['M_RAW']:.1f} RG_factor={w['RG']:.2f} → M={w['M']:.1f} "
+                f"| regime={_regime_str or '?'}"
             )
 
         if not (direction and w and w["PASS"]):
@@ -2778,7 +2997,9 @@ def main():
                     open_pos_by_oanda[oanda] = False
                     owned_trade_by_oanda[oanda] = None
                     open_pos_count = max(0, open_pos_count - 1)
-                    trade_lines[pair] = f"📤 {pair} closed on opposite signal\n└─ {close_detail}"
+                    trade_lines[pair] = (
+                        f"📤 {pair} closed on opposite signal\n└─ {close_detail}"
+                    )
                     log.info(
                         f"✅ {pair}: owned position closed on opposite signal — same-cycle re-entry skipped"
                     )
@@ -2792,28 +3013,52 @@ def main():
             continue
 
         dec = 3 if "JPY" in pair else 5
-        # ─── FIB ZONE OVERLAY ────────────────────────────────────────────────
+        # ─── SIZING / TP OVERLAY ─────────────────────────────────────────────
         # Runs AFTER direction/score/D-Gate/trend-TP are final and BEFORE SL/TP
-        # prices are built. It may only change size_units + tp_pips (or skip on
-        # a degenerate record); SL stays 100% compute_sl_zone()'s output.
-        fib_rec = fib_index.get(to_mc_key(pair), {}) if fib_index else {}
-        plan = compute_zone_plan(
-            rec=fib_rec,
-            direction=direction,
-            cfg=FIB_ZONE_CFG,
-            base_lot=DEFAULT_LOT_SIZE,
-            base_tp_pips=smart_tp_pips,
-        )
-        audit_line = format_zone_audit(
-            pair, direction, plan, DEFAULT_LOT_SIZE, smart_tp_pips
-        )
-        log.info(f"🧭 FIB-ZONE {pair} {direction} | {audit_line}")
-        if plan["skip"]:
-            log.info(
-                f"⏭️ FIB-ZONE SKIP {pair} {direction} — reason={plan['reason']} "
-                f"zone={plan['zone_index']} — NO ORDER"
+        # prices are built. It may only change size_units + tp_pips (or skip);
+        # SL stays 100% compute_sl_zone()'s output.
+        #   * USE_PROB_SIZING=1 → §14 概率路线（MC 开仓门控 + 方向确信度仓位 +
+        #     regime 定仓 + 目标分位带 TP）
+        #   * USE_PROB_SIZING=0 → fib overlay（旧口径，保留回滚）
+        if USE_PROB_SIZING:
+            prob_rec = prob_index.get(to_mc_key(pair), {}) if prob_index else {}
+            plan = compute_prob_plan(
+                rec=prob_rec,
+                direction=direction,
+                cfg=PROB_ZONE_CFG,
+                base_lot=DEFAULT_LOT_SIZE,
+                base_tp_pips=smart_tp_pips,
+                current_price=current,
+                pip_value=pip_cache[pair],
+                regime=_regime_str,
             )
-            continue
+            audit_line = format_prob_audit(pair, direction, plan)
+            log.info(f"🎲 PROB-ZONE {pair} {direction} | {audit_line}")
+            if plan["skip"]:
+                log.info(
+                    f"⏭️ PROB-ZONE SKIP {pair} {direction} — reason={plan['reason']} "
+                    f"P_UP={plan['p_up']} aligned={plan['aligned']} — NO ORDER"
+                )
+                continue
+        else:
+            fib_rec = fib_index.get(to_mc_key(pair), {}) if fib_index else {}
+            plan = compute_zone_plan(
+                rec=fib_rec,
+                direction=direction,
+                cfg=FIB_ZONE_CFG,
+                base_lot=DEFAULT_LOT_SIZE,
+                base_tp_pips=smart_tp_pips,
+            )
+            audit_line = format_zone_audit(
+                pair, direction, plan, DEFAULT_LOT_SIZE, smart_tp_pips
+            )
+            log.info(f"🧭 FIB-ZONE {pair} {direction} | {audit_line}")
+            if plan["skip"]:
+                log.info(
+                    f"⏭️ FIB-ZONE SKIP {pair} {direction} — reason={plan['reason']} "
+                    f"zone={plan['zone_index']} — NO ORDER"
+                )
+                continue
         tp_pips_eff = plan["tp_pips"]
         size_units = plan["size_units"]
         _zone_audit[pair] = audit_line
@@ -2849,7 +3094,9 @@ def main():
         _p_up_true = getattr(sig, "model_p_up", None) if sig else None
         xgb_score = _p_up_true if _p_up_true is not None else 0.0
         xgb_label = (
-            f"{xgb_score:.2f}" if _p_up_true is not None else f"{xgb_score:.2f}(SYNTHETIC)"
+            f"{xgb_score:.2f}"
+            if _p_up_true is not None
+            else f"{xgb_score:.2f}(SYNTHETIC)"
         )
         _open_reasons[pair] = (
             f"STRENGTH_GAP={abs(gap):.2f} | XGB_SCORE={xgb_label} | "

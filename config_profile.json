@@ -45,7 +45,11 @@
             "DAILY_FORECAST": 5,
             "MC_BAND_PCT": 90,
             "MC_SIGNIFICANT_PCT": 60,
-            "MC_MOMENTUM_BAND": 0.001
+            "MC_MOMENTUM_BAND": 0.001,
+            "MC_M_GAIN": 3.0,
+            "MC_M_DEADZONE": 3.0,
+            "OPT_MC_REGIME_MOD": true,
+            "MC_REGIME_RANGE_MULT": 0.7
         },
         "risk_trade": {
             "DEFAULT_LOT_SIZE": 10000,
@@ -81,6 +85,25 @@
             "MIN_TP_PIPS": 10,
             "SKIP_WHEN_DEGENERATE": true,
             "SKIP_BREAKOUT": false
+        },
+        "prob_zone": {
+            "ENABLED": true,
+            "S0": 0.1,
+            "S1": 0.4,
+            "F_LO": 0.25,
+            "R_REF": 2.0,
+            "C_LO": 0.25,
+            "MIN_LOT_LIVE": 1,
+            "MIN_LOT_DEMO": 1000,
+            "MIN_TP_PIPS": 10,
+            "REQUIRE_ALIGNED": true,
+            "MC_MIN_ALIGNED_PCT": 50.0,
+            "REGIME_MIN_MULT": 0.25,
+            "TP_BAND_MARGIN": 0.2,
+            "TP_MAX_MULT": 2.0,
+            "VERDICT_MODE": "soft",
+            "VERDICT_SOFT_MULT": 0.5,
+            "FAILCLOSED_SKIP": false
         },
         "tp_trailing": {
             "DYNAMIC_TP": false,
