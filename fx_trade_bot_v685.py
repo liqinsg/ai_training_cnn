@@ -56,6 +56,7 @@ from fx_trade_bot_utils_v1 import (
     update_order_tp,
     update_order_sl,
     record_cooldown_from_closed_trades,
+    audit_owned_closed_trades,
     open_oanda_order_simple as open_oanda_order,
     DynamicPositionManager,
     load_mc_legacy,
@@ -80,6 +81,8 @@ from utils.prob_zone_sizing import (
     format_prob_audit,
     load_prob_index,
 )
+from utils.risk_parity_sizing import compute_risk_parity, log_sizing_shadow
+from utils.wide_range_sizing import compute_atr_ratio, log_wide_range_shadow
 from config_oanda import (
     # api,
     get_oanda_profile,
@@ -278,6 +281,7 @@ print("=" * 50)
 _ENV_SUFFIX = "live" if getattr(args, "live", False) else "demo"
 COOLDOWN_FILE = BASE_DIR / f"cooldown_{PROFILE_NAME}_{_ENV_SUFFIX}.json"
 RESULTS_DIR = BASE_DIR / f"daily_results_{PROFILE_NAME}"
+LOGS_DIR = BASE_DIR / "logs"
 
 P = config_bot.get_profile(profile_id)
 
@@ -1091,6 +1095,53 @@ MAX_SIMULTANEOUS_TRADES = MAX_OPEN  # from unified PROFILE (config_bot.PROFILES)
 TRAILING_TP = cfg_bot("TRAILING_TP", False)
 TRAILING_SL = cfg_bot("TRAILING_SL", False)
 DYNAMIC_TP = cfg_bot("DYNAMIC_TP", False)
+
+# ─── 持仓期自动改写 SL/TP（_revise_owned_position）总开关 ─────────────────────
+# 该路径在浮盈 ≥15p 时把 SL 上移（结构位，上限夹到保本 entry±1pip），并把 TP 外扩到
+# 现价 ±3×ATR —— 即目前唯一在跑的「跟随/保本」类退出逻辑。
+# Owner 裁定（2026-11-18）默认【关闭】：硬抗（固定 SL/TP + 时间到期/方向翻转）更能
+# 抵御区间震荡；跟踪止损另立课题，以后再评估。可逆：env OPT_REVISE_OWNED_POSITION=1
+# 或 config_profile.json 的 OPT_REVISE_OWNED_POSITION=true 即恢复。
+REVISE_OWNED_POSITION = _opt("REVISE_OWNED_POSITION", False)
+if not REVISE_OWNED_POSITION:
+    log.info(
+        "🛑 REVISE-OWNED-POSITION: DISABLED — 持仓期不再自动上移 SL / 外扩 TP "
+        "(固定 SL/TP 硬抗；恢复请设 OPT_REVISE_OWNED_POSITION=1)"
+    )
+
+# ─── L2 风险定额仓位（risk-parity sizing）总开关 ──────────────────────────────
+# units ∝ 风险预算 / SL_pips：把「结构 SL 比 ATR 应然更宽」的笔数按比例缩量，使每笔
+# SL 的美元亏损大致定额（削尾）。只缩不放大（rp_mult ∈ [RP_F_LO, 1.0]），与 prob
+# overlay 的 size_units 相乘互补。Owner 拍板（2026-11-18）先走【影子】：
+#   False（默认）= 只落盘 logs/sizing_shadow_*.jsonl，不改任何下单决策
+#   True          = 把 size_units 换成 units_l2（生效）
+# 详见 docs/NEXT_DEV_PLAN_20261117.md §2.1，可逆：OPT_RISK_PARITY_SIZING=1。
+RISK_PARITY_SIZING = _opt("RISK_PARITY_SIZING", False)
+log.info(
+    "🎯 RISK-PARITY SIZING: "
+    + (
+        "ON (size_units ← units_l2)"
+        if RISK_PARITY_SIZING
+        else "OFF (shadow only → logs/sizing_shadow_*.jsonl)"
+    )
+)
+
+# ─── §3 宽幅震荡判别（wide-range shadow）总开关 ───────────────────────────────
+# ATR_pct = 当日 ATR / 近 20 日 ATR 的 rolling 中位 → narrow(<0.8)/normal/wide(≥1.3)。
+# 本轮**只落盘**、不改任何决策（Owner 纪律 §5.5）：
+#   True（默认）= 逐候选落盘 logs/wide_range_shadow_*.jsonl（额外一次只读日线拉取）
+#   False        = 完全跳过（不发请求、不落盘）
+# 详见 docs/NEXT_DEV_PLAN_20261117.md §3.1，可逆：OPT_WIDE_RANGE_SHADOW=0。
+WIDE_RANGE_SHADOW = _opt("WIDE_RANGE_SHADOW", True)
+log.info(
+    "📏 WIDE-RANGE SHADOW: "
+    + (
+        "ON (shadow only → logs/wide_range_shadow_*.jsonl)"
+        if WIDE_RANGE_SHADOW
+        else "OFF"
+    )
+)
+
 MULTI_TF_CONFLUENCE = cfg_bot("MULTI_TF_CONFLUENCE", False)
 CONFLUENCE_REQUIRED_TFS = cfg_bot("CONFLUENCE_REQUIRED_TFS", 2)
 TP_RAISE_THRESHOLD_PIPS = cfg_bot("TP_RAISE_THRESHOLD_PIPS", 15)
@@ -1564,6 +1615,29 @@ elif COOLDOWN_HOURS_AFTER_TP > 0:
         log.warning(f"⚠️ Cooldown refresh failed: {_e!s}")
 else:
     log.info("⏳ Cooldown load: SKIPPED — COOLDOWN_HOURS_AFTER_TP=0 (feature off)")
+
+
+# ── P0 · 退出可观测性（只读影子）：冷启动补录券商侧 SL/TP 平仓 ──
+# profile_*.jsonl 只记自平仓（TIME_EXPIRY / DIRECTION_FLIP），券商侧
+# STOP_LOSS_ORDER / TAKE_PROFIT_ORDER 从不落盘。此处从 OANDA 补录，只写日志、
+# 不参与任何决策。
+try:
+    _audit = audit_owned_closed_trades(
+        api,
+        OANDA_ACCOUNT_ID,
+        OWNER_CLIENT_EXT_ID,
+        OWNER_CLIENT_EXT_TAG,
+        LOGS_DIR,
+        results_dir=RESULTS_DIR,
+        profile_name=PROFILE_NAME,
+    )
+    log.info(
+        f"🧾 EXIT-AUDIT cold-start: scanned={_audit.get('scanned')} "
+        f"owned={_audit.get('owned')} new={_audit.get('new')} "
+        f"[TP={_audit.get('tp')} SL={_audit.get('sl')} ACTIVE={_audit.get('active')}]"
+    )
+except Exception as _e:
+    log.warning(f"⚠️ EXIT-AUDIT cold-start failed: {_e!s}")
 
 
 # ─── HELPER: TOP-N STRENGTH PAIR BUILDER ─────────────────────────────────────
@@ -2606,6 +2680,20 @@ def main():
         Direction,
     )
 
+    # ── P0 · 退出可观测性（只读影子）：增量补录券商侧 SL/TP 平仓 ──
+    try:
+        audit_owned_closed_trades(
+            api,
+            OANDA_ACCOUNT_ID,
+            OWNER_CLIENT_EXT_ID,
+            OWNER_CLIENT_EXT_TAG,
+            LOGS_DIR,
+            results_dir=RESULTS_DIR,
+            profile_name=PROFILE_NAME,
+        )
+    except Exception as _e:
+        log.warning(f"⚠️ EXIT-AUDIT failed: {_e!s}")
+
     open_list = [o.replace("_", "/") for o, s in open_pos_by_oanda.items() if s]
     ready_list = [
         p.replace("=X", "")
@@ -2844,18 +2932,21 @@ def main():
                     log.error(f"❌ {pair}: quick-flip close FAILED — keeping position")
 
             if owned_trade is not None:
-                _revise_owned_position(
-                    pair,
-                    oanda,
-                    owned_trade,
-                    _open_side,
-                    _entry,
-                    current,
-                    _pip,
-                    _dec,
-                    _profit_pips,
-                    atr_val,
-                )
+                # 硬抗：持仓期不再自动上移 SL / 外扩 TP（Owner 2026-11-18）。
+                # 仍 continue —— 已持仓的 pair 不参与本轮再入场评估。
+                if REVISE_OWNED_POSITION:
+                    _revise_owned_position(
+                        pair,
+                        oanda,
+                        owned_trade,
+                        _open_side,
+                        _entry,
+                        current,
+                        _pip,
+                        _dec,
+                        _profit_pips,
+                        atr_val,
+                    )
                 continue
 
         # ─── MIN_STRENGTH_GAP gate ───
@@ -3084,6 +3175,66 @@ def main():
             if direction == "BUY"
             else round(current - tp_pips_eff * pip_cache[pair], dec)
         )
+
+        # ─── L2 · 风险定额仓位（risk-parity sizing）──────────────────────────────
+        # SL/TP 价格定型后、入选候选前：rp_mult = clamp(ATR应然SL / 实际SL,
+        # RP_F_LO, 1.0) —— 只缩不放大。默认影子（RISK_PARITY_SIZING=False）：
+        # 仅落盘 logs/sizing_shadow_*.jsonl，不改变下单 size_units。见计划 §2.1。
+        _rp_planned_sl_pips = max(
+            min_sl_pips_jpy if "JPY" in pair else min_sl_pips_std,
+            round(atr_val / pip_cache[pair] * cfg_bot("ATR_SL_MULT", 2.0), 1),
+        )
+        _rp_sl_pips_act = abs(current - sl_price) / pip_cache[pair]
+        _rp = compute_risk_parity(
+            size_units=size_units,
+            sl_pips_act=_rp_sl_pips_act,
+            ref_pips=_rp_planned_sl_pips,
+            min_lot=PROB_ZONE_CFG.get("MIN_LOT", 1),
+            f_lo=cfg_bot("RP_F_LO", 0.25),
+        )
+        log_sizing_shadow(
+            {
+                "profile": PROFILE_LABEL,
+                "pair": pair,
+                "direction": direction,
+                "entry_price": float(current),
+                "sl_price": float(sl_price),
+                "tp_price": float(tp_price),
+                "sl_use_zone": bool(cfg_bot("SL_USE_ZONE_HIERARCHY", True)),
+                "planned_sl_pips": round(_rp_planned_sl_pips, 1),
+                "sl_pips_act": round(_rp_sl_pips_act, 1),
+                "rp_mult": round(_rp["rp_mult"], 4),
+                "units_prob": int(size_units),
+                "units_l2": int(_rp["units_l2"]),
+                "applied": bool(RISK_PARITY_SIZING),
+            }
+        )
+        if RISK_PARITY_SIZING:
+            size_units = _rp["units_l2"]
+
+        # ─── §3 · 宽幅震荡影子（wide-range shadow）────────────────────────────
+        # ATR_pct = 当日 ATR / 近 20 日 ATR 的 rolling 中位 → narrow/normal/wide。
+        # **只落盘、不改任何决策**（Owner 纪律 §5.5）。见计划 §3.1。
+        if WIDE_RANGE_SHADOW:
+            _wr = compute_atr_ratio(oanda)
+            log_wide_range_shadow(
+                {
+                    "profile": PROFILE_LABEL,
+                    "pair": pair,
+                    "oanda": oanda,
+                    "direction": direction,
+                    "atr_pct": (
+                        round(_wr["atr_pct"], 4)
+                        if _wr["atr_pct"] is not None
+                        else None
+                    ),
+                    "atr_current": _wr["atr_current"],
+                    "atr_median": _wr["atr_median"],
+                    "tier": _wr["tier"],
+                    "n_points": _wr["n_points"],
+                    "applied": False,
+                }
+            )
 
         d_gate_label = (
             D_GATE_DIRECTIONS.get(pair, D_GATE_BOTH) if D_GATE_ENABLED else "N/A"

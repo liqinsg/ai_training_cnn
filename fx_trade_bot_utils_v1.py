@@ -1,4 +1,5 @@
 # fx_trade_bot_utils_v1.py
+import csv
 import json
 import os
 import time
@@ -1903,3 +1904,231 @@ def record_cooldown_from_closed_trades(
                 )
         if remove_cooldown:
             cooldown_state.pop(oanda_inst, None)
+
+
+# ============================================================================
+# EXIT AUDIT — P0 · read-only, shadow
+# ============================================================================
+# The bot's own jsonl (logs/profile_*.jsonl) only records SELF-initiated exits
+# (TIME_EXPIRY / DIRECTION_FLIP). Broker-side exits (STOP_LOSS_ORDER /
+# TAKE_PROFIT_ORDER) never reached any log, so "how many SLs fired, how much
+# they lost, at what price" was unanswerable from the logs. This reconstructs
+# every owned close straight from OANDA (broker = source of truth) and appends
+# a per-close audit trail. Reuses the same clientExtensions attribution as
+# has_open_trade_with_tags() / the cooldown code.
+#
+# SHADOW ONLY — never raises, never feeds a decision.
+def audit_owned_closed_trades(
+    api,
+    oanda_account_id: str,
+    owner_client_ext_id: str | None,
+    owner_client_ext_tag: str | None,
+    logs_dir,
+    results_dir=None,
+    profile_name: str = "",
+    lookback_days: int = 3,
+    count: int = 200,
+) -> dict:
+    """Audit broker-side closes for this bot/profile; append to a jsonl trail.
+
+    Pulls recent CLOSED trades, keeps only those owned here (clientExtensions
+    id/tag), classifies each close as ``TP / SL / ACTIVE`` from the closing
+    transaction reason (falling back to the SL/TP order state persisted on the
+    trade), then appends new rows to ``<logs_dir>/exit_audit_YYYYMMDD.jsonl``,
+    deduped by trade_id across the lookback window. When ``results_dir`` is
+    given, the day's ``YYYY-MM-DD_trade_log.csv`` is rebuilt from that trail
+    (CSV 用带短横的 UTC 日期，对齐历史 daily_results* 命名；jsonl 保持紧凑)。
+
+    Returns a small summary dict. Any failure is swallowed into it (logged as
+    a warning) so this can never disturb the trading loop.
+    """
+    summary = {
+        "scanned": 0, "owned": 0, "new": 0,
+        "tp": 0, "sl": 0, "active": 0, "day_file": "",
+    }
+    try:
+        logs_dir = Path(logs_dir)
+        logs_dir.mkdir(parents=True, exist_ok=True)
+
+        def _owned(trade) -> bool:
+            ce = trade.get("clientExtensions") or {}
+            cid, ctag = ce.get("id", ""), ce.get("tag", "")
+            if owner_client_ext_id and cid == owner_client_ext_id:
+                return True
+            if owner_client_ext_tag and (
+                ctag == owner_client_ext_tag or owner_client_ext_tag in ctag
+            ):
+                return True
+            return False
+
+        def _classify(reasons: set, trade: dict, closing_ids: list) -> str:
+            """TP / SL / ACTIVE — transaction reason first, order state as fallback."""
+            if "TAKE_PROFIT_ORDER" in reasons:
+                return "TP"
+            if "STOP_LOSS_ORDER" in reasons:
+                return "SL"
+            # OANDA keeps the trade's own SL/TP orders; the FILLED one that
+            # shares a closing transaction with us is the one that triggered.
+            for key, label in (("stopLossOrder", "SL"), ("takeProfitOrder", "TP")):
+                order = trade.get(key) or {}
+                if str(order.get("state", "")).upper() != "FILLED":
+                    continue
+                fill = str(order.get("fillingTransactionID", ""))
+                if fill and (not closing_ids or fill in closing_ids):
+                    return label
+            return "ACTIVE"
+
+        def _f(value):
+            try:
+                return float(value) if value not in (None, "") else None
+            except (TypeError, ValueError):
+                return None
+
+        resp = _oanda_request(
+            api,
+            TradesList(oanda_account_id, params={"state": "CLOSED", "count": count}),
+            label="TradesList/exit-audit",
+        )
+        trades = resp.get("trades", []) or []
+        summary["scanned"] = len(trades)
+        owned = [t for t in trades if _owned(t)]
+        summary["owned"] = len(owned)
+        if not owned:
+            return summary
+
+        # ── closing-transaction reasons in one batch (same pattern as
+        #    check_and_record_tp_cooldown) ──
+        tx_map: dict = {}
+        try:
+            acct = _oanda_request(
+                api, AccountDetails(oanda_account_id), label="AccountDetails/exit-audit"
+            )
+            last_tid = int(acct["account"]["lastTransactionID"])
+            min_tid = max(0, last_tid - 1000)
+            tx_resp = _oanda_request(
+                api,
+                TransactionsSinceID(
+                    oanda_account_id, params={"id": str(min_tid), "count": 1000}
+                ),
+                label="TransactionsSinceID/exit-audit",
+            )
+            tx_map = {str(tx.get("id")): tx for tx in tx_resp.get("transactions", [])}
+        except Exception as e:
+            logger.warning(
+                f"⚠️ EXIT-AUDIT tx map unavailable ({e!s}) — "
+                f"classifying from SL/TP order state only"
+            )
+
+        # ── dedup: trade_ids already written in the lookback window ──
+        now = datetime.now(timezone.utc)
+        seen: set = set()
+        for i in range(lookback_days + 1):
+            day_file = logs_dir / f"exit_audit_{(now - timedelta(days=i)).strftime('%Y%m%d')}.jsonl"
+            if not day_file.exists():
+                continue
+            try:
+                with open(day_file, encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            seen.add(str(json.loads(line).get("trade_id", "")))
+                        except Exception:
+                            continue
+            except Exception:
+                continue
+        seen.discard("")
+
+        new_records = []
+        for t in owned:
+            tid = str(t.get("id") or "")
+            inst = t.get("instrument", "")
+            if not tid or not inst or tid in seen:
+                continue
+            closing_ids = [str(x) for x in (t.get("closingTransactionIDs") or [])]
+            reasons = {tx_map[c].get("reason") for c in closing_ids if c in tx_map}
+            reason = _classify(reasons, t, closing_ids)
+
+            entry = _f(t.get("price"))
+            exit_px = _f(t.get("averageClosePrice"))
+            init_units = _f(t.get("initialUnits"))
+            direction = "short" if (init_units or 0) < 0 else "long"
+            pips = None
+            if entry is not None and exit_px is not None:
+                delta = (exit_px - entry) if direction == "long" else (entry - exit_px)
+                pips = round(delta / pip_size(inst), 1)
+            new_records.append({
+                "trade_id": tid,
+                "instrument": inst,
+                "direction": direction,
+                "units": int(abs(init_units)) if init_units is not None else None,
+                "entry_price": entry,
+                "exit_price": exit_px,
+                "sl_price": _f((t.get("stopLossOrder") or {}).get("price")),
+                "tp_price": _f((t.get("takeProfitOrder") or {}).get("price")),
+                "pips": pips,
+                "realized_pl": _f(t.get("realizedPL")),
+                "exit_reason": reason,
+                "open_time": t.get("openTime", ""),
+                "close_time": t.get("closeTime", ""),
+                "closing_tx_ids": ";".join(closing_ids),
+                "account": oanda_account_id,
+                "profile": profile_name,
+            })
+
+        if not new_records:
+            return summary
+
+        day = now.strftime("%Y%m%d")           # jsonl trail：紧凑（机器面）
+        csv_day = now.strftime("%Y-%m-%d")     # 台账 CSV：带短横（人读面，对齐历史 daily_results 命名）
+        day_path = logs_dir / f"exit_audit_{day}.jsonl"
+        with open(day_path, "a", encoding="utf-8") as f:
+            for rec in new_records:
+                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        summary["new"] = len(new_records)
+        summary["day_file"] = str(day_path)
+        for rec in new_records:
+            key = rec["exit_reason"].lower()
+            if key in summary:
+                summary[key] += 1
+
+        # ── daily ledger CSV, rebuilt from the trail (idempotent) ──
+        if results_dir is not None:
+            try:
+                results_dir = Path(results_dir)
+                results_dir.mkdir(parents=True, exist_ok=True)
+                cols = [
+                    "trade_id", "instrument", "direction", "units",
+                    "entry_price", "exit_price", "sl_price", "tp_price",
+                    "pips", "realized_pl", "exit_reason",
+                    "open_time", "close_time", "account", "profile",
+                ]
+                day_records = []
+                with open(day_path, encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            day_records.append(json.loads(line))
+                        except Exception:
+                            continue
+                csv_path = results_dir / f"{csv_day}_trade_log.csv"
+                with open(csv_path, "w", newline="", encoding="utf-8") as f:
+                    writer = csv.DictWriter(f, fieldnames=cols, extrasaction="ignore")
+                    writer.writeheader()
+                    writer.writerows(day_records)
+            except Exception as e:
+                logger.warning(f"⚠️ EXIT-AUDIT csv write failed: {e!s}")
+
+        logger.info(
+            f"🧾 EXIT-AUDIT: +{summary['new']} close(s) logged "
+            f"[TP={summary['tp']} SL={summary['sl']} ACTIVE={summary['active']}] "
+            f"→ {day_path.name}"
+        )
+        return summary
+    except Exception as e:
+        logger.warning(f"⚠️ EXIT-AUDIT skipped ({type(e).__name__}: {e!s})")
+        summary["error"] = str(e)
+        return summary
