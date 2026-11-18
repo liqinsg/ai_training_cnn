@@ -81,8 +81,17 @@ from utils.prob_zone_sizing import (
     format_prob_audit,
     load_prob_index,
 )
-from utils.risk_parity_sizing import compute_risk_parity, log_sizing_shadow
-from utils.wide_range_sizing import compute_atr_ratio, log_wide_range_shadow
+from utils.risk_parity_sizing import (
+    compute_risk_parity,
+    log_sizing_shadow,
+    apply_if_enabled,
+)
+from utils.wide_range_sizing import (
+    compute_atr_ratio,
+    compute_d_skew,
+    log_wide_range_shadow,
+    update_trade_id,
+)
 from config_oanda import (
     # api,
     get_oanda_profile,
@@ -3205,18 +3214,36 @@ def main():
                 "sl_pips_act": round(_rp_sl_pips_act, 1),
                 "rp_mult": round(_rp["rp_mult"], 4),
                 "units_prob": int(size_units),
-                "units_l2": int(_rp["units_l2"]),
+                "units_raw": _rp["units_raw"],
+                # MIN_LOT 硬边界：缩量后低于最小手数 → None（转正后不下单）
+                "units_l2": (
+                    int(_rp["units_l2"]) if _rp["units_l2"] is not None else None
+                ),
+                "below_min": bool(_rp["below_min"]),
+                "would_reject": bool(_rp["would_reject"]),
+                "pip_value_usd": _rp["pip_value_usd"],
+                "jpy_net_units": _rp["jpy_net_units"],
                 "applied": bool(RISK_PARITY_SIZING),
             }
         )
         if RISK_PARITY_SIZING:
-            size_units = _rp["units_l2"]
+            _rp_decision = apply_if_enabled(_rp, True)
+            if _rp_decision["rejected"]:
+                log.info(
+                    f"⏭️ RISK-PARITY REJECT {pair} {direction} — "
+                    f"units_raw={_rp['units_raw']} < MIN_LOT "
+                    f"{PROB_ZONE_CFG.get('MIN_LOT', 1)} — NO ORDER"
+                )
+                continue
+            size_units = _rp_decision["size_units"]
 
         # ─── §3 · 宽幅震荡影子（wide-range shadow）────────────────────────────
         # ATR_pct = 当日 ATR / 近 20 日 ATR 的 rolling 中位 → narrow/normal/wide。
         # **只落盘、不改任何决策**（Owner 纪律 §5.5）。见计划 §3.1。
         if WIDE_RANGE_SHADOW:
             _wr = compute_atr_ratio(oanda)
+            _d_skew = compute_d_skew(mc_cache.get(pair), current)
+            _client_order_id = f"{OWNER_CLIENT_EXT_ID}_{oanda}"
             log_wide_range_shadow(
                 {
                     "profile": PROFILE_LABEL,
@@ -3232,6 +3259,10 @@ def main():
                     "atr_median": _wr["atr_median"],
                     "tier": _wr["tier"],
                     "n_points": _wr["n_points"],
+                    "d_skew": _d_skew,
+                    "d_skew_available": _d_skew is not None,
+                    "client_order_id": _client_order_id,
+                    "trade_id": None,  # 下单成功后回填（见 update_trade_id）
                     "applied": False,
                 }
             )
@@ -3400,6 +3431,11 @@ def main():
                     f"✅ EXECUTED {pair} {direction} | SL={sl_price} | TP={tp_price} | TradeID={tid}"
                 )
                 log.info(f"✅ OPEN {pair} {direction} lots={size_units} → {_r}")
+                # TASK-3：把 trade_id 回填到 wide_range_shadow（供 exit_audit 主键 join）
+                if WIDE_RANGE_SHADOW and tid and tid != "?":
+                    update_trade_id(
+                        LOGS_DIR, f"{OWNER_CLIENT_EXT_ID}_{oanda}", str(tid)
+                    )
                 trade_lines[pair] = (
                     f"✅ {pair} {direction} Score={FINAL:.1f} | SL={sl_price} TP={tp_price}\n"
                     f"└─ {_r}"

@@ -26,6 +26,7 @@ mc_results/
 logs/
 daily_results/
 attribution_v2/reports/
+reports/
 
 # === 临时/测试脚本 ===
 fix_*.py

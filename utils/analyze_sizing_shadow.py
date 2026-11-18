@@ -159,6 +159,12 @@ def build_report(shadow: List[Dict[str, Any]], exits: List[Dict[str, Any]]) -> s
     if mults:
         clamps = sum(1 for m in mults if m <= 0.2501)
         lines.append(f"  触底(clamp 至 RP_F_LO≈0.25): {clamps} ({100*clamps/len(mults):.0f}%)")
+    rej = [r for r in shadow if r.get("would_reject")]
+    if rej:
+        lines.append(
+            f"  MIN_LOT 硬边界(would_reject): {len(rej)}/{n} ({100*len(rej)/n:.0f}%)"
+            f" — 转正后不下单（不抬到 MIN_LOT）"
+        )
 
     # ── [3] units 前后对比 ───────────────────────────────────────────
     u_prob = [u for u in (_f(r, "units_prob") for r in shadow) if u is not None]
@@ -189,8 +195,13 @@ def build_report(shadow: List[Dict[str, Any]], exits: List[Dict[str, Any]]) -> s
         direction = str(r.get("direction") or "")
         price = _f(r, "entry_price")
         up, ul = _f(r, "units_prob"), _f(r, "units_l2")
-        if pair and direction and price is not None and up and up > 0 and ul is not None:
+        if not (pair and direction and price is not None and up and up > 0):
+            continue
+        if ul is not None:
             cand[(pair, direction)].append((price, ul / up))
+        elif r.get("would_reject"):
+            # MIN_LOT 硬边界：缩量后低于最小手数 → 反事实不下单（ratio = 0）
+            cand[(pair, direction)].append((price, 0.0))
 
     matched: List[Tuple[str, float, float, float]] = []  # (reason, actual_pl, cf_pl, ratio)
     for e in exits:

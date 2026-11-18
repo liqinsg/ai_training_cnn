@@ -1,0 +1,18 @@
+# crontab.example — Exit Risk 影子分析 cron 配置
+# ==============================================
+# 安装：crontab -e 后粘贴以下内容（路径替换为你的实际项目路径）
+# 时区：建议用 UTC，与 OANDA 时间一致。
+#
+# 环境变量（可选，在 crontab 顶部设置）：
+#   PROJECT_ROOT=/path/to/your/project
+#   ALERT_WEBHOOK=https://your-webhook-url  # 飞书/钉钉/Slack，留空则只写告警文件
+#   PYTHON_BIN=/usr/bin/python3
+
+# 每日 P0 对账（UTC 01:00，收盘后）；分析器执行失败 → 退出码1 + ALERT 文件 + webhook
+0 1 * * * /path/to/scripts/daily_exit_audit.sh >> /path/to/logs/cron_daily.log 2>&1
+
+# 每周影子报告（UTC 周一 02:00）：L2 + Wide-range，出报告供人工 review，不触发任何决策
+0 2 * * 1 /path/to/scripts/weekly_shadow_review.sh >> /path/to/logs/cron_weekly.log 2>&1
+
+# （可选）每月归档旧日志，避免 logs/ 膨胀
+0 3 1 * * find /path/to/logs -name "*.jsonl" -mtime +90 -delete 2>/dev/null

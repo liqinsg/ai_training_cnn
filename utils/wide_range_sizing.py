@@ -14,6 +14,10 @@
     narrow   ``ATR_pct < 0.8``   （可交易）
     normal   ``0.8 ≤ ATR_pct < 1.3``
     wide     ``ATR_pct ≥ 1.3``   （双向扫损风险 ↑）→ 影子标记
+    extreme  ``ATR_pct ≥ 1.8``   （仅兜底，不作默认）
+
+第二轴（仅前向）：``D_skew = |q50 − P0| / (q95 − q05)``，在等高带宽下区分
+「单边趋势 vs 双向震荡」。q50 仅在 MC schema 1.2.0 起写入，缺失 → ``None``。
 
 契约：本模块**只读 + 只落盘**，``compute_atr_ratio()`` / ``log_wide_range_shadow()``
 永不抛异常；**不改变任何下单 / 仓位 / TP 决策**（Owner 纪律 §5.5）。
@@ -38,6 +42,7 @@ ATR_PERIOD = 14        # 与 bot ATRModule / ATR_SL_MULT 口径一致
 LOOKBACK_DAYS = 20     # 近 20 个交易日作为 ATR 参照基准（rolling 中位）
 THRESH_NARROW = 0.8    # ATR_pct < 0.8 → 窄幅
 THRESH_WIDE = 1.3      # ATR_pct ≥ 1.3 → 宽幅
+THRESH_EXTREME = 1.8   # ATR_pct ≥ 1.8 → 极端（仅兜底，不作默认）
 MIN_ATR_POINTS = 10    # 中位基准所需的最少 ATR 点数（不足 → unknown）
 
 
@@ -55,7 +60,7 @@ def _num(value: Any, default: Optional[float] = None) -> Optional[float]:
 
 
 def classify_tier(atr_pct: Any) -> str:
-    """把 ATR_pct 归入 ``narrow`` / ``normal`` / ``wide``（非法 → ``unknown``）。"""
+    """把 ATR_pct 归入 ``narrow`` / ``normal`` / ``wide`` / ``extreme``（非法 → ``unknown``）。"""
     value = _num(atr_pct)
     if value is None:
         return "unknown"
@@ -63,7 +68,36 @@ def classify_tier(atr_pct: Any) -> str:
         return "narrow"
     if value < THRESH_WIDE:
         return "normal"
-    return "wide"
+    if value < THRESH_EXTREME:
+        return "wide"
+    return "extreme"
+
+
+def compute_d_skew(mc_snapshot: Any, current_price: Any) -> Optional[float]:
+    """第二轴 ``D_skew = |q50 − P0| / (q95 − q05)``（等高带宽下区分趋势 vs 双向震荡）。
+
+    仅**前向**：q50 仅 MC schema 1.2.0 起写入（``distribution.quantiles["0.50"]``）。
+    不可用（无 q50 / 带宽 ≤ 0 / 非法）→ ``None``；永不抛异常。
+    """
+    price = _num(current_price)
+    if not isinstance(mc_snapshot, dict) or price is None:
+        return None
+    try:
+        dist = mc_snapshot.get("distribution") or {}
+        quantiles = dist.get("quantiles") or {}
+        q50 = quantiles.get("0.50") or quantiles.get("50") or quantiles.get(0.5)
+        if q50 is None:
+            return None
+        rng = mc_snapshot.get("range_90") or dist.get("range_90") or []
+        if not (isinstance(rng, (list, tuple)) and len(rng) == 2):
+            return None
+        q05, q95 = _num(rng[0]), _num(rng[1])
+        q50 = _num(q50)
+        if q05 is None or q95 is None or q50 is None or q95 <= q05:
+            return None
+        return round(abs(q50 - price) / (q95 - q05), 4)
+    except Exception:  # pragma: no cover - 防御：绝不向上传播
+        return None
 
 
 def _atr_series_from_candles(candles: Any, atr_period: int) -> List[float]:
@@ -180,3 +214,62 @@ def log_wide_range_shadow(
     except Exception as exc:  # pragma: no cover - 审计绝不能打断运行
         logger.warning("wide_range: shadow write skipped (%s)", exc)
         return None
+
+
+def update_trade_id(
+    logs_dir: Any, client_order_id: str, trade_id: str
+) -> Optional[str]:
+    """下单返回后回填 ``trade_id``（与 exit_audit 主键 ``trade_id`` join 的唯一键）。
+
+    读取当日 ``logs/wide_range_shadow_YYYYMMDD.jsonl`` → 匹配 ``client_order_id``
+    且尚未回填的行 → 写回。**never raises**；失败仅告警返回 ``None``。
+    """
+    try:
+        if not client_order_id or not trade_id:
+            return None
+        day = datetime.now(timezone.utc).strftime("%Y%m%d")
+        directory = Path(logs_dir) if logs_dir is not None else LOGS_DIR
+        path = directory / f"wide_range_shadow_{day}.jsonl"
+        if not path.exists():
+            return None
+        rows: List[Dict[str, Any]] = []
+        with open(path, "r", encoding="utf-8") as handle:
+            for line in handle:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if (
+                    isinstance(row, dict)
+                    and row.get("client_order_id") == client_order_id
+                    and not row.get("trade_id")
+                ):
+                    row["trade_id"] = trade_id
+                rows.append(row)
+        with open(path, "w", encoding="utf-8") as handle:
+            for row in rows:
+                handle.write(json.dumps(row, ensure_ascii=False, default=str) + "\n")
+        return str(path)
+    except Exception as exc:  # pragma: no cover - 回填绝不能打断运行
+        logger.warning("wide_range: update_trade_id skipped (%s)", exc)
+        return None
+
+
+if __name__ == "__main__":
+    # 自测：极端档分类 + D_skew（无 q50 → None；有 q50 → 计算）
+    assert classify_tier(0.5) == "narrow"
+    assert classify_tier(1.0) == "normal"
+    assert classify_tier(1.5) == "wide"
+    assert classify_tier(2.1) == "extreme"
+    assert classify_tier(None) == "unknown"
+    assert compute_d_skew({"range_90": [1.09, 1.11]}, 1.10) is None
+    d = compute_d_skew(
+        {"range_90": [1.09, 1.11], "distribution": {"quantiles": {"0.50": 1.105}}},
+        1.10,
+    )
+    print(f"tier OK | D_skew={d}（|1.105-1.10|/0.02=0.25）")
+    assert d is not None and abs(d - 0.25) < 0.01
+    print("✅ wide_range 自测通过")
