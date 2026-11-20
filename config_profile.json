@@ -146,7 +146,7 @@
             "D_GATE_EMA_SLOW": 50
         },
         "ranking_cooldown": {
-            "REMOVE_COOLDOWN": false,
+            "REMOVE_COOLDOWN": true,
             "DEBUG_MODE": false,
             "USE_TOP_PAIRS_ONLY": false,
             "TOP_PAIRS_COUNT": 5,

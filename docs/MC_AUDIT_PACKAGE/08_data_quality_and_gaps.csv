@@ -1,0 +1,13 @@
+Issue,Affected Evidence,Status,Impact / Repair,Affected MC Files
+RUNTIME_VERSION,Production runner/config/commit,NOT_VERIFIED,Checked-in service unit names a v6 entrypoint under a different home; visible crontab mentions v683; log tags identify v685-2. Live system state not accessible.,
+HISTORICAL_PRICE_CANDLES,MC forward outcomes and realized volatility,DATA_NOT_AVAILABLE,Archived MC JSON has reference prices and forecasts but no M1/M5/H1/H4/D OHLC series. No fixed-horizon calibration or independent wide-range classification.,
+MC_PUBLICATION_TIME,Per-snapshot publish time,DATA_NOT_AVAILABLE,Files record generated_utc; strategy logs record bundle load time and file names. No separate publication timestamp.,
+MC_TRADE_LINK,Trade entry to exact archive file/profile,PARTIAL,Entry log records rounded MC_P_UP but not a unique bundle ID per trade. Profile-2 daily/weekly fusion can differ from raw D.,
+CANDIDATE_HISTORY,"All candidate generation, filters, ranking and rejection reasons",INCOMPLETE_CANDIDATE_EVIDENCE,"Logs contain candidate-list, score, rank and rejection messages, but no stable candidate ID or complete opportunity ledger.",
+PORTFOLIO_CAPACITY,"Open positions, margin, capacity and currency exposure at each decision",DATA_NOT_AVAILABLE,Position log lines and shadow sizes do not constitute a complete synchronized portfolio/account snapshot.,
+RISK_IN_ACCOUNT_CURRENCY,"Potential loss, margin, fees and financing",NOT_CALCULABLE,"Trade data lacks an authoritative account-currency conversion, full margin snapshot and separately recorded financing/commission.",
+TRADE_LIFECYCLE,Complete order/trade/partial-fill reconciliation,PARTIAL,"457 logged MC-tagged execution/open records; 345 are uniquely linked to exit-audit records by trade ID/pair/side/local date; the remainder is not uniquely linked. Across 2026-11-09..20, six MC-to-trade joins are ambiguous and 65 entries have no unique lifecycle match.",
+LOG_DATE_COVERAGE,v685 runtime logs during observed period,GAPS,"16 daily log files present; missing 2026-11-07, 2026-11-08, 2026-11-14; 2026-11-15 file is partial.",
+MC_PAIR_COVERAGE,Snapshots vs metadata total_pairs,INCONSISTENT_COUNTS,"Snapshot results contain 28/29 rows; archive universe has 30 instrument strings but 28 unordered relationships, including two inverse pairs. Metadata commonly reports total_pairs=35.",116
+DEMO_BASELINE,Independent baseline and shadow runtime,NOT_VERIFIED,"Shadow JSONL exists and applied=false, but no authorized runtime status or independent baseline process evidence.",
+OUT_OF_SAMPLE,Chronological independent MC validation,NOT_AVAILABLE,"No valid fixed-horizon outcomes/candle series; Brier, log loss, calibration and out-of-sample metrics not calculated.",
