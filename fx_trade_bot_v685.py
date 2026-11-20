@@ -74,6 +74,8 @@ from utils.fib_zone_sizing import (
     compute_zone_plan,
     format_zone_audit,
     load_fib_index,
+    next_rung_up,
+    normalize_to_ladder,
     to_mc_key,
 )
 from utils.prob_zone_sizing import (
@@ -1154,6 +1156,25 @@ log.info(
 MULTI_TF_CONFLUENCE = cfg_bot("MULTI_TF_CONFLUENCE", False)
 CONFLUENCE_REQUIRED_TFS = cfg_bot("CONFLUENCE_REQUIRED_TFS", 2)
 TP_RAISE_THRESHOLD_PIPS = cfg_bot("TP_RAISE_THRESHOLD_PIPS", 15)
+
+# ─── 补仓 / 金字塔加仓（pyramiding · averaging-down）总开关 ───────────────────
+# 当某 pair 已有同向持仓、且仓位 < 标准仓（base_lot）、且现价套牢（underwater）、
+# 且本次开仓条件仍满足时，允许追加一单把总仓位抬到下一个 SIZE_LADDER 档位。
+# 与「只缩不放」的归一化互补：归一化只缩，补仓只在套牢时加仓，且永不超过 base_lot。
+#   False（默认）= 关闭，保持原 SKIP DUPLICATE 行为
+#   True          = 开启补仓（受 PYRAMID_MAX_LEVELS / PYRAMID_UNDERWATER_PIPS 约束）
+# 可逆：OPT_PYRAMID_ENABLED=1。
+PYRAMID_ENABLED = _opt("PYRAMID_ENABLED", False)
+PYRAMID_MAX_LEVELS = cfg_bot("PYRAMID_MAX_LEVELS", 1)  # 最多补仓次数（不含首单）
+PYRAMID_UNDERWATER_PIPS = cfg_bot("PYRAMID_UNDERWATER_PIPS", 0.0)  # 套牢多少 pips 才补
+log.info(
+    "🔺 PYRAMID (补仓): "
+    + (
+        f"ON | max_levels={PYRAMID_MAX_LEVELS} | underwater>={PYRAMID_UNDERWATER_PIPS}p"
+        if PYRAMID_ENABLED
+        else "OFF (SKIP DUPLICATE preserved)"
+    )
+)
 
 # ─── CLI MODE OVERRIDES ──────────────────────────────────────────────────────
 # ╔══════════════════════════════════════════════════════════════════════════╗
@@ -3112,6 +3133,100 @@ def main():
             log.info(f"⏭️ {pair}: owned position already open — SKIP DUPLICATE")
             continue
 
+        # ─── 补仓 / 金字塔加仓（pyramiding · averaging-down）────────────────────
+        # 同向已有持仓时，不再一律 SKIP DUPLICATE；若满足补仓条件（仓位 < 标准仓、
+        # 现价套牢、未超最大补仓次数），追加一单把总仓位抬到下一个 SIZE_LADDER 档位。
+        # 补仓 size = next_rung_up(current_units) - current_units，永不超过 base_lot。
+        # 补仓单复用已有持仓的 SL/TP（整仓统一退出），开仓条件已在上方全部通过。
+        _pyramid_done = False
+        if PYRAMID_ENABLED:
+            _owned_dir = str(owned_trade.get("direction", "")).upper()
+            _sig_dir = direction.upper()
+            _same_dir = (_owned_dir in ("LONG", "BUY") and _sig_dir == "BUY") or (
+                _owned_dir in ("SHORT", "SELL") and _sig_dir == "SELL"
+            )
+            if _same_dir:
+                _cur_units = abs(int(float(owned_trade.get("units", 0) or 0)))
+                _entry = float(owned_trade.get("price") or 0)
+                _pip = pip_cache.get(pair, 0.0)
+                # 套牢判断：LONG 现价 < entry - threshold；SHORT 现价 > entry + threshold
+                if _sig_dir == "BUY":
+                    _underwater_pips = (_entry - current) / _pip if _pip > 0 else 0.0
+                else:
+                    _underwater_pips = (current - _entry) / _pip if _pip > 0 else 0.0
+                _underwater = _underwater_pips >= PYRAMID_UNDERWATER_PIPS
+                # 统计该 pair 已有多少笔自有交易（含首单），用于限制补仓次数
+                _all_owned = [
+                    t for t in list_open_trades(api, OANDA_ACCOUNT_ID, oanda)
+                    if (t.get("client_ext_id") or "").startswith(OWNER_CLIENT_EXT_ID)
+                ]
+                _n_owned = len(_all_owned)
+                _target_rung, _add_on = next_rung_up(
+                    current_units=_cur_units,
+                    base_lot=DEFAULT_LOT_SIZE,
+                    ladder_ratios=FIB_ZONE_CFG.get("SIZE_LADDER", [1.0, 0.5, 0.25, 0.1]),
+                    min_lot=FIB_ZONE_CFG.get("MIN_LOT", 1),
+                )
+                _can_pyramid = (
+                    _underwater
+                    and _cur_units < DEFAULT_LOT_SIZE
+                    and _n_owned <= PYRAMID_MAX_LEVELS
+                    and _add_on > 0
+                )
+                log.info(
+                    f"🔺 PYRAMID-CHECK {pair} {_sig_dir} | cur={_cur_units} "
+                    f"underwater={_underwater_pips:.1f}p(need>={PYRAMID_UNDERWATER_PIPS}) "
+                    f"n_owned={_n_owned}(max={PYRAMID_MAX_LEVELS}) "
+                    f"next_rung={_target_rung} add_on={_add_on} "
+                    f"→ {'ADD' if _can_pyramid else 'SKIP'}"
+                )
+                if _can_pyramid:
+                    _p_sl = owned_trade.get("sl")
+                    _p_tp = owned_trade.get("tp")
+                    log.info(
+                        f"🔺 PYRAMID ADD {pair} {_sig_dir} +{_add_on} units "
+                        f"(cur {_cur_units} → target {_target_rung}) | "
+                        f"SL={_p_sl} TP={_p_tp}"
+                    )
+                    if DRY_RUN_MODE:
+                        log.info(
+                            f"🧪 [DRY-RUN] PYRAMID {pair} {_sig_dir} +{_add_on} — NO ORDER"
+                        )
+                    else:
+                        _p_resp = open_oanda_order(
+                            api,
+                            OANDA_ACCOUNT_ID,
+                            oanda,
+                            direction,
+                            _add_on,
+                            _p_sl,
+                            _p_tp,
+                            dry_run=DRY_RUN_MODE,
+                            tags=OWNER_TAGS,
+                            comment=OWNER_COMMENT,
+                            client_ext={
+                                "id": f"{OWNER_CLIENT_EXT_ID}_{oanda}",
+                                "tag": OWNER_CLIENT_EXT_TAG,
+                            },
+                        )
+                        _p_status = _p_resp.get("status", "UNKNOWN")
+                        _p_tid = _p_resp.get("trade_id", "") or "?"
+                        log.info(
+                            f"🔺 PYRAMID EXECUTED {pair} {_sig_dir} +{_add_on} | "
+                            f"TradeID={_p_tid} status={_p_status}"
+                        )
+                        send_telegram_message(
+                            f"🔺 PYRAMID {pair} {_sig_dir} +{_add_on} units\n"
+                            f"└─ cur {_cur_units} → {_target_rung} | "
+                            f"underwater {_underwater_pips:.1f}p"
+                        )
+                    _pyramid_done = True
+            if _pyramid_done:
+                continue
+            # 不满足补仓条件 → SKIP DUPLICATE
+        log.info(f"⏭️ {pair}: owned position already open — SKIP DUPLICATE")
+        continue
+
         dec = 3 if "JPY" in pair else 5
         # ─── SIZING / TP OVERLAY ─────────────────────────────────────────────
         # Runs AFTER direction/score/D-Gate/trend-TP are final and BEFORE SL/TP
@@ -3236,6 +3351,26 @@ def main():
                 )
                 continue
             size_units = _rp_decision["size_units"]
+
+        # ─── 仓位归一化（discrete ladder snap）────────────────────────────────
+        # prob overlay（连续 size_scale）/ risk_parity（rp_mult）会产出任意整数
+        # （如 2750、2739），下单前统一向下吸附到 SIZE_LADDER 离散档位
+        # （10000 / 5000 / 2500 / 1000 …），只缩不放大，绝不低于 MIN_LOT。
+        _size_ladder = FIB_ZONE_CFG.get("SIZE_LADDER", [1.0, 0.5, 0.25, 0.1])
+        _min_lot_norm = FIB_ZONE_CFG.get("MIN_LOT", 1)
+        _units_before_norm = int(size_units)
+        size_units = normalize_to_ladder(
+            size_units=size_units,
+            base_lot=DEFAULT_LOT_SIZE,
+            ladder_ratios=_size_ladder,
+            min_lot=_min_lot_norm,
+        )
+        if size_units != _units_before_norm:
+            log.info(
+                f"📏 LOT-NORMALIZE {pair} {direction} | "
+                f"{_units_before_norm} → {size_units} "
+                f"(ladder={_size_ladder}, min_lot={_min_lot_norm})"
+            )
 
         # ─── §3 · 宽幅震荡影子（wide-range shadow）────────────────────────────
         # ATR_pct = 当日 ATR / 近 20 日 ATR 的 rolling 中位 → narrow/normal/wide。

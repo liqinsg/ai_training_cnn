@@ -53,7 +53,7 @@ _CFG_FALLBACK: Dict[str, Any] = {
     "ENABLED": True,
     "MODE": "filter",
     "CENTER_EDGE": 2,
-    "SIZE_LADDER": [1.0, 0.5, 0.25, 0.125],
+    "SIZE_LADDER": [1.0, 0.5, 0.25, 0.1],
     "MIN_LOT_LIVE": 1,
     "MIN_LOT_DEMO": 1000,
     "TP_ROOM_REF": 0.5,
@@ -215,6 +215,102 @@ def _size_units(base_lot: Any, size_scale: float) -> int:
     if lot is None or lot <= 0:
         lot = 1.0
     return max(1, int(lot * float(size_scale) + 0.5))
+
+
+def _allowed_rungs(base_lot: Any, ladder_ratios: Any, min_lot: Any = 1) -> list[int]:
+    """Compute the sorted-descending allowed unit set for the ladder.
+
+    ``{ int(base_lot * r + 0.5) | r in ladder_ratios }`` filtered to
+    ``>= min_lot``, de-duplicated, descending.  Returns ``[]`` on bad input.
+    """
+    lot = _as_finite_float(base_lot)
+    if lot is None or lot <= 0:
+        return []
+    floor = _as_finite_float(min_lot)
+    floor = 1 if floor is None or floor < 1 else int(floor)
+    raw = ladder_ratios if isinstance(ladder_ratios, (list, tuple)) else []
+    allowed: list[int] = []
+    for r in raw:
+        rv = _as_finite_float(r)
+        if rv is None:
+            continue
+        val = int(float(lot) * rv + 0.5)
+        if val >= floor:
+            allowed.append(val)
+    return sorted(set(allowed), reverse=True)
+
+
+def normalize_to_ladder(
+    size_units: Any,
+    base_lot: Any,
+    ladder_ratios: Any,
+    min_lot: Any = 1,
+) -> int:
+    """Snap ``size_units`` DOWN to the largest allowed ladder value (只缩不放大).
+
+    The allowed unit set is ``{ int(base_lot * r + 0.5) | r in ladder_ratios }``
+    filtered to ``>= min_lot``.  ``size_units`` is floored to the biggest allowed
+    value that does not exceed it; values below the smallest allowed rung snap to
+    that rung (which equals ``min_lot`` when the ladder's smallest ratio yields
+    ``min_lot``).  This makes every executed size a discrete rung of the ladder
+    (e.g. ``[10000, 5000, 2500, 1000]`` for ``base_lot=10000`` and
+    ``ladder=[1.0, 0.5, 0.25, 0.1]``).
+
+    Never raises; returns ``max(int(min_lot), int(size_units))`` on any bad input.
+    """
+    try:
+        units = int(_as_finite_float(size_units) or 0)
+        floor = _as_finite_float(min_lot)
+        floor = 1 if floor is None or floor < 1 else int(floor)
+        allowed = _allowed_rungs(base_lot, ladder_ratios, floor)
+        if not allowed:
+            return max(floor, units)
+        for val in allowed:
+            if units >= val:
+                return val
+        return allowed[-1]  # smallest allowed rung (== min_lot normally)
+    except Exception:  # pragma: no cover - defensive: never propagate
+        logger.exception("normalize_to_ladder failed — passthrough")
+        u = _as_finite_float(size_units)
+        f = _as_finite_float(min_lot)
+        return max(int(f or 1), int(u or 0))
+
+
+def next_rung_up(
+    current_units: Any,
+    base_lot: Any,
+    ladder_ratios: Any,
+    min_lot: Any = 1,
+) -> "tuple[int, int]":
+    """Return ``(target_rung, add_on)`` for pyramiding up one discrete step.
+
+    ``target_rung`` is the smallest allowed rung strictly greater than
+    ``current_units``; ``add_on = target_rung - current_units``.
+
+    If ``current_units`` already equals or exceeds the largest allowed rung
+    (i.e. the standard / base lot), returns ``(0, 0)`` — no add-on needed.
+
+    Used for the "averaging-down / 补仓" feature: when an existing position is
+    below standard lot and underwater, add ``add_on`` units to climb one rung.
+    Never raises; returns ``(0, 0)`` on bad input.
+    """
+    try:
+        cur = int(_as_finite_float(current_units) or 0)
+        if cur <= 0:
+            return (0, 0)
+        floor = _as_finite_float(min_lot)
+        floor = 1 if floor is None or floor < 1 else int(floor)
+        allowed = _allowed_rungs(base_lot, ladder_ratios, floor)
+        if not allowed:
+            return (0, 0)
+        # allowed is descending; find the smallest rung > cur
+        for val in reversed(allowed):
+            if val > cur:
+                return (val, val - cur)
+        return (0, 0)  # cur already at/above the top rung
+    except Exception:  # pragma: no cover
+        logger.exception("next_rung_up failed")
+        return (0, 0)
 
 
 def _base_tp(base_tp_pips: Any) -> float:

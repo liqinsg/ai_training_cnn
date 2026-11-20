@@ -58,7 +58,7 @@ FIB_ZONE_DEFAULTS: Dict = {
     "ENABLED": True,
     "MODE": "filter",
     "CENTER_EDGE": 2,
-    "SIZE_LADDER": [1.0, 0.5, 0.25, 0.125],
+    "SIZE_LADDER": [1.0, 0.5, 0.25, 0.1],
     "MIN_LOT_LIVE": 1,
     "MIN_LOT_DEMO": 1000,
     "TP_ROOM_REF": 0.5,
