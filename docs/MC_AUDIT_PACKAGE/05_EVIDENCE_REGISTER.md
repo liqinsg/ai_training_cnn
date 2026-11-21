@@ -12,6 +12,7 @@
 | E-08 | Historical candles, synchronized portfolio/risk snapshots, complete candidate ledger | E0 | No supported conclusion about volatility regime, calibration, opportunity cost, or displacement. | Required source data not available. |
 | E-09 | Checked-in service unit and crontab | E1 | Repository configuration artifacts point to a v6 entrypoint/v683 jobs rather than a confirmed v685 runtime. | Files may be stale; active server state not inspected. |
 | E-10 | Worktree diff for `config_profile.json` | E1 | `ranking_cooldown.REMOVE_COOLDOWN` is true in the worktree versus false in Git HEAD. | Not made or reverted by this audit; whether this configuration is deployed is unknown. |
+| E-11 | `daily_results_profile1..4/*_trade_log.csv` | E1 | 1,603 rows deduplicate to 577 `(account, trade_id)` identities, all matching exit-audit identities; open times span 2026-10-22..11-20. | Directories overlap; use row `profile`, not folder name. No MC, H4 market, candidate-ranking, sizing-rule history, or account-currency fields. `ACTIVE` and SL/TP semantics require caution. |
 
 E2 findings are associations/descriptive patterns only. No E3 out-of-sample or E4 strategy-impact evidence is established.
 

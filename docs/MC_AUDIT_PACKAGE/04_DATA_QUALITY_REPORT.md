@@ -11,8 +11,12 @@
 | Historical MC coverage | GAPS | Daily archive has a 19-day gap from 2026-09-24 through 2026-10-12; weekly archive also has missing intervals. |
 | v685 log coverage | GAPS | 2026-11-07, 11-08, and 11-14 absent; 11-15 is partial. |
 | Candidate history | INCOMPLETE_CANDIDATE_EVIDENCE | Logs contain event text but no complete candidate ledger with stable IDs and per-stage outcomes. |
-| Trade lifecycle | PARTIAL | 345/457 November entry records uniquely matched; 112 have no unique lifecycle match. In the focus window, 187 are uniquely linked, 6 joins are ambiguous, and 65 lack a unique lifecycle record. |
-| Fees/financing/account currency | DATA NOT AVAILABLE | P/L currency is not identified and costs are not separately recorded in the matched trade rows. |
+| Trade lifecycle | PARTIAL | Profile CSVs contain 577 distinct `(account, trade_id)` identities matching the 577 exit-audit records, over open times 2026-10-22..11-20. Separately, only 345/457 November MC-tagged entry rows uniquely link to those lifecycle records; 112 entry-to-lifecycle links remain unresolved. In the focus window, 187 link uniquely, 6 MC-to-trade joins are ambiguous, and 65 entry rows lack a unique lifecycle link. |
+| Profile CSV duplication/attribution | OVERLAPPING EXPORTS | 1,603 raw rows reduce to 577 distinct identities; repeated business fields agree. 1,026 raw rows have a `profile` value different from the containing directory suffix, so attribution uses the row's `profile` field. |
+| Fees/financing/account currency | DATA NOT AVAILABLE | P/L currency is not identified and costs are not separately recorded; do not aggregate P/L across the six account IDs. |
+| Trade export outcome semantics | PARTIAL/AMBIGUOUS | Three `SL` rows have positive P/L; `ACTIVE` rows still contain close-time, pips, and P/L fields. Do not equate exit labels to wins/losses or treat ACTIVE values as realized without source semantics. |
+| Position-sizing rule history | DATA NOT AVAILABLE | Units and SL/TP prices are present, but no sizing-rule/version, Fibonacci/probability input, or change timestamp is recorded. |
+| Market regime / OHLC | DATA NOT AVAILABLE IN THESE CSVs | Trade exports contain no H4 candles or regime labels; they cannot reconstruct wide-ranging H4 movement or JPY-strength onset. |
 | Portfolio/risk budget | DATA NOT AVAILABLE | No synchronized position count, margin, available capacity, or currency-exposure snapshot. Shadow sizing rows are not actual risk utilization. |
 | Demo baseline independence | NOT VERIFIED | Shadow records exist and are unapplied; active baseline runtime was not inspected. |
 | Calibration and out-of-sample tests | NOT CALCULATED | No valid fixed-horizon realized-price series; Brier, log loss, and calibration would be unsupported. |

@@ -9,7 +9,7 @@
 | Available multi-day MC history collected/inventoried | DONE, WITH GAPS | 100 D and 16 W files inventoried; full source filenames and checksums recorded. |
 | Earliest MC timestamp identified | DONE | 2026-09-13 05:03 UTC. |
 | Historical gaps identified | DONE | Includes daily 2026-09-24..10-12 archive gap and weekly gaps. |
-| Target-period trades reconstructed | PARTIAL | 457 v685 entry records; 345 unique lifecycle matches; 112 unmatched. |
+| Target-period trades reconstructed | PARTIAL | Profile exports provide 577 distinct lifecycle identities (1,603 raw rows) from 2026-10-22..11-20, matching exit-audit identities. In the 457 MC-tagged v685 entry rows, 345 have unique entry-to-lifecycle linkage and 112 remain unresolved. |
 | Wide-range two-sided stop events investigated | PARTIAL | USD_CHF cross-profile, two-direction SL event on 2026-11-13; no candle-based regime validation. |
 | Historical JPY consensus investigated | DONE, DESCRIPTIVE ONLY | 100/100 daily archived snapshots have 7/7 JPY alignment; gaps prevent dating onset. |
 | Strategy MC consumption chain inspected | DONE LOCALLY | Source and logs confirm per-pair MC usage; deployed code not verified. |

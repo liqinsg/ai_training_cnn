@@ -12,6 +12,8 @@ The script reads the v685 November logs, matching exit/shadow logs, and the MC a
 
 The source archive is outside this repository. The CSVs are auditable exports, not original file copies. `SHA256SUMS.txt` records hashes for source files, generated CSVs, and the generator.
 
+The supplemental trade exports in `daily_results_profile1/` through `daily_results_profile4/` are also source inputs in the manifest. They contain overlapping records; deduplicate using `(account, trade_id)` and attribute profile from the row's `profile` field, not the directory name.
+
 ## Export definitions
 
 | CSV | Definition |

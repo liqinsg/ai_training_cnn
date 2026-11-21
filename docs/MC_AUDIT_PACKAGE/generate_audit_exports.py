@@ -976,6 +976,14 @@ def write_manifest(
         "sizing_shadow_2026*.jsonl",
     ):
         sources.extend(path for path in logs_dir.glob(pattern) if path.is_file())
+    for profile in range(1, 5):
+        profile_dir = ROOT / f"daily_results_profile{profile}"
+        if profile_dir.is_dir():
+            sources.extend(
+                path
+                for path in profile_dir.glob("*_trade_log.csv")
+                if path.is_file()
+            )
     sources.extend(
         [
             ROOT / "fx_trade_bot_v685.py",
@@ -993,7 +1001,7 @@ def write_manifest(
     )
     lines = [
         "# SHA256 audit manifest",
-        "# Source files were read only; MC snapshots and logs were not modified.",
+        "# Source files were read only; source snapshots, logs, and trade CSVs were not modified.",
         "# Format: SHA256  PATH",
     ]
     for path in sources:
