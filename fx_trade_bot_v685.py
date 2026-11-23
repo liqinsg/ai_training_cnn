@@ -5,6 +5,7 @@
 # 唯一来源: config_profile.json → config_bot.py
 # ──────────────────────────────────────────────────────
 import contextlib
+import copy
 import sys
 import os
 import time
@@ -903,27 +904,10 @@ PROB_ZONE_CFG = cfg_bot("PROB_ZONE_CFG", config_bot.PROB_ZONE_DEFAULTS)
 PROB_ZONE_TF = "D"
 
 
-def _load_prob_index_once():
-    """加载一次 MC 快照 ``results`` 索引（每轮 1 次文件 IO，绝不每对重读）。
-
-    概率路线关闭 / 数据不可用 → ``{}``，run 退回 fib（或 v685）仓位与 TP。
-    """
-    if not USE_PROB_SIZING:
-        log.info(
-            "🎲 PROB-ZONE: DISABLED (OPT_USE_PROB_SIZING=0) — "
-            "fib / v685 sizing+TP used unchanged"
-        )
-        return {}
-    prob_index = load_prob_index(TODAY_STR, PROB_ZONE_TF)
-    if not prob_index:
-        log.warning(
-            f"⚠️ PROB-ZONE: no usable MC snapshot for {TODAY_STR} "
-            f"(tf={PROB_ZONE_TF}) — overlay INACTIVE, fib / v685 fallback"
-        )
-        return {}
+def _log_prob_zone_loaded(n_records):
+    """Emit the shared 『PROB-ZONE loaded』 config banner for either data source."""
     log.info(
-        f"🎲 PROB-ZONE: loaded {len(prob_index)} pair records from MC snapshot "
-        f"({TODAY_STR}, tf={PROB_ZONE_TF}) | "
+        f"🎲 PROB-ZONE: loaded {n_records} pair records | "
         f"S0={PROB_ZONE_CFG.get('S0')} S1={PROB_ZONE_CFG.get('S1')} "
         f"F_LO={PROB_ZONE_CFG.get('F_LO')} R_REF={PROB_ZONE_CFG.get('R_REF')} "
         f"C_LO={PROB_ZONE_CFG.get('C_LO')} MIN_LOT={PROB_ZONE_CFG.get('MIN_LOT')} "
@@ -934,7 +918,246 @@ def _load_prob_index_once():
         f"TP_MARGIN={PROB_ZONE_CFG.get('TP_BAND_MARGIN')} "
         f"TP_MAX_MULT={PROB_ZONE_CFG.get('TP_MAX_MULT')}"
     )
+
+
+def _load_prob_index_once(mc_cache=None):
+    """加载一次 MC 快照 ``results`` 索引（每轮 1 次，绝不每对重读）。
+
+    概率路线关闭 / 数据不可用 → ``{}``，run 退回 fib（或 v685）仓位与 TP。
+
+    Data source（PROB_USE_FUSED，仅改数据来源、不改任何阈值/权重）：
+      - True （默认）：Profile 2 已把 W+D 融合结果写回 ``mc_cache``，此处直接
+        复用该索引（键 ``EUR_USD`` → 重映射为快照键 ``EURUSD=X``），使
+        conv / risk_cap / 开仓门控 与共识层读取**同一份**融合记录，不再重读原始 D。
+      - False 或 mc_cache 无融合记录 → 降级为旧的「独立重读原始 D JSON」行为。
+    两条路径都会打印 ``📤 PROB_SOURCE:`` 供每轮核对口径。
+    """
+    if not USE_PROB_SIZING:
+        log.info("📤 PROB_SOURCE: D_ONLY (OPT_USE_PROB_SIZING=0 — prob route disabled)")
+        log.info(
+            "🎲 PROB-ZONE: DISABLED (OPT_USE_PROB_SIZING=0) — "
+            "fib / v685 sizing+TP used unchanged"
+        )
+        return {}
+
+    # 融合记录的唯一凭据：blend 块写入的 "blend_source" 字段（见 STEP 3）。
+    fused_ready = bool(mc_cache) and any(
+        isinstance(v, dict) and v.get("blend_source") for v in mc_cache.values()
+    )
+
+    if PROB_USE_FUSED and fused_ready:
+        prob_index = {
+            to_mc_key(k): v for k, v in mc_cache.items() if isinstance(v, dict)
+        }
+        log.info(
+            f"📤 PROB_SOURCE: FUSED — reusing {len(prob_index)} blended mc_cache "
+            f"records (no raw-D re-read)"
+        )
+        _log_prob_zone_loaded(len(prob_index))
+        return prob_index
+
+    # ── Fallback: legacy independent read of the raw D JSON ──────────────────
+    if PROB_USE_FUSED:
+        if not mc_cache:
+            log.warning(
+                "⚠️ PROB_SOURCE: FUSED requested but mc_cache is empty/unavailable — "
+                "falling back to raw D JSON"
+            )
+        elif not fused_ready:
+            log.info(
+                f"ℹ️ PROB_SOURCE: mc_cache carries no blended records "
+                f"(profile {PROFILE_ID} has no W blend) — using raw D JSON"
+            )
+
+    prob_index = load_prob_index(TODAY_STR, PROB_ZONE_TF)
+    if not prob_index:
+        log.info(f"📤 PROB_SOURCE: D_ONLY — raw D JSON ({TODAY_STR}, tf={PROB_ZONE_TF})")
+        log.warning(
+            f"⚠️ PROB-ZONE: no usable MC snapshot for {TODAY_STR} "
+            f"(tf={PROB_ZONE_TF}) — overlay INACTIVE, fib / v685 fallback"
+        )
+        return {}
+    log.info(f"📤 PROB_SOURCE: D_ONLY — raw D JSON ({TODAY_STR}, tf={PROB_ZONE_TF})")
+    _log_prob_zone_loaded(len(prob_index))
     return prob_index
+
+
+# ── FUSION SYNC (方案A · 完整重算) ────────────────────────────────────────────
+# Profile 2 W+D 融合只更新了顶层 p_up/p_down/drift/range_90/regime，派生块
+# （belief / prob_bands / distribution）仍是原始日线 D 的旧值 —— 同一记录里
+# 「顶层融合口径」与「底层 D 口径」并存（如顶层 p_up=45.5% 与下文 posterior=63.7%），
+# 健康闸门 / 风控罚分 / TP 目标各自读到不一致的依据。
+# 下面在融合后按**与生成器 (prob_mc_segment.py) 完全同构**的公式重算这三块，
+# 使记录口径自洽。不改动 w_w 权重、P_UP/P_DOWN 原始计算，也不触碰任何下单逻辑。
+_FUSE_STATES = ("UP", "DOWN", "RANGE")
+_FUSE_PRIOR_GAMMA = 2.0          # 同 prob_mc_segment.PRIOR_GAMMA
+_FUSE_THRESHOLD_TAU = 0.55       # 同 prob_mc_segment.THRESHOLD_TAU
+_FUSE_MIN_WIDTH_PCT_GATE = 1.2   # 同 prob_mc_segment.MIN_WIDTH_PCT_GATE
+_FUSE_DEFAULT_W_RANGE = 1.0
+_FUSE_W_RANGE_MAP = (
+    ("CONSOLIDATION RANGE", 1.3),
+    ("NEUTRAL", 1.0),
+    ("OVERBOUGHT", 0.7),
+    ("OVERSOLD", 0.7),
+    ("STRONG MOMENTUM", 0.5),
+)
+
+
+def _fuse_num(x):
+    """数值(排除 bool) → float；否则 None（fail-closed）。"""
+    if isinstance(x, bool) or not isinstance(x, (int, float)):
+        return None
+    return float(x)
+
+
+def _fuse_pair2(v):
+    """[lo, hi] → (float, float)；非法 → (None, None)。"""
+    if isinstance(v, (list, tuple)) and len(v) == 2:
+        return _fuse_num(v[0]), _fuse_num(v[1])
+    return None, None
+
+
+def _fuse_w_range(regime):
+    """regime 串 → RANGE 先验权重；未知回退 NEUTRAL 权重（同生成器 w_range_for）。"""
+    if not regime:
+        return _FUSE_DEFAULT_W_RANGE
+    up = str(regime).upper()
+    for token, weight in _FUSE_W_RANGE_MAP:
+        if token in up:
+            return weight
+    return _FUSE_DEFAULT_W_RANGE
+
+
+def _fuse_normalize(raw, decimals=4):
+    """同生成器 _normalize：按总和归一化；总和<=0 → 均匀分布。"""
+    total = sum(raw.values())
+    if total <= 0:
+        uniform = round(1.0 / len(raw), decimals)
+        return {k: uniform for k in raw}
+    return {k: round(v / total, decimals) for k, v in raw.items()}
+
+
+def _fuse_sync_derived_blocks(d_blend, fused_p_up, fused_p_down, d_range, fused_range):
+    """把派生块重锚到融合口径（方案A · 完整重算）。
+
+    * ``belief.prior/posterior``：以融合 p_up/p_down 为先验锚（似然均匀 → posterior==prior）
+    * ``belief.verdict/edge``：按新 posterior 重判
+    * ``prob_bands.shape.prob_below/prob_above``：= 融合 p_down / p_up
+    * ``distribution``（整块）与 ``prob_bands`` 价格边界：以融合 range_90 为中心、
+      按宽度比 **等比例映射**（仿射，保持分位结构相对形状）
+
+    三块齐备且区间可映射 → True（供写 ``blend_complete``）；否则 False（保持原值）。
+    仅重算派生量，不改变任何权重/阈值/原始概率计算。
+    """
+    dist = d_blend.get("distribution")
+    pb = d_blend.get("prob_bands")
+    belief = d_blend.get("belief")
+    if not (isinstance(dist, dict) and isinstance(pb, dict) and isinstance(belief, dict)):
+        return False
+
+    d_lo, d_hi = _fuse_pair2(d_range)
+    f_lo, f_hi = _fuse_pair2(fused_range)
+    if None in (d_lo, d_hi, f_lo, f_hi):
+        return False
+    d_half = (d_hi - d_lo) / 2.0
+    f_half = (f_hi - f_lo) / 2.0
+    if d_half <= 0 or f_half <= 0:
+        return False
+    scale = f_half / d_half
+    d_center = (d_hi + d_lo) / 2.0
+    f_center = (f_hi + f_lo) / 2.0
+
+    def _map(x):
+        return f_center + (x - d_center) * scale
+
+    decimals = 3 if "JPY" in str(d_blend.get("pair", "")) else 5
+
+    # ── distribution：整块等比例（quantiles + min/max/mean/std）──────────────
+    q = dist.get("quantiles")
+    if isinstance(q, dict):
+        dist["quantiles"] = {
+            k: (round(_map(v), decimals) if _fuse_num(v) is not None else v)
+            for k, v in q.items()
+        }
+    for field in ("min", "max", "mean"):
+        v = _fuse_num(dist.get(field))
+        if v is not None:
+            dist[field] = round(_map(v), decimals)
+    v = _fuse_num(dist.get("std"))
+    if v is not None:
+        dist["std"] = round(abs(v * scale), decimals)
+
+    # ── prob_bands：价格边界同一仿射映射 + prob_below/above 对齐融合口径 ─────
+    for band in pb.get("bands") or []:
+        if not isinstance(band, dict):
+            continue
+        for edge in ("price_lo", "price_hi"):
+            v = _fuse_num(band.get(edge))
+            if v is not None:
+                band[edge] = round(_map(v), decimals)
+    cur = pb.get("current")
+    if isinstance(cur, dict):
+        for edge in ("price_lo", "price_hi"):
+            v = _fuse_num(cur.get(edge))
+            if v is not None:
+                cur[edge] = round(_map(v), decimals)
+        lo, hi = _fuse_num(cur.get("price_lo")), _fuse_num(cur.get("price_hi"))
+        price = _fuse_num(d_blend.get("current_price"))
+        if None not in (lo, hi, price) and hi > lo:
+            cur["position_in_band_pct"] = round(
+                max(0.0, min(100.0, (price - lo) / (hi - lo) * 100.0)), 1
+            )
+    shape = pb.get("shape")
+    if isinstance(shape, dict):
+        shape["prob_below"] = round(fused_p_down, 1)
+        shape["prob_above"] = round(fused_p_up, 1)
+        sq = shape.get("quantiles")
+        if isinstance(sq, dict):
+            shape["quantiles"] = {
+                k: (round(_map(v), decimals) if _fuse_num(v) is not None else v)
+                for k, v in sq.items()
+            }
+        for field in ("mean", "median", "mode"):
+            v = _fuse_num(shape.get(field))
+            if v is not None:
+                shape[field] = round(_map(v), decimals)
+
+    # ── belief：以融合 p_up/p_down 重锚先验 → 后验（似然均匀）→ edge/verdict ─
+    spread = abs(fused_p_up - fused_p_down) / 100.0
+    w_range = _fuse_w_range(d_blend.get("regime", ""))
+    prior = _fuse_normalize({
+        "UP": fused_p_up / 100.0,
+        "DOWN": fused_p_down / 100.0,
+        "RANGE": ((1.0 - spread) ** _FUSE_PRIOR_GAMMA) * w_range,
+    })
+    likelihood = {s: round(1.0 / len(_FUSE_STATES), 4) for s in _FUSE_STATES}
+    belief["prior"] = {s: prior[s] for s in _FUSE_STATES}
+    belief["posterior"] = {s: prior[s] for s in _FUSE_STATES}
+    belief["likelihood"] = dict(likelihood)
+    belief["evidence"] = [{
+        "name": "regime",
+        "value": d_blend.get("regime", ""),
+        "spread": round(spread, 4),
+        "likelihood": dict(likelihood),
+    }]
+    order = sorted(_FUSE_STATES, key=lambda s: prior[s], reverse=True)
+    belief["edge"] = {
+        "argmax": order[0],
+        "value": round(prior[order[0]], 4),
+        "spread": round(prior[order[0]] - prior[order[1]], 4),
+    }
+    tau = _fuse_num(belief.get("threshold_tau"))
+    tau = _FUSE_THRESHOLD_TAU if tau is None else tau
+    price = _fuse_num(d_blend.get("current_price"))
+    range_pct = ((f_hi - f_lo) / price * 100.0) if (price and price > 0) else None
+    narrow = range_pct is None or range_pct < _FUSE_MIN_WIDTH_PCT_GATE
+    degenerate = bool(dist.get("degenerate", False)) or bool(pb.get("degenerate", False))
+    belief["verdict"] = (
+        "NO_EDGE"
+        if (degenerate or narrow or prior[order[0]] < tau)
+        else order[0]
+    )
+    return True
 
 
 def cfg_mod(name, default):  # [OPT-12] was cfg(): shadowed `cfg = C.get_profile(...)`
@@ -949,10 +1172,41 @@ def _opt(name, default):
     return bool(cfg_bot(f"OPT_{name}", default))
 
 
+# [OPT-0] 字符串运行时开关：env OPT_<NAME> > config OPT_<NAME> > default
+def _opt_str(name, default):
+    raw = os.getenv(f"OPT_{name}")
+    if raw is not None and raw.strip():
+        return raw.strip()
+    return str(cfg_bot(f"OPT_{name}", default))
+
+
 # Prob-route overlay master switch. Default OFF (prob_zone.ENABLED=false) so the
 # §14 route is opt-in: enable with OPT_USE_PROB_SIZING=1 (env) or
 # OPT_USE_PROB_SIZING=true / prob_zone.ENABLED=true in config_profile.json.
 USE_PROB_SIZING = _opt("USE_PROB_SIZING", PROB_ZONE_CFG.get("ENABLED", False))
+
+# Prob-route DATA-SOURCE switch. Default ON → prob_index reuses the already-loaded
+# mc_cache (which Profile 2 has already W+D-blended) instead of re-reading the raw
+# D JSON, so conv / risk_cap / entry-gate see the SAME fused record as the
+# consensus layer. Set OPT_PROB_USE_FUSED=0 to fall back to the legacy raw-D read
+# (pair-for-pair A/B control). Data source only — no threshold/weight changes.
+PROB_USE_FUSED = _opt("PROB_USE_FUSED", True)
+
+# ─── W+D FUSION WEIGHT MODE (Profile 2 only) ─────────────────────────────────
+# 只改融合「加权公式」，不改原始 D/W p_up/p_down 计算、不改下单阈值/风控参数。
+#   CONSERVATIVE_DECAY (默认): 分歧 ↑ ⇒ 信息质量 ↓ ⇒ 两边都少信
+#       w_w = clip(BASE_W_WEIGHT − deviation×DECAY_RATE, MIN_W_WEIGHT, MAX_W_WEIGHT)
+#       effective_confidence = 1 − deviation×CONFIDENCE_DECAY   ∈ [0.5, 1.0]
+#       blend_position_scale = effective_confidence  (仅作乘子，不改 base_lot / 风控上限)
+#   LEGACY_W_DOMINANT (对照): 旧行为 w_w = min(0.65 + deviation×0.6, 0.85), conf = 1.0
+#     → 逐对精确复现修复前结果（误差 < 0.15pp）。
+# 切换: env OPT_FUSION_WEIGHT_MODE 或 config OPT_FUSION_WEIGHT_MODE。
+FUSION_WEIGHT_MODE = _opt_str("FUSION_WEIGHT_MODE", "CONSERVATIVE_DECAY")
+BASE_W_WEIGHT = float(cfg_bot("BASE_W_WEIGHT", 0.55))     # W 基础先验：略偏长期
+MAX_W_WEIGHT = float(cfg_bot("MAX_W_WEIGHT", 0.70))       # W 上限：避免单边主导
+MIN_W_WEIGHT = float(cfg_bot("MIN_W_WEIGHT", 0.40))       # W 下限：分歧极大时略偏 D
+DECAY_RATE = float(cfg_bot("DECAY_RATE", 0.30))           # 分歧→权重衰减（10%分歧 → −3%）
+CONFIDENCE_DECAY = float(cfg_bot("CONFIDENCE_DECAY", 0.50))  # 分歧→信心衰减（10%分歧 → −5%）
 
 
 # ─── INIT FOLDERS & LOGGING ──────────────────────────────────────────────────
@@ -2446,8 +2700,22 @@ def main():
                 w_up = w.get("p_up", 50.0)
                 d_up = d.get("p_up", 50.0)
                 deviation = abs(w_up - d_up) / 100.0
-                w_weight = min(0.65 + deviation * 0.6, 0.85)
+                if str(FUSION_WEIGHT_MODE).strip().upper() == "LEGACY_W_DOMINANT":
+                    # 旧对照模式：分歧越大越信 W — 精确复现修复前行为
+                    w_weight = min(0.65 + deviation * 0.6, 0.85)
+                    effective_confidence = 1.0
+                else:
+                    # 保守衰减模式：分歧 = 信息质量下降 → W 权重下调 + 整体信心衰减
+                    w_weight = min(
+                        max(BASE_W_WEIGHT - deviation * DECAY_RATE, MIN_W_WEIGHT),
+                        MAX_W_WEIGHT,
+                    )
+                    effective_confidence = max(
+                        0.5, 1.0 - deviation * CONFIDENCE_DECAY
+                    )
                 d_weight = 1.0 - w_weight
+                # blend_position_scale 仅作为「方向强度」之外的乘子，不改 base_lot / 风控上限
+                blend_position_scale = effective_confidence
                 fused_p_up = w_up * w_weight + d_up * d_weight
                 fused_p_down = 100.0 - fused_p_up
                 fused_ann_drift = (
@@ -2460,7 +2728,15 @@ def main():
                 fused_range_hi = w_hi + (d_hi - w_hi) * 0.3
                 d_regime = d.get("regime", "?")
                 w_regime = w.get("regime", "?")
+                # 原始标签（末词）：MOMENTUM / RANGE / NEUTRAL（+ OVERBOUGHT/OVERSOLD）
+                # 规则只读 regime_D / regime_W；regime_fused 仅用于日志/展示。
+                d_label = str(d_regime).split()[-1] if str(d_regime).strip() else "?"
+                w_label = str(w_regime).split()[-1] if str(w_regime).strip() else "?"
                 d_blend = dict(d)
+                # 深拷贝派生块：避免与原始 D 记录共享同一对象（浅拷贝正是"半融合"根因）
+                d_blend["distribution"] = copy.deepcopy(d.get("distribution"))
+                d_blend["prob_bands"] = copy.deepcopy(d.get("prob_bands"))
+                d_blend["belief"] = copy.deepcopy(d.get("belief"))
                 d_blend["p_up"] = round(fused_p_up, 1)
                 d_blend["p_down"] = round(fused_p_down, 1)
                 d_blend["p_up_pct"] = round(fused_p_up, 1)
@@ -2474,18 +2750,55 @@ def main():
                 d_blend["expected_price"] = d.get(
                     "expected_price", d.get("current_price", 0)
                 )
-                d_blend["regime"] = (
-                    f"🧬 FUSED | D:{d_regime.split()[-1]} W:{w_regime.split()[-1]} | w_w={w_weight:.0%}"
-                )
+                # 三字段拆分：规则读 regime_D / regime_W（原始标签）；
+                # regime_fused 仅用于日志/展示，不再作为规则输入。
+                regime_fused = f"🧬 FUSED | D:{d_label} W:{w_label}"
+                d_blend["regime_D"] = d_label
+                d_blend["regime_W"] = w_label
+                d_blend["regime_fused"] = regime_fused
+                # DEPRECATED: 顶层 regime 保留 = regime_fused（兼容外部读取）；
+                # 规则请读 regime_D / regime_W，勿再对 regime 做子串判断。
+                d_blend["regime"] = regime_fused
                 d_blend["blend_source"] = {
                     "D": d_name,
                     "W": w_name,
                     "w_weight": round(w_weight, 2),
                 }
+                # 审计字段：融合模式 / 归一化分歧 / 有效信心 / 仓位乘子
+                d_blend["blend_mode"] = FUSION_WEIGHT_MODE
+                d_blend["deviation"] = round(deviation, 4)
+                d_blend["effective_confidence"] = round(effective_confidence, 4)
+                d_blend["blend_position_scale"] = round(blend_position_scale, 4)
+                # 方案A：派生块（belief / prob_bands / distribution）同步重锚到融合口径，
+                # 使顶层 p_up/p_down/range_90 与底层 posterior/prob_below/quantiles 自洽。
+                _synced = _fuse_sync_derived_blocks(
+                    d_blend,
+                    d_blend["p_up"],
+                    d_blend["p_down"],
+                    [d_lo, d_hi],
+                    d_blend["range_90"],
+                )
+                d_blend["blend_complete"] = bool(_synced)
                 mc_cache[p] = d_blend
+                if _synced:
+                    _bl = d_blend.get("belief") or {}
+                    _sh = (d_blend.get("prob_bands") or {}).get("shape") or {}
+                    log.info(
+                        f"✅ FUSION SYNC — {p}: belief/prob_bands/quantiles 已同步更新 | "
+                        f"p_up={d_blend['p_up']} p_down={d_blend['p_down']} "
+                        f"posterior={_bl.get('posterior')} "
+                        f"prob_below={_sh.get('prob_below')} verdict={_bl.get('verdict')}"
+                    )
+                else:
+                    log.warning(
+                        f"⚠️ FUSION SYNC — {p}: 派生块缺失或区间不可映射，"
+                        f"blend_complete=False（保留原始 D 派生值）"
+                    )
                 log.info(
-                    f"🧬 FUSED {p}: P_UP D={d_up:.1f} W={w_up:.1f} → {fused_p_up:.1f}% "
-                    f"(w_w={w_weight:.0%}) | "
+                    f"🧬 FUSION [{p}] w_w={w_weight:.0%} dev={deviation*100:.0f}pp "
+                    f"conf={effective_confidence:.0%} scale={blend_position_scale:.2f} "
+                    f"mode={FUSION_WEIGHT_MODE} | "
+                    f"P_UP D={d_up:.1f} W={w_up:.1f} → {fused_p_up:.1f}% | "
                     f"range W={[round(w_lo,5), round(w_hi,5)]} D={[round(d_lo,5), round(d_hi,5)]} "
                     f"→ [{round(fused_range_lo,5)}, {round(fused_range_hi,5)}]"
                 )
@@ -2876,8 +3189,8 @@ def main():
     # ─── Fib Zone overlay: load the MC+Fib bundle ONCE for the whole run ─────
     # One file read via interface.py; every pair below reads from this index.
     fib_index = _load_fib_index_once()
-    # ─── Prob Zone overlay (§14): same single-read discipline ────────────────
-    prob_index = _load_prob_index_once()
+    # ─── Prob Zone overlay (§14): reuse the fused mc_cache (or raw-D fallback) ──
+    prob_index = _load_prob_index_once(mc_cache)
 
     for pair in signal_eval_pairs:
         if pair not in pair_data:
@@ -3249,6 +3562,15 @@ def main():
             )
             audit_line = format_prob_audit(pair, direction, plan)
             log.info(f"🎲 PROB-ZONE {pair} {direction} | {audit_line}")
+            # 独立标注：融合记录两侧原始 regime 标签 → 取保守 mult（仅展示，规则在
+            # utils.prob_zone_sizing 内按 regime_D/regime_W 分别判读）
+            _rec_d = prob_rec.get("regime_D") if isinstance(prob_rec, dict) else None
+            _rec_w = prob_rec.get("regime_W") if isinstance(prob_rec, dict) else None
+            _rm = plan.get("regime_mult")
+            if (_rec_d or _rec_w) and isinstance(_rm, (int, float)):
+                log.info(
+                    f"ℹ️ REGIME {pair} D={_rec_d or '-'} W={_rec_w or '-'} → mult={_rm:.2f}"
+                )
             if plan["skip"]:
                 log.info(
                     f"⏭️ PROB-ZONE SKIP {pair} {direction} — reason={plan['reason']} "
@@ -3277,6 +3599,27 @@ def main():
         tp_pips_eff = plan["tp_pips"]
         size_units = plan["size_units"]
         _zone_audit[pair] = audit_line
+
+        # ─── W+D 融合仓位乘子（仅 Profile 2 融合记录）────────────────────────
+        # blend_position_scale = effective_confidence ∈ [0.5, 1.0]，只缩不放。
+        # LEGACY 模式恒为 1.0 → 零影响（逐对精确复现）。仅作乘子：
+        # 不改 base_lot、不触碰风控上限 / 单笔上限；随后仍走 ladder 归一化。
+        # PROB_USE_FUSED=0（原始 D 对照）时整条融合口径停用 → 完全回退。
+        _blend_rec = (
+            mc_cache.get(pair) if (PROFILE_ID == 2 and PROB_USE_FUSED) else None
+        )
+        _blend_scale = (
+            float(_blend_rec.get("blend_position_scale", 1.0))
+            if isinstance(_blend_rec, dict)
+            else 1.0
+        )
+        if 0.0 < _blend_scale < 1.0:
+            _units_pre_blend = int(size_units)
+            size_units = int(size_units * _blend_scale)
+            log.info(
+                f"🧬 BLEND-SIZE {pair} {direction} | "
+                f"{_units_pre_blend} × {_blend_scale:.2f} → {size_units}"
+            )
 
         if cfg_bot("SL_USE_ZONE_HIERARCHY", True):
             sl_price, _ = compute_sl_zone(
