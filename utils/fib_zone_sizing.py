@@ -1,4 +1,7 @@
-"""utils/fib_zone_sizing.py — Fib Zone execution overlay for fx_trade_bot v685.
+"""LEGACY — NO LONGER IN USE: Replaced by prob_zone_sizing.py.
+
+Archived reference implementation: utils/fib_zone_sizing.py — Fib Zone
+execution overlay for fx_trade_bot v685.
 
 The Fib Zone is an EXECUTION overlay only. It is allowed to touch exactly three
 things:
@@ -47,8 +50,8 @@ logger = logging.getLogger(__name__)
 # treated as "fib unavailable" -> graceful fallback, never an exception.
 SUPPORTED_TIMEFRAMES = ("D",)
 
-# Mirror of config_bot.FIB_ZONE_DEFAULTS (authoritative copy lives there).
-# Used only when a caller passes an incomplete / empty cfg dict.
+# Historical mirror of the former config_bot.FIB_ZONE_DEFAULTS.
+# Retained only with this archived implementation.
 _CFG_FALLBACK: Dict[str, Any] = {
     "ENABLED": True,
     "MODE": "filter",

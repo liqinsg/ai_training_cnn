@@ -1,3 +1,5 @@
+> ARCHIVED — Historical Fib sizing integration prompt; probability-factor sizing is now the sole active path.
+
 # MC Fib Zone 执行层 — 接入 Prompt（供 ai_training_cnn 使用）
 
 > 本文件是需要**原样粘贴到 `ai_training_cnn` 项目**的 prompt。

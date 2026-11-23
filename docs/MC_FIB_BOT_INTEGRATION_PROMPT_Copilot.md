@@ -1,3 +1,5 @@
+> ARCHIVED — Historical Fib sizing integration prompt; probability-factor sizing is now the sole active path.
+
 # 为 fx_trade_bot v685 增加 Fib Zone 执行层（仅影响仓位与 TP，不影响信号方向）
 
 ## 数据接入（重要：必须走 interface.py）

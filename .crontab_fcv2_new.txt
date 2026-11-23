@@ -5,31 +5,29 @@
 #   OPT_USE_FEATURE_CONTRACT_V2=1
 # Legacy demo lines (fx_trade_bot.py, 34-feature) kept commented below
 # for one-step rollback. Backup: .cron_backup_*.txt
-# 2026-11-17: 所有 fx_trade_bot_v685.py 腿（含实盘腿）加上 OPT_USE_PROB_SIZING=1
-#   → 执行覆盖层改走 §14 概率路线（MC 开仓门控 + 方向确信度仓位 + regime 定仓
-#   + 目标分位带 TP）；=0 或不设则回到 fib overlay（一键回滚）。
+# 2026-11-24: fx_trade_bot_v685.py always uses probability-factor sizing (no mode switch).
 #   bot 运行时段保持 */15 * * * 1-5（本地）不变，休市由 market halt 探针跳过。
 # ═══════════════════════════════════════════════════════════════
 # PF-A — Trend
-*/15 * * * 1-5 cd $HOME/projects/ai_training_cnn && FX_BOT_MODEL_STEM=models_fcv2/trade_model_xgb OPT_USE_FEATURE_CONTRACT_V2=1 OPT_USE_PROB_SIZING=1 /usr/local/bin/jitter-run.sh -m 1 -- /home/ubuntu/miniconda3/envs/ai-sprint/bin/python fx_trade_bot_v685.py -p 1 >> logs/bot_fcv2_p1.log 2>&1
+*/15 * * * 1-5 cd $HOME/projects/ai_training_cnn && FX_BOT_MODEL_STEM=models_fcv2/trade_model_xgb OPT_USE_FEATURE_CONTRACT_V2=1 /usr/local/bin/jitter-run.sh -m 1 -- /home/ubuntu/miniconda3/envs/ai-sprint/bin/python fx_trade_bot_v685.py -p 1 >> logs/bot_fcv2_p1.log 2>&1
 #LEGACY-DEMO */15 * * * 1-5 cd $HOME/projects/ai_training_cnn && /usr/local/bin/jitter-run.sh -m 1 -- /home/ubuntu/miniconda3/envs/ai-sprint/bin/python fx_trade_bot.py -p 1 >> logs/bot_profile1_A.log 2>&1
 
 # PF-B — Balanced
-*/15 * * * 1-5 cd $HOME/projects/ai_training_cnn && FX_BOT_MODEL_STEM=models_fcv2/trade_model_xgb OPT_USE_FEATURE_CONTRACT_V2=1 OPT_USE_PROB_SIZING=1 /usr/local/bin/jitter-run.sh -m 2 -- /home/ubuntu/miniconda3/envs/ai-sprint/bin/python fx_trade_bot_v685.py -p 2 >> logs/bot_fcv2_p2.log 2>&1
-*/15 * * * 1-5 cd $HOME/projects/ai_training_cnn && FX_BOT_MODEL_STEM=models_fcv2/trade_model_xgb OPT_USE_FEATURE_CONTRACT_V2=1 OPT_USE_PROB_SIZING=1 /usr/local/bin/jitter-run.sh -m 2 -- /home/ubuntu/miniconda3/envs/ai-sprint/bin/python fx_trade_bot_v685.py --live -p 2 --lots 4 -a 3 >> logs/bot_fcv2_p2_live.log 2>&1
+*/15 * * * 1-5 cd $HOME/projects/ai_training_cnn && FX_BOT_MODEL_STEM=models_fcv2/trade_model_xgb OPT_USE_FEATURE_CONTRACT_V2=1 /usr/local/bin/jitter-run.sh -m 2 -- /home/ubuntu/miniconda3/envs/ai-sprint/bin/python fx_trade_bot_v685.py -p 2 >> logs/bot_fcv2_p2.log 2>&1
+*/15 * * * 1-5 cd $HOME/projects/ai_training_cnn && FX_BOT_MODEL_STEM=models_fcv2/trade_model_xgb OPT_USE_FEATURE_CONTRACT_V2=1 /usr/local/bin/jitter-run.sh -m 2 -- /home/ubuntu/miniconda3/envs/ai-sprint/bin/python fx_trade_bot_v685.py --live -p 2 --lots 4 -a 3 >> logs/bot_fcv2_p2_live.log 2>&1
 #LEGACY-DEMO */15 * * * 1-5 cd $HOME/projects/ai_training_cnn && /usr/local/bin/jitter-run.sh -m 2 -- /home/ubuntu/miniconda3/envs/ai-sprint/bin/python fx_trade_bot.py -p 2 >> logs/bot_profile2_B.log 2>&1
 
 # PF-C — Conservative
-*/15 * * * 1-5 cd $HOME/projects/ai_training_cnn && FX_BOT_MODEL_STEM=models_fcv2/trade_model_xgb OPT_USE_FEATURE_CONTRACT_V2=1 OPT_USE_PROB_SIZING=1 /usr/local/bin/jitter-run.sh -m 3 -- /home/ubuntu/miniconda3/envs/ai-sprint/bin/python fx_trade_bot_v685.py -p 3 >> logs/bot_fcv2_p3.log 2>&1
-#*/15 * * * 1-5 cd $HOME/projects/ai_training_cnn && FX_BOT_MODEL_STEM=models_fcv2/trade_model_xgb OPT_USE_FEATURE_CONTRACT_V2=1 OPT_USE_PROB_SIZING=1 /usr/local/bin/jitter-run.sh -m 3 -- /home/ubuntu/miniconda3/envs/ai-sprint/bin/python fx_trade_bot_v685.py -p 3 --live >> logs/bot_fcv2_p3_live.log 2>&1
+*/15 * * * 1-5 cd $HOME/projects/ai_training_cnn && FX_BOT_MODEL_STEM=models_fcv2/trade_model_xgb OPT_USE_FEATURE_CONTRACT_V2=1 /usr/local/bin/jitter-run.sh -m 3 -- /home/ubuntu/miniconda3/envs/ai-sprint/bin/python fx_trade_bot_v685.py -p 3 >> logs/bot_fcv2_p3.log 2>&1
+#*/15 * * * 1-5 cd $HOME/projects/ai_training_cnn && FX_BOT_MODEL_STEM=models_fcv2/trade_model_xgb OPT_USE_FEATURE_CONTRACT_V2=1 /usr/local/bin/jitter-run.sh -m 3 -- /home/ubuntu/miniconda3/envs/ai-sprint/bin/python fx_trade_bot_v685.py -p 3 --live >> logs/bot_fcv2_p3_live.log 2>&1
 #LEGACY-DEMO */15 * * * 1-5 cd $HOME/projects/ai_training_cnn && /usr/local/bin/jitter-run.sh -m 3 -- /home/ubuntu/miniconda3/envs/ai-sprint/bin/python fx_trade_bot.py -p 3 >> logs/bot_profile3_C.log 2>&1
 #*/15 * * * 1-5 cd $HOME/projects/ai_training_cnn && /usr/local/bin/jitter-run.sh -m 6 -- /home/ubuntu/miniconda3/envs/ai-sprint/bin/python fx_trade_bot_v685.py -p 3 --live -a 3 >> logs/bot_profile3_Clive.log 2>&1
 
 #*/15 * * * 1-5 /usr/local/bin/jitter-run.sh -m 3 -- $HOME/projects/ai_training_cnn/launch_dual_bot.sh
 
 # PF-D — Structure
-*/15 * * * 1-5 cd $HOME/projects/ai_training_cnn && FX_BOT_MODEL_STEM=models_fcv2/trade_model_xgb OPT_USE_FEATURE_CONTRACT_V2=1 OPT_USE_PROB_SIZING=1 /usr/local/bin/jitter-run.sh -m 4 -- /home/ubuntu/miniconda3/envs/ai-sprint/bin/python fx_trade_bot_v685.py -p 4 >> logs/bot_fcv2_p4.log 2>&1
-#*/15 * * * 1-5 cd $HOME/projects/ai_training_cnn && FX_BOT_MODEL_STEM=models_fcv2/trade_model_xgb OPT_USE_FEATURE_CONTRACT_V2=1 OPT_USE_PROB_SIZING=1 /usr/local/bin/jitter-run.sh -m 4 -- /home/ubuntu/miniconda3/envs/ai-sprint/bin/python fx_trade_bot_v685.py -p 4 --live >> logs/bot_fcv2_p4_live.log 2>&1
+*/15 * * * 1-5 cd $HOME/projects/ai_training_cnn && FX_BOT_MODEL_STEM=models_fcv2/trade_model_xgb OPT_USE_FEATURE_CONTRACT_V2=1 /usr/local/bin/jitter-run.sh -m 4 -- /home/ubuntu/miniconda3/envs/ai-sprint/bin/python fx_trade_bot_v685.py -p 4 >> logs/bot_fcv2_p4.log 2>&1
+#*/15 * * * 1-5 cd $HOME/projects/ai_training_cnn && FX_BOT_MODEL_STEM=models_fcv2/trade_model_xgb OPT_USE_FEATURE_CONTRACT_V2=1 /usr/local/bin/jitter-run.sh -m 4 -- /home/ubuntu/miniconda3/envs/ai-sprint/bin/python fx_trade_bot_v685.py -p 4 --live >> logs/bot_fcv2_p4_live.log 2>&1
 #LEGACY-DEMO */15 * * * 1-5 cd $HOME/projects/ai_training_cnn && /usr/local/bin/jitter-run.sh -m 4 -- /home/ubuntu/miniconda3/envs/ai-sprint/bin/python fx_trade_bot.py -p 4 >> logs/bot_profile4_D.log 2>&1
 #*/15 * * * 1-5 cd $HOME/projects/ai_training_cnn && /usr/local/bin/jitter-run.sh -m 5 -- /home/ubuntu/miniconda3/envs/ai-sprint/bin/python fx_trade_bot.py -p 4 --live >> logs/bot_profile4_D_live.log 2>&1
 
@@ -41,7 +39,8 @@
 # ─── Maintenance ─────────────────────────────────────────────────
 0 0 * * 0 cd $HOME/projects/ai_training_cnn && mv logs/bot_h4.log logs/bot_h4_$(date +\%Y\%m\%d).log && touch logs/bot_h4.log
 0 3 * * 1-5 find $HOME/projects/ai_training_cnn/daily_results -name "*.json" -mtime +7 -delete
-0 0 * * 1-5 cd $HOME/projects/ai_training_cnn && /home/ubuntu/miniconda3/envs/ai-sprint/bin/python retrain_model.py >> logs/bot_cron.log 2>&1
+5 0 * * 1-5 cd $HOME/projects/ai_training_cnn && /home/ubuntu/miniconda3/envs/ai-sprint/bin/python retrain_model.py >> logs/bot_cron.log 2>&1
+20 0 * * 1-5 cd $HOME/projects/ai_training_cnn && RETRAIN_PROFILE=2 RETRAIN_BARS=5000 FX_MODEL_STEM=models_fcv2/trade_model_xgb OPT_USE_FEATURE_CONTRACT_V2=1 /home/ubuntu/miniconda3/envs/ai-sprint/bin/python retrain_model.py >> logs/retrain_fcv2.log 2>&1
 
 
 

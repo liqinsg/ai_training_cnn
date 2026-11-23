@@ -6,7 +6,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from utils.fib_zone_sizing import to_mc_key
+from utils.prob_zone_sizing import to_mc_key
 
 
 SCRIPT = Path(__file__).resolve().parent.parent / "fx_monte_carlo.py"

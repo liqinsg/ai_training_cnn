@@ -50,52 +50,12 @@ PROFILE_DEFAULTS: Dict = _FULL["profile_defaults"]
 PROFILES: Dict = _FULL["profiles"]
 PROFILE_IDS = sorted([int(k) for k in PROFILES.keys()])
 
-# ─── Fib Zone execution overlay ───
-# The bot exports exactly ONE dict (FIB_ZONE_CFG) instead of a pile of
-# FIB_ZONE_* constants; every knob the overlay reads lives in here.
-# Merge order: FIB_ZONE_DEFAULTS → global.fib_zone → profile.fib_zone
-FIB_ZONE_DEFAULTS: Dict = {
-    "ENABLED": True,
-    "MODE": "filter",
-    "CENTER_EDGE": 2,
-    "SIZE_LADDER": [1.0, 0.5, 0.25, 0.1],
-    "MIN_LOT_LIVE": 1,
-    "MIN_LOT_DEMO": 1000,
-    "TP_ROOM_REF": 0.5,
-    "TP_SCALE_MIN": 0.5,
-    "TP_SCALE_MAX": 1.0,
-    "MIN_TP_PIPS": 10,
-    "SKIP_WHEN_DEGENERATE": True,
-    "SKIP_BREAKOUT": False,
-}
-
-
-def merge_fib_zone_cfg(profile_id: Optional[int] = None) -> Dict:
-    """Return the fully merged Fib Zone cfg (defaults → global → profile)."""
-    merged = dict(FIB_ZONE_DEFAULTS)
-    global_fib = GLOBAL.get("fib_zone")
-    if isinstance(global_fib, dict):
-        merged.update(global_fib)
-    if profile_id is not None:
-        profile = PROFILES.get(str(profile_id)) or {}
-        profile_fib = profile.get("fib_zone")
-        if isinstance(profile_fib, dict):
-            merged.update(profile_fib)
-    return merged
-
-
-# Module-level export (defaults + global) — cfg_bot() picks the profile-aware
-# copy out of the merged profile dict when a run starts.
-FIB_ZONE_CFG: Dict = merge_fib_zone_cfg()
-
-
-# ─── Prob Zone execution overlay（概率路线 · §14）───
-# 取代 fib 旧口径（zone_index → K）的仓位/TP 路线。所有旋钮集中在这一个 dict。
+# ─── Probability-based execution overlay ───
+# All runtime sizing and TP settings live in this dictionary.
 # Merge order: PROB_ZONE_DEFAULTS → global.prob_zone → profile.prob_zone
 # §14.8 候选初值（待回测标定，非冻结）；REQUIRE_ALIGNED / REGIME_MIN_MULT /
 # MC_MIN_ALIGNED_PCT 为本仓库 Owner 裁定补充项。
 PROB_ZONE_DEFAULTS: Dict = {
-    "ENABLED": False,
     # §14.3.1 方向确信度映射
     "S0": 0.10,
     "S1": 0.40,
@@ -284,8 +244,6 @@ def build_profile_cfg(profile_id: int) -> Dict:
             "DIRECTION_FLIP_EXIT_ENABLED",
             get_global("ranking_cooldown.DIRECTION_FLIP_EXIT_ENABLED"),
         ),
-        # fib_zone execution overlay — defaults → global.fib_zone → profile.fib_zone
-        "FIB_ZONE_CFG": merge_fib_zone_cfg(profile_id),
         # prob_zone execution overlay (§14 概率路线) — defaults → global → profile
         "PROB_ZONE_CFG": merge_prob_zone_cfg(profile_id),
     }

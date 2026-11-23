@@ -9,7 +9,6 @@ import copy
 import sys
 import os
 import time
-import subprocess
 
 from utils.logging_utils import get_logger
 import argparse
@@ -67,22 +66,24 @@ from fx_trade_bot_utils_v1 import (
     PositionStatus,
 )
 from fx_trade_bot_ml import ensure_model
+from utils.ml_alert_reporting import report_ml_init_result
 from oandapyV20.endpoints.pricing import PricingInfo
 
 # from portfolio_balance import balance_from_config
 from sl_zone_hierarchy import compute_sl_zone
-from utils.fib_zone_sizing import (
-    compute_zone_plan,
-    format_zone_audit,
-    load_fib_index,
-    next_rung_up,
-    normalize_to_ladder,
-    to_mc_key,
-)
 from utils.prob_zone_sizing import (
+    PROB_FACTORS,
+    apply_strong_momentum_bonus,
+    below_min_prob_factor,
     compute_prob_plan,
     format_prob_audit,
+    is_strong_momentum_regime,
     load_prob_index,
+    min_prob_factor_units,
+    next_prob_rung_up,
+    normalize_to_prob_factor,
+    prob_tier_for_units,
+    to_mc_key,
 )
 from utils.risk_parity_sizing import (
     compute_risk_parity,
@@ -95,6 +96,7 @@ from utils.wide_range_sizing import (
     log_wide_range_shadow,
     update_trade_id,
 )
+from utils.mc_error_reporting import report_mc_refresh_error
 from config_oanda import (
     # api,
     get_oanda_profile,
@@ -850,56 +852,9 @@ def cfg_bot(name, default):
     return getattr(config_bot, name, getattr(config, name, default))
 
 
-# ─── FIB ZONE EXECUTION OVERLAY (v685 Fib layer) ─────────────────────────────
-# Scope is deliberately tiny: size_units + tp_pips (+ skip on degenerate /
-# breakout records). It must NEVER influence signal direction, score, SL or MC
-# fusion. Resolution order: FIB_ZONE_DEFAULTS → global.fib_zone → profile.fib_zone
-# (the merge is performed once inside config_bot.build_profile_cfg()).
-FIB_ZONE_CFG = cfg_bot("FIB_ZONE_CFG", config_bot.FIB_ZONE_DEFAULTS)
-# The overlay reads the DAILY MC+Fib snapshot only. The bot's entry timeframe
-# (15m / 1H / H4) does not change that: Fib zones are a daily spatial structure.
-# "W" is explicitly unsupported this phase → treated as fib unavailable.
-FIB_ZONE_TF = "D"
-
-
-def _load_fib_index_once():
-    """Load the MC+Fib snapshot ONCE per run (never per pair → 1 file read).
-
-    Returns the ``results`` index ({pair_key: record}) or ``{}`` when the
-    overlay is disabled / unavailable. Every failure is graceful: the run
-    continues with v685 sizing and TP.
-    """
-    if not FIB_ZONE_CFG.get("ENABLED", False):
-        log.info(
-            "🧭 FIB-ZONE: DISABLED (fib_zone.ENABLED=false) — "
-            "v685 sizing/TP used unchanged"
-        )
-        return {}
-    fib_index = load_fib_index(TODAY_STR, FIB_ZONE_TF)
-    if not fib_index:
-        log.warning(
-            f"⚠️ FIB-ZONE: no usable MC+Fib snapshot for {TODAY_STR} "
-            f"(tf={FIB_ZONE_TF}) — overlay INACTIVE, v685 sizing/TP fallback"
-        )
-        return {}
-    log.info(
-        f"🧭 FIB-ZONE: loaded {len(fib_index)} pair records from MC+Fib "
-        f"snapshot ({TODAY_STR}, tf={FIB_ZONE_TF}) | "
-        f"ENABLED={FIB_ZONE_CFG.get('ENABLED')} MODE={FIB_ZONE_CFG.get('MODE')} "
-        f"CENTER_EDGE=±{FIB_ZONE_CFG.get('CENTER_EDGE')} "
-        f"LADDER={FIB_ZONE_CFG.get('SIZE_LADDER')} "
-        f"MIN_LOT={FIB_ZONE_CFG.get('MIN_LOT')} "
-        f"TP_SCALE={FIB_ZONE_CFG.get('TP_SCALE_MIN')}-{FIB_ZONE_CFG.get('TP_SCALE_MAX')} "
-        f"MIN_TP_PIPS={FIB_ZONE_CFG.get('MIN_TP_PIPS')}"
-    )
-    return fib_index
-
-
-# ─── PROB ZONE EXECUTION OVERLAY (§14 概率路线) ──────────────────────────────
-# 与 fib overlay 互斥：USE_PROB_SIZING 打开时走概率路线（§14 仓位 + MC 开仓门控
-# + regime 定仓 + 目标分位带 TP），关闭时沿用 fib overlay。两者都只允许改
-# size_units / tp_pips / skip，绝不触碰方向、打分、SL 或 MC 融合。
-# 分辨率顺序：env OPT_USE_PROB_SIZING > config OPT_USE_PROB_SIZING > prob_zone.ENABLED
+# ─── PROBABILITY-FACTOR EXECUTION SIZING ─────────────────────────────────────
+# The only sizing path adjusts size_units / tp_pips / skip; signal direction,
+# score, SL and MC fusion remain owned by their existing stages.
 PROB_ZONE_CFG = cfg_bot("PROB_ZONE_CFG", config_bot.PROB_ZONE_DEFAULTS)
 PROB_ZONE_TF = "D"
 
@@ -923,7 +878,8 @@ def _log_prob_zone_loaded(n_records):
 def _load_prob_index_once(mc_cache=None):
     """加载一次 MC 快照 ``results`` 索引（每轮 1 次，绝不每对重读）。
 
-    概率路线关闭 / 数据不可用 → ``{}``，run 退回 fib（或 v685）仓位与 TP。
+    MC data unavailable → ``{}``; candidates still use the probability plan's
+    configured fail-closed behavior.
 
     Data source（PROB_USE_FUSED，仅改数据来源、不改任何阈值/权重）：
       - True （默认）：Profile 2 已把 W+D 融合结果写回 ``mc_cache``，此处直接
@@ -932,14 +888,6 @@ def _load_prob_index_once(mc_cache=None):
       - False 或 mc_cache 无融合记录 → 降级为旧的「独立重读原始 D JSON」行为。
     两条路径都会打印 ``📤 PROB_SOURCE:`` 供每轮核对口径。
     """
-    if not USE_PROB_SIZING:
-        log.info("📤 PROB_SOURCE: D_ONLY (OPT_USE_PROB_SIZING=0 — prob route disabled)")
-        log.info(
-            "🎲 PROB-ZONE: DISABLED (OPT_USE_PROB_SIZING=0) — "
-            "fib / v685 sizing+TP used unchanged"
-        )
-        return {}
-
     # 融合记录的唯一凭据：blend 块写入的 "blend_source" 字段（见 STEP 3）。
     fused_ready = bool(mc_cache) and any(
         isinstance(v, dict) and v.get("blend_source") for v in mc_cache.values()
@@ -974,7 +922,8 @@ def _load_prob_index_once(mc_cache=None):
         log.info(f"📤 PROB_SOURCE: D_ONLY — raw D JSON ({TODAY_STR}, tf={PROB_ZONE_TF})")
         log.warning(
             f"⚠️ PROB-ZONE: no usable MC snapshot for {TODAY_STR} "
-            f"(tf={PROB_ZONE_TF}) — overlay INACTIVE, fib / v685 fallback"
+            f"(tf={PROB_ZONE_TF}) — probability plan uses its configured "
+            "fail-closed behavior"
         )
         return {}
     log.info(f"📤 PROB_SOURCE: D_ONLY — raw D JSON ({TODAY_STR}, tf={PROB_ZONE_TF})")
@@ -1179,11 +1128,6 @@ def _opt_str(name, default):
         return raw.strip()
     return str(cfg_bot(f"OPT_{name}", default))
 
-
-# Prob-route overlay master switch. Default OFF (prob_zone.ENABLED=false) so the
-# §14 route is opt-in: enable with OPT_USE_PROB_SIZING=1 (env) or
-# OPT_USE_PROB_SIZING=true / prob_zone.ENABLED=true in config_profile.json.
-USE_PROB_SIZING = _opt("USE_PROB_SIZING", PROB_ZONE_CFG.get("ENABLED", False))
 
 # Prob-route DATA-SOURCE switch. Default ON → prob_index reuses the already-loaded
 # mc_cache (which Profile 2 has already W+D-blended) instead of re-reading the raw
@@ -1519,20 +1463,11 @@ log.info(f"⚙️ Profile: {PROFILE_ID}")
 log.info(f"🔑 Account: {_account_source} → {OANDA_ACCOUNT_ID} [{_ENV_LABEL}]")
 log.info(f"📦 Lot size: {DEFAULT_LOT_SIZE}  (source: {_lot_source})")
 
-# ─── Fib Zone sizing floor is per-environment ───
-# The overlay only ever SHRINKS from the base lot above; this floor is the
-# lower bound of that shrink. live → 1 unit (so --lots 1 stays 1 all the way
-# down the ladder); demo → 1000 units. There is NO upper cap: the floor wins
-# if it happens to be larger than the base lot.
-_FIB_MIN_LOT_KEY = "MIN_LOT_LIVE" if LIVE_MODE else "MIN_LOT_DEMO"
-FIB_ZONE_CFG["MIN_LOT"] = FIB_ZONE_CFG.get(_FIB_MIN_LOT_KEY, 1 if LIVE_MODE else 1000)
-log.info(f"🎚️ Fib min lot: {FIB_ZONE_CFG['MIN_LOT']} units [{_ENV_LABEL}]")
-
-# Same per-environment floor for the §14 prob overlay (live → 1, demo → 1000).
-PROB_ZONE_CFG["MIN_LOT"] = PROB_ZONE_CFG.get(_FIB_MIN_LOT_KEY, 1 if LIVE_MODE else 1000)
+# The minimum probability-factor rung is environment-specific.
+_MIN_LOT_KEY = "MIN_LOT_LIVE" if LIVE_MODE else "MIN_LOT_DEMO"
+PROB_ZONE_CFG["MIN_LOT"] = PROB_ZONE_CFG.get(_MIN_LOT_KEY, 1 if LIVE_MODE else 1000)
 log.info(
-    f"🎚️ Prob min lot: {PROB_ZONE_CFG['MIN_LOT']} units [{_ENV_LABEL}] | "
-    f"prob-route overlay {'ON' if USE_PROB_SIZING else 'OFF (fib overlay active)'}"
+    f"🎚️ Probability min lot: {PROB_ZONE_CFG['MIN_LOT']} units [{_ENV_LABEL}]"
 )
 
 _prof = get_oanda_profile("live" if LIVE_MODE else "practice")
@@ -2347,6 +2282,10 @@ def main():
             f"still runs; ML-dependent entry scoring keeps its EXISTING "
             f"(unresolved) synthetic-X behavior — Phase 3.0 §4.5 approval pending."
         )
+        # Telegram alert (throttled per reason) so a stale/mismatched/missing
+        # model is pushed to the operator instead of silently degrading to
+        # synthetic-X neutral votes.  Position management still runs below.
+        report_ml_init_result(PROFILE_LABEL, ml_init)
 
     # ── MAX_OPEN EARLY-GATE: quick pre-scan of owned positions BEFORE running
     #    Strength Matrix, D-Gate, MC bundle, scoring, or Step-7 candidate eval.
@@ -2647,38 +2586,14 @@ def main():
                 else:
                     log.info(f"⏭️ {p}: not found in D bundle — SKIP")
         else:
-            log.error(f"❌ No D bundle for today in {mc_results_dir}")
-            send_telegram_message(
-                f"🚨 FX BOT {PROFILE_LABEL}: 今日未找到 D 包\n"
-                f"📁 Dir: {mc_results_dir}\n"
-                f"⏰ 正在触发 run_fx_mc.sh ..."
-            )
             mc_sh = Path.home() / "projects" / "fx_monte_carlo" / "run_fx_mc.sh"
-            try:
-                if mc_sh.exists():
-                    subprocess.Popen(
-                        ["bash", str(mc_sh)],
-                        cwd=str(mc_sh.parent),
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                        start_new_session=True,
-                    )
-                    log.info(f"✅ Launched {mc_sh}")
-                else:
-                    log.error(f"❌ MC script not found: {mc_sh}")
-                    send_telegram_message(
-                        f"❌ FX BOT {PROFILE_LABEL}: run_fx_mc.sh 不存在 ({mc_sh})"
-                    )
-            except Exception as e:
-                log.error(f"❌ Failed to launch MC script: {e}")
-                send_telegram_message(
-                    f"❌ FX BOT {PROFILE_LABEL}: 启动 run_fx_mc.sh 失败 — {e}"
-                )
-
-            log.warning("🛑 Aborting this run — D bundle required.")
-            send_telegram_message(
-                f"🛑 FX BOT {PROFILE_LABEL}: 本次运行已放弃，等待 MC 重新生成后重试"
+            report_mc_refresh_error(
+                PROFILE_LABEL,
+                mc_sh,
+                mc_results_dir,
+                send_telegram_message,
             )
+            log.warning("🛑 Aborting this run — D bundle required.")
             return
 
         w_bundle, w_ok, w_name = load_mc_bundle(mc_results_dir, "W")
@@ -3184,12 +3099,9 @@ def main():
         {},
     )
     all_candidates = []
-    _zone_audit = {}  # pair -> rendered Fib Zone audit line (decision trace)
+    _prob_audit = {}  # pair -> probability sizing audit line
 
-    # ─── Fib Zone overlay: load the MC+Fib bundle ONCE for the whole run ─────
-    # One file read via interface.py; every pair below reads from this index.
-    fib_index = _load_fib_index_once()
-    # ─── Prob Zone overlay (§14): reuse the fused mc_cache (or raw-D fallback) ──
+    # Probability sizing uses the fused MC cache where available, otherwise raw D.
     prob_index = _load_prob_index_once(mc_cache)
 
     for pair in signal_eval_pairs:
@@ -3443,162 +3355,136 @@ def main():
                     )
                 continue
 
+            # ─── 补仓 / 金字塔加仓（pyramiding · averaging-down）────────────────
+            # 同向已有持仓时，不再一律 SKIP DUPLICATE；若满足补仓条件（仓位 < 标准仓、
+            # 现价套牢、未超最大补仓次数），追加一单把总仓位抬到下一个 SIZE_LADDER 档位。
+            # 补仓 size = next_prob_rung_up(current_units) - current_units。
+            # 补仓单复用已有持仓的 SL/TP（整仓统一退出），开仓条件已在上方全部通过。
+            _pyramid_done = False
+            if PYRAMID_ENABLED:
+                _owned_dir = str(owned_trade.get("direction", "")).upper()
+                _sig_dir = direction.upper()
+                _same_dir = (_owned_dir in ("LONG", "BUY") and _sig_dir == "BUY") or (
+                    _owned_dir in ("SHORT", "SELL") and _sig_dir == "SELL"
+                )
+                if _same_dir:
+                    _cur_units = abs(int(float(owned_trade.get("units", 0) or 0)))
+                    _entry = float(owned_trade.get("price") or 0)
+                    _pip = pip_cache.get(pair, 0.0)
+                    # 套牢判断：LONG 现价 < entry - threshold；SHORT 现价 > entry + threshold
+                    if _sig_dir == "BUY":
+                        _underwater_pips = (_entry - current) / _pip if _pip > 0 else 0.0
+                    else:
+                        _underwater_pips = (current - _entry) / _pip if _pip > 0 else 0.0
+                    _underwater = _underwater_pips >= PYRAMID_UNDERWATER_PIPS
+                    # 统计该 pair 已有多少笔自有交易（含首单），用于限制补仓次数
+                    _all_owned = [
+                        t for t in list_open_trades(api, OANDA_ACCOUNT_ID, oanda)
+                        if (t.get("client_ext_id") or "").startswith(OWNER_CLIENT_EXT_ID)
+                    ]
+                    _n_owned = len(_all_owned)
+                    _target_rung, _add_on = next_prob_rung_up(
+                        current_units=_cur_units,
+                        base_lot=DEFAULT_LOT_SIZE,
+                        min_units=PROB_ZONE_CFG.get("MIN_LOT", 1),
+                    )
+                    _can_pyramid = (
+                        _underwater
+                        and _cur_units < DEFAULT_LOT_SIZE
+                        and _n_owned <= PYRAMID_MAX_LEVELS
+                        and _add_on > 0
+                    )
+                    log.info(
+                        f"🔺 PYRAMID-CHECK {pair} {_sig_dir} | cur={_cur_units} "
+                        f"underwater={_underwater_pips:.1f}p(need>={PYRAMID_UNDERWATER_PIPS}) "
+                        f"n_owned={_n_owned}(max={PYRAMID_MAX_LEVELS}) "
+                        f"next_rung={_target_rung} add_on={_add_on} "
+                        f"→ {'ADD' if _can_pyramid else 'SKIP'}"
+                    )
+                    if _can_pyramid:
+                        _p_sl = owned_trade.get("sl")
+                        _p_tp = owned_trade.get("tp")
+                        log.info(
+                            f"🔺 PYRAMID ADD {pair} {_sig_dir} +{_add_on} units "
+                            f"(cur {_cur_units} → target {_target_rung}) | "
+                            f"SL={_p_sl} TP={_p_tp}"
+                        )
+                        if DRY_RUN_MODE:
+                            log.info(
+                                f"🧪 [DRY-RUN] PYRAMID {pair} {_sig_dir} +{_add_on} — NO ORDER"
+                            )
+                        else:
+                            _p_resp = open_oanda_order(
+                                api,
+                                OANDA_ACCOUNT_ID,
+                                oanda,
+                                direction,
+                                _add_on,
+                                _p_sl,
+                                _p_tp,
+                                dry_run=DRY_RUN_MODE,
+                                tags=OWNER_TAGS,
+                                comment=OWNER_COMMENT,
+                                client_ext={
+                                    "id": f"{OWNER_CLIENT_EXT_ID}_{oanda}",
+                                    "tag": OWNER_CLIENT_EXT_TAG,
+                                },
+                            )
+                            _p_status = _p_resp.get("status", "UNKNOWN")
+                            _p_tid = _p_resp.get("trade_id", "") or "?"
+                            log.info(
+                                f"🔺 PYRAMID EXECUTED {pair} {_sig_dir} +{_add_on} | "
+                                f"TradeID={_p_tid} status={_p_status}"
+                            )
+                            send_telegram_message(
+                                f"🔺 PYRAMID {pair} {_sig_dir} +{_add_on} units\n"
+                                f"└─ cur {_cur_units} → {_target_rung} | "
+                                f"underwater {_underwater_pips:.1f}p"
+                            )
+                        _pyramid_done = True
+                if _pyramid_done:
+                    continue
+                # 不满足补仓条件 → SKIP DUPLICATE
             log.info(f"⏭️ {pair}: owned position already open — SKIP DUPLICATE")
             continue
 
-        # ─── 补仓 / 金字塔加仓（pyramiding · averaging-down）────────────────────
-        # 同向已有持仓时，不再一律 SKIP DUPLICATE；若满足补仓条件（仓位 < 标准仓、
-        # 现价套牢、未超最大补仓次数），追加一单把总仓位抬到下一个 SIZE_LADDER 档位。
-        # 补仓 size = next_rung_up(current_units) - current_units，永不超过 base_lot。
-        # 补仓单复用已有持仓的 SL/TP（整仓统一退出），开仓条件已在上方全部通过。
-        _pyramid_done = False
-        if PYRAMID_ENABLED:
-            _owned_dir = str(owned_trade.get("direction", "")).upper()
-            _sig_dir = direction.upper()
-            _same_dir = (_owned_dir in ("LONG", "BUY") and _sig_dir == "BUY") or (
-                _owned_dir in ("SHORT", "SELL") and _sig_dir == "SELL"
-            )
-            if _same_dir:
-                _cur_units = abs(int(float(owned_trade.get("units", 0) or 0)))
-                _entry = float(owned_trade.get("price") or 0)
-                _pip = pip_cache.get(pair, 0.0)
-                # 套牢判断：LONG 现价 < entry - threshold；SHORT 现价 > entry + threshold
-                if _sig_dir == "BUY":
-                    _underwater_pips = (_entry - current) / _pip if _pip > 0 else 0.0
-                else:
-                    _underwater_pips = (current - _entry) / _pip if _pip > 0 else 0.0
-                _underwater = _underwater_pips >= PYRAMID_UNDERWATER_PIPS
-                # 统计该 pair 已有多少笔自有交易（含首单），用于限制补仓次数
-                _all_owned = [
-                    t for t in list_open_trades(api, OANDA_ACCOUNT_ID, oanda)
-                    if (t.get("client_ext_id") or "").startswith(OWNER_CLIENT_EXT_ID)
-                ]
-                _n_owned = len(_all_owned)
-                _target_rung, _add_on = next_rung_up(
-                    current_units=_cur_units,
-                    base_lot=DEFAULT_LOT_SIZE,
-                    ladder_ratios=FIB_ZONE_CFG.get("SIZE_LADDER", [1.0, 0.5, 0.25, 0.1]),
-                    min_lot=FIB_ZONE_CFG.get("MIN_LOT", 1),
-                )
-                _can_pyramid = (
-                    _underwater
-                    and _cur_units < DEFAULT_LOT_SIZE
-                    and _n_owned <= PYRAMID_MAX_LEVELS
-                    and _add_on > 0
-                )
-                log.info(
-                    f"🔺 PYRAMID-CHECK {pair} {_sig_dir} | cur={_cur_units} "
-                    f"underwater={_underwater_pips:.1f}p(need>={PYRAMID_UNDERWATER_PIPS}) "
-                    f"n_owned={_n_owned}(max={PYRAMID_MAX_LEVELS}) "
-                    f"next_rung={_target_rung} add_on={_add_on} "
-                    f"→ {'ADD' if _can_pyramid else 'SKIP'}"
-                )
-                if _can_pyramid:
-                    _p_sl = owned_trade.get("sl")
-                    _p_tp = owned_trade.get("tp")
-                    log.info(
-                        f"🔺 PYRAMID ADD {pair} {_sig_dir} +{_add_on} units "
-                        f"(cur {_cur_units} → target {_target_rung}) | "
-                        f"SL={_p_sl} TP={_p_tp}"
-                    )
-                    if DRY_RUN_MODE:
-                        log.info(
-                            f"🧪 [DRY-RUN] PYRAMID {pair} {_sig_dir} +{_add_on} — NO ORDER"
-                        )
-                    else:
-                        _p_resp = open_oanda_order(
-                            api,
-                            OANDA_ACCOUNT_ID,
-                            oanda,
-                            direction,
-                            _add_on,
-                            _p_sl,
-                            _p_tp,
-                            dry_run=DRY_RUN_MODE,
-                            tags=OWNER_TAGS,
-                            comment=OWNER_COMMENT,
-                            client_ext={
-                                "id": f"{OWNER_CLIENT_EXT_ID}_{oanda}",
-                                "tag": OWNER_CLIENT_EXT_TAG,
-                            },
-                        )
-                        _p_status = _p_resp.get("status", "UNKNOWN")
-                        _p_tid = _p_resp.get("trade_id", "") or "?"
-                        log.info(
-                            f"🔺 PYRAMID EXECUTED {pair} {_sig_dir} +{_add_on} | "
-                            f"TradeID={_p_tid} status={_p_status}"
-                        )
-                        send_telegram_message(
-                            f"🔺 PYRAMID {pair} {_sig_dir} +{_add_on} units\n"
-                            f"└─ cur {_cur_units} → {_target_rung} | "
-                            f"underwater {_underwater_pips:.1f}p"
-                        )
-                    _pyramid_done = True
-            if _pyramid_done:
-                continue
-            # 不满足补仓条件 → SKIP DUPLICATE
-        log.info(f"⏭️ {pair}: owned position already open — SKIP DUPLICATE")
-        continue
-
         dec = 3 if "JPY" in pair else 5
-        # ─── SIZING / TP OVERLAY ─────────────────────────────────────────────
+        # ─── Probability-factor sizing / TP ──────────────────────────────────
         # Runs AFTER direction/score/D-Gate/trend-TP are final and BEFORE SL/TP
         # prices are built. It may only change size_units + tp_pips (or skip);
         # SL stays 100% compute_sl_zone()'s output.
-        #   * USE_PROB_SIZING=1 → §14 概率路线（MC 开仓门控 + 方向确信度仓位 +
-        #     regime 定仓 + 目标分位带 TP）
-        #   * USE_PROB_SIZING=0 → fib overlay（旧口径，保留回滚）
-        if USE_PROB_SIZING:
-            prob_rec = prob_index.get(to_mc_key(pair), {}) if prob_index else {}
-            plan = compute_prob_plan(
-                rec=prob_rec,
-                direction=direction,
-                cfg=PROB_ZONE_CFG,
-                base_lot=DEFAULT_LOT_SIZE,
-                base_tp_pips=smart_tp_pips,
-                current_price=current,
-                pip_value=pip_cache[pair],
-                regime=_regime_str,
+        prob_rec = prob_index.get(to_mc_key(pair), {}) if prob_index else {}
+        _sizing_regime_record = prob_rec
+        plan = compute_prob_plan(
+            rec=prob_rec,
+            direction=direction,
+            cfg=PROB_ZONE_CFG,
+            base_lot=DEFAULT_LOT_SIZE,
+            base_tp_pips=smart_tp_pips,
+            current_price=current,
+            pip_value=pip_cache[pair],
+            regime=_regime_str,
+        )
+        audit_line = format_prob_audit(pair, direction, plan)
+        log.info(f"🎲 PROB-ZONE {pair} {direction} | {audit_line}")
+        # Fusion records expose their raw D/W labels separately; the composite
+        # label is retained only for display and compatibility.
+        _rec_d = prob_rec.get("regime_D") if isinstance(prob_rec, dict) else None
+        _rec_w = prob_rec.get("regime_W") if isinstance(prob_rec, dict) else None
+        _rm = plan.get("regime_mult")
+        if (_rec_d or _rec_w) and isinstance(_rm, (int, float)):
+            log.info(
+                f"ℹ️ REGIME {pair} D={_rec_d or '-'} W={_rec_w or '-'} → mult={_rm:.2f}"
             )
-            audit_line = format_prob_audit(pair, direction, plan)
-            log.info(f"🎲 PROB-ZONE {pair} {direction} | {audit_line}")
-            # 独立标注：融合记录两侧原始 regime 标签 → 取保守 mult（仅展示，规则在
-            # utils.prob_zone_sizing 内按 regime_D/regime_W 分别判读）
-            _rec_d = prob_rec.get("regime_D") if isinstance(prob_rec, dict) else None
-            _rec_w = prob_rec.get("regime_W") if isinstance(prob_rec, dict) else None
-            _rm = plan.get("regime_mult")
-            if (_rec_d or _rec_w) and isinstance(_rm, (int, float)):
-                log.info(
-                    f"ℹ️ REGIME {pair} D={_rec_d or '-'} W={_rec_w or '-'} → mult={_rm:.2f}"
-                )
-            if plan["skip"]:
-                log.info(
-                    f"⏭️ PROB-ZONE SKIP {pair} {direction} — reason={plan['reason']} "
-                    f"P_UP={plan['p_up']} aligned={plan['aligned']} — NO ORDER"
-                )
-                continue
-        else:
-            fib_rec = fib_index.get(to_mc_key(pair), {}) if fib_index else {}
-            plan = compute_zone_plan(
-                rec=fib_rec,
-                direction=direction,
-                cfg=FIB_ZONE_CFG,
-                base_lot=DEFAULT_LOT_SIZE,
-                base_tp_pips=smart_tp_pips,
+        if plan["skip"]:
+            log.info(
+                f"⏭️ PROB-ZONE SKIP {pair} {direction} — reason={plan['reason']} "
+                f"P_UP={plan['p_up']} aligned={plan['aligned']} — NO ORDER"
             )
-            audit_line = format_zone_audit(
-                pair, direction, plan, DEFAULT_LOT_SIZE, smart_tp_pips
-            )
-            log.info(f"🧭 FIB-ZONE {pair} {direction} | {audit_line}")
-            if plan["skip"]:
-                log.info(
-                    f"⏭️ FIB-ZONE SKIP {pair} {direction} — reason={plan['reason']} "
-                    f"zone={plan['zone_index']} — NO ORDER"
-                )
-                continue
+            continue
         tp_pips_eff = plan["tp_pips"]
         size_units = plan["size_units"]
-        _zone_audit[pair] = audit_line
+        _prob_audit[pair] = audit_line
 
         # ─── W+D 融合仓位乘子（仅 Profile 2 融合记录）────────────────────────
         # blend_position_scale = effective_confidence ∈ [0.5, 1.0]，只缩不放。
@@ -3695,24 +3581,56 @@ def main():
                 continue
             size_units = _rp_decision["size_units"]
 
-        # ─── 仓位归一化（discrete ladder snap）────────────────────────────────
-        # prob overlay（连续 size_scale）/ risk_parity（rp_mult）会产出任意整数
-        # （如 2750、2739），下单前统一向下吸附到 SIZE_LADDER 离散档位
-        # （10000 / 5000 / 2500 / 1000 …），只缩不放大，绝不低于 MIN_LOT。
-        _size_ladder = FIB_ZONE_CFG.get("SIZE_LADDER", [1.0, 0.5, 0.25, 0.1])
-        _min_lot_norm = FIB_ZONE_CFG.get("MIN_LOT", 1)
+        # Skip any post-risk reduction below the probability minimum factor.
+        _min_lot_norm = PROB_ZONE_CFG.get("MIN_LOT", 1)
+        _minimum_factor_units = min_prob_factor_units(DEFAULT_LOT_SIZE)
+        if size_units <= 0 or below_min_prob_factor(size_units, DEFAULT_LOT_SIZE):
+            log.info(
+                f"⏭️ PROB-ZONE SKIP {pair} {direction} — "
+                f"size={size_units} below 0.125 factor "
+                f"({_minimum_factor_units} units) — NO ORDER"
+            )
+            continue
+
+        # Snap continuous confidence/risk sizing to the four probability tiers.
         _units_before_norm = int(size_units)
-        size_units = normalize_to_ladder(
+        size_units = normalize_to_prob_factor(
             size_units=size_units,
             base_lot=DEFAULT_LOT_SIZE,
-            ladder_ratios=_size_ladder,
-            min_lot=_min_lot_norm,
+            min_units=_min_lot_norm,
         )
         if size_units != _units_before_norm:
             log.info(
                 f"📏 LOT-NORMALIZE {pair} {direction} | "
                 f"{_units_before_norm} → {size_units} "
-                f"(ladder={_size_ladder}, min_lot={_min_lot_norm})"
+                f"(factors={PROB_FACTORS}, min_units={_min_lot_norm})"
+            )
+
+        # Bonus is applied only after existing skip/risk/ladder decisions.
+        # The configured full lot bounds this feature to at most 2x that lot;
+        # retain the active overlay's minimum if it is higher.
+        _regime_sources = [_regime_str]
+        for _record in (mc_cache.get(pair), _sizing_regime_record):
+            if isinstance(_record, dict):
+                _regime_sources.extend(
+                    _record.get(_key) for _key in ("regime", "regime_D", "regime_W")
+                )
+        _strong_momentum = any(
+            is_strong_momentum_regime(_value) for _value in _regime_sources
+        )
+        if _strong_momentum and size_units > 0:
+            _base_units = int(size_units)
+            _max_bonus_units = max(2 * DEFAULT_LOT_SIZE, _min_lot_norm)
+            size_units = apply_strong_momentum_bonus(
+                _base_units,
+                enabled=True,
+                min_units=_min_lot_norm,
+                max_units=_max_bonus_units,
+            )
+            _tier = prob_tier_for_units(_base_units, DEFAULT_LOT_SIZE)
+            log.info(
+                f"✅ STRONG_MOMENTUM — TIER {_tier}/4 — base={_base_units} "
+                f"boosted={size_units} (+1 tier) | {pair} {direction}"
             )
 
         # ─── §3 · 宽幅震荡影子（wide-range shadow）────────────────────────────
@@ -3862,8 +3780,8 @@ def main():
             _r = _open_reasons.get(pair, "UNKNOWN")
             log.info(f"✅ OPEN {pair} {direction} lots={size_units} → {_r}")
             log.info(
-                f"🧭 FIB-ZONE APPLIED {pair} {direction} | "
-                f"{_zone_audit.get(pair, 'n/a')}"
+                f"🎲 PROB-ZONE APPLIED {pair} {direction} | "
+                f"{_prob_audit.get(pair, 'n/a')}"
             )
             log.info(
                 f"🧪 [DRY-RUN] SIGNAL {pair} {direction} | "

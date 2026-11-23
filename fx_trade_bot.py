@@ -67,10 +67,16 @@ from fx_trade_bot_ml import ensure_model
 
 # from portfolio_balance import balance_from_config
 from sl_zone_hierarchy import compute_sl_zone
-from utils.fib_zone_sizing import (
-    compute_zone_plan,
-    format_zone_audit,
-    load_fib_index,
+from utils.prob_zone_sizing import (
+    apply_strong_momentum_bonus,
+    below_min_prob_factor,
+    compute_prob_plan,
+    format_prob_audit,
+    is_strong_momentum_regime,
+    load_prob_index,
+    min_prob_factor_units,
+    normalize_to_prob_factor,
+    prob_tier_for_units,
     to_mc_key,
 )
 from config_oanda import (
@@ -776,48 +782,22 @@ def cfg_bot(name, default):
     return getattr(config_bot, name, getattr(config, name, default))
 
 
-# ─── FIB ZONE EXECUTION OVERLAY (v685 Fib layer) ─────────────────────────────
-# Scope is deliberately tiny: size_units + tp_pips (+ skip on degenerate /
-# breakout records). It must NEVER influence signal direction, score, SL or MC
-# fusion. Resolution order: FIB_ZONE_DEFAULTS → global.fib_zone → profile.fib_zone
-# (the merge is performed once inside config_bot.build_profile_cfg()).
-FIB_ZONE_CFG = cfg_bot("FIB_ZONE_CFG", config_bot.FIB_ZONE_DEFAULTS)
-# The overlay reads the DAILY MC+Fib snapshot only. The bot's entry timeframe
-# (15m / 1H / H4) does not change that: Fib zones are a daily spatial structure.
-# "W" is explicitly unsupported this phase → treated as fib unavailable.
-FIB_ZONE_TF = "D"
+# ─── Probability-factor execution sizing ─────────────────────────────────────
+PROB_ZONE_CFG = cfg_bot("PROB_ZONE_CFG", config_bot.PROB_ZONE_DEFAULTS)
+PROB_ZONE_TF = "D"
 
 
-def _load_fib_index_once():
-    """Load the MC+Fib snapshot ONCE per run (never per pair → 1 file read).
-
-    Returns the ``results`` index ({pair_key: record}) or ``{}`` when the
-    overlay is disabled / unavailable. Every failure is graceful: the run
-    continues with v685 sizing and TP.
-    """
-    if not FIB_ZONE_CFG.get("ENABLED", False):
-        log.info(
-            "🧭 FIB-ZONE: DISABLED (fib_zone.ENABLED=false) — "
-            "v685 sizing/TP used unchanged"
-        )
-        return {}
-    fib_index = load_fib_index(TODAY_STR, FIB_ZONE_TF)
-    if not fib_index:
+def _load_prob_index_once():
+    """Load the probability MC snapshot once per run."""
+    prob_index = load_prob_index(TODAY_STR, PROB_ZONE_TF)
+    if not prob_index:
         log.warning(
-            f"⚠️ FIB-ZONE: no usable MC+Fib snapshot for {TODAY_STR} "
-            f"(tf={FIB_ZONE_TF}) — overlay INACTIVE, v685 sizing/TP fallback"
+            f"⚠️ PROB-ZONE: no usable MC snapshot for {TODAY_STR} "
+            f"(tf={PROB_ZONE_TF})"
         )
-        return {}
-    log.info(
-        f"🧭 FIB-ZONE: loaded {len(fib_index)} pair records from MC+Fib "
-        f"snapshot ({TODAY_STR}, tf={FIB_ZONE_TF}) | "
-        f"ENABLED={FIB_ZONE_CFG.get('ENABLED')} MODE={FIB_ZONE_CFG.get('MODE')} "
-        f"CENTER={FIB_ZONE_CFG.get('CENTER_LO')}-{FIB_ZONE_CFG.get('CENTER_HI')} "
-        f"LADDER={FIB_ZONE_CFG.get('SIZE_LADDER')} "
-        f"TP_SCALE={FIB_ZONE_CFG.get('TP_SCALE_MIN')}-{FIB_ZONE_CFG.get('TP_SCALE_MAX')} "
-        f"MIN_TP_PIPS={FIB_ZONE_CFG.get('MIN_TP_PIPS')}"
-    )
-    return fib_index
+    else:
+        log.info(f"🎲 PROB-ZONE: loaded {len(prob_index)} pair records")
+    return prob_index
 
 
 def cfg_mod(name, default):  # [OPT-12] was cfg(): shadowed `cfg = C.get_profile(...)`
@@ -1051,6 +1031,11 @@ if args.lots is not None:
 log.info(f"⚙️ Profile: {PROFILE_ID}")
 log.info(f"🔑 Account: {_account_source} → {OANDA_ACCOUNT_ID} [{_ENV_LABEL}]")
 log.info(f"📦 Lot size: {DEFAULT_LOT_SIZE}  (source: {_lot_source})")
+
+_MIN_LOT_KEY = "MIN_LOT_LIVE" if LIVE_MODE else "MIN_LOT_DEMO"
+PROB_ZONE_CFG["MIN_LOT"] = PROB_ZONE_CFG.get(
+    _MIN_LOT_KEY, 1 if LIVE_MODE else 1000
+)
 
 _prof = get_oanda_profile("live" if LIVE_MODE else "practice")
 api = _prof["oanda_client"]
@@ -2489,11 +2474,9 @@ def main():
         {},
     )
     all_candidates = []
-    _zone_audit = {}  # pair -> rendered Fib Zone audit line (decision trace)
+    _prob_audit = {}  # pair -> probability sizing audit line
 
-    # ─── Fib Zone overlay: load the MC+Fib bundle ONCE for the whole run ─────
-    # One file read via interface.py; every pair below reads from this index.
-    fib_index = _load_fib_index_once()
+    prob_index = _load_prob_index_once()
 
     for pair in signal_eval_pairs:
         if pair not in pair_data:
@@ -2704,31 +2687,70 @@ def main():
             continue
 
         dec = 3 if "JPY" in pair else 5
-        # ─── FIB ZONE OVERLAY ────────────────────────────────────────────────
-        # Runs AFTER direction/score/D-Gate/trend-TP are final and BEFORE SL/TP
-        # prices are built. It may only change size_units + tp_pips (or skip on
-        # a degenerate record); SL stays 100% compute_sl_zone()'s output.
-        fib_rec = fib_index.get(to_mc_key(pair), {}) if fib_index else {}
-        plan = compute_zone_plan(
-            rec=fib_rec,
+        # ─── Probability-factor sizing ────────────────────────────────────────
+        # Runs after the entry gates and before SL/TP prices are built.
+        prob_rec = prob_index.get(to_mc_key(pair), {}) if prob_index else {}
+        mc_rec = mc_cache.get(pair)
+        regime = mc_rec.get("regime", "") if isinstance(mc_rec, dict) else ""
+        plan = compute_prob_plan(
+            rec=prob_rec,
             direction=direction,
-            cfg=FIB_ZONE_CFG,
+            cfg=PROB_ZONE_CFG,
             base_lot=DEFAULT_LOT_SIZE,
             base_tp_pips=smart_tp_pips,
+            current_price=current,
+            pip_value=pip_cache[pair],
+            regime=regime,
         )
-        audit_line = format_zone_audit(
-            pair, direction, plan, DEFAULT_LOT_SIZE, smart_tp_pips
-        )
-        log.info(f"🧭 FIB-ZONE {pair} {direction} | {audit_line}")
+        audit_line = format_prob_audit(pair, direction, plan)
+        log.info(f"🎲 PROB-ZONE {pair} {direction} | {audit_line}")
         if plan["skip"]:
             log.info(
-                f"⏭️ FIB-ZONE SKIP {pair} {direction} — reason={plan['reason']} "
-                f"zone={plan['zone_index']} — NO ORDER"
+                f"⏭️ PROB-ZONE SKIP {pair} {direction} — reason={plan['reason']} "
+                f"P_UP={plan['p_up']} aligned={plan['aligned']} — NO ORDER"
             )
             continue
         tp_pips_eff = plan["tp_pips"]
         size_units = plan["size_units"]
-        _zone_audit[pair] = audit_line
+        _prob_audit[pair] = audit_line
+
+        _minimum_factor_units = min_prob_factor_units(DEFAULT_LOT_SIZE)
+        if size_units <= 0 or below_min_prob_factor(
+            size_units, DEFAULT_LOT_SIZE
+        ):
+            log.info(
+                f"⏭️ PROB-ZONE SKIP {pair} {direction} — "
+                f"size={size_units} below 0.125 factor "
+                f"({_minimum_factor_units} units) — NO ORDER"
+            )
+            continue
+        size_units = normalize_to_prob_factor(
+            size_units,
+            base_lot=DEFAULT_LOT_SIZE,
+            min_units=PROB_ZONE_CFG.get("MIN_LOT", 1),
+        )
+        _regime_sources = [regime]
+        if isinstance(prob_rec, dict):
+            _regime_sources.extend(
+                prob_rec.get(key) for key in ("regime", "regime_D", "regime_W")
+            )
+        _strong_momentum = any(
+            is_strong_momentum_regime(value) for value in _regime_sources
+        )
+        if _strong_momentum and size_units > 0:
+            _base_units = int(size_units)
+            _minimum = PROB_ZONE_CFG.get("MIN_LOT", 1)
+            size_units = apply_strong_momentum_bonus(
+                _base_units,
+                enabled=True,
+                min_units=_minimum,
+                max_units=max(2 * DEFAULT_LOT_SIZE, _minimum),
+            )
+            _tier = prob_tier_for_units(_base_units, DEFAULT_LOT_SIZE)
+            log.info(
+                f"✅ STRONG_MOMENTUM — TIER {_tier}/4 — base={_base_units} "
+                f"boosted={size_units} (+1 tier) | {pair} {direction}"
+            )
 
         if cfg_bot("SL_USE_ZONE_HIERARCHY", True):
             sl_price, _ = compute_sl_zone(
@@ -2860,8 +2882,8 @@ def main():
             _r = _open_reasons.get(pair, "UNKNOWN")
             log.info(f"✅ OPEN {pair} {direction} lots={size_units} → {_r}")
             log.info(
-                f"🧭 FIB-ZONE APPLIED {pair} {direction} | "
-                f"{_zone_audit.get(pair, 'n/a')}"
+                f"🎲 PROB-ZONE APPLIED {pair} {direction} | "
+                f"{_prob_audit.get(pair, 'n/a')}"
             )
             log.info(
                 f"🧪 [DRY-RUN] SIGNAL {pair} {direction} | "

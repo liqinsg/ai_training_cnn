@@ -47,11 +47,11 @@ logger = logging.getLogger(__name__)
 
 # 本阶段只支持 Daily 快照；"W" 等一律按"数据不可用"降级，绝不抛异常。
 SUPPORTED_TIMEFRAMES = ("D",)
+PROB_FACTORS = (1.0, 0.5, 0.25, 0.125)
 
 # 与 config_bot.PROB_ZONE_DEFAULTS 同构（权威副本在 config_bot.py）。
 # 仅当调用方传入不完整 / 空的 cfg 时兜底。
 _CFG_FALLBACK: Dict[str, Any] = {
-    "ENABLED": False,
     "S0": 0.10,
     "S1": 0.40,
     "F_LO": 0.25,
@@ -177,6 +177,95 @@ def _normalize_direction(direction: Any) -> Optional[str]:
     return text if text in ("BUY", "SELL") else None
 
 
+def to_mc_key(pair: str) -> str:
+    """Map an OANDA pair (``EUR_USD``) to its MC snapshot key (``EURUSD=X``)."""
+    if pair is None:
+        return ""
+    try:
+        key = str(pair).strip().upper()
+    except Exception:  # pragma: no cover - str() of a broken __str__
+        return ""
+    if not key:
+        return ""
+    if key.endswith("=X"):
+        return key
+    return key.replace("_", "").replace("/", "").replace("-", "") + "=X"
+
+
+def _prob_rungs(base_lot: Any, min_units: Any) -> list[int]:
+    lot = _as_float(base_lot)
+    if lot is None or lot <= 0:
+        return []
+    floor = max(1, _as_int(min_units, 1))
+    return sorted(
+        {
+            int(lot * factor + 0.5)
+            for factor in PROB_FACTORS
+            if int(lot * factor + 0.5) >= floor
+        },
+        reverse=True,
+    )
+
+
+def normalize_to_prob_factor(
+    size_units: Any, base_lot: Any, min_units: Any = 1
+) -> int:
+    """Snap a size down to the configured minimum and probability factor rungs."""
+    units = _as_int(size_units, 0)
+    floor = max(1, _as_int(min_units, 1))
+    rungs = _prob_rungs(base_lot, floor)
+    if not rungs:
+        return max(floor, units)
+    for rung in rungs:
+        if units >= rung:
+            return rung
+    return rungs[-1]
+
+
+def next_prob_rung_up(
+    current_units: Any, base_lot: Any, min_units: Any = 1
+) -> tuple[int, int]:
+    """Return the next larger probability rung and the units needed to reach it."""
+    current = _as_int(current_units, 0)
+    if current <= 0:
+        return 0, 0
+    for rung in reversed(_prob_rungs(base_lot, min_units)):
+        if rung > current:
+            return rung, rung - current
+    return 0, 0
+
+
+def min_prob_factor_units(base_lot: Any) -> int:
+    """Return the rounded unit threshold for the minimum (0.125) factor."""
+    lot = _as_float(base_lot)
+    return 0 if lot is None or lot <= 0 else int(lot * PROB_FACTORS[-1] + 0.5)
+
+
+def below_min_prob_factor(size_units: Any, base_lot: Any) -> bool:
+    """Whether a positive size is below the minimum probability-factor rung."""
+    units = _as_int(size_units, 0)
+    threshold = min_prob_factor_units(base_lot)
+    return units > 0 and threshold > 0 and units < threshold
+
+
+def prob_tier_for_units(size_units: Any, base_lot: Any) -> int:
+    """Map units to the nearest named tier, numbering Minimum=1 through Full=4."""
+    units = _as_float(size_units)
+    lot = _as_float(base_lot)
+    if units is None or lot is None or lot <= 0:
+        return 1
+    if units <= min_prob_factor_units(lot):
+        return 1
+    factor = units / lot
+    if factor >= 0.75:
+        return 4
+    if factor >= 0.375:
+        return 3
+    if factor >= 0.1875:
+        return 2
+    return 1
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # §14.3 三个数学件
 # ─────────────────────────────────────────────────────────────────────────────
@@ -216,6 +305,33 @@ def _regime_mult_side(text: Any, strong_mult: float, calm_mult: float) -> float:
     if "CONSOLIDATION" in t or "RANGE" in t or "NEUTRAL" in t:
         return calm_mult
     return 1.0
+
+
+def is_strong_momentum_regime(regime: Any) -> bool:
+    """Recognize the canonical and display forms emitted by the MC reports."""
+    if not isinstance(regime, str):
+        return False
+    text = " ".join(
+        regime.strip().upper().replace("-", " ").replace("_", " ").split()
+    )
+    return text == "MOMENTUM" or text.endswith("STRONG MOMENTUM")
+
+
+def apply_strong_momentum_bonus(
+    base_units: Any,
+    *,
+    enabled: bool,
+    min_units: Any,
+    max_units: Any,
+) -> int:
+    """Double a positive position for strong momentum within the sizing bounds."""
+    units = _as_int(base_units, 0)
+    if not enabled or units <= 0:
+        return units
+
+    minimum = max(1, _as_int(min_units, 1))
+    maximum = max(minimum, _as_int(max_units, minimum))
+    return min(max(units * 2, minimum), maximum)
 
 
 def _regime_mult(
