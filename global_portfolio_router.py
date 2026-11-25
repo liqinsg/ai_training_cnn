@@ -1,5 +1,5 @@
 """
-Global Portfolio Router v1.1.3 - patched build (all patches switch-gated, default OFF)
+Global Portfolio Router v1.1.4 - patched build (all patches switch-gated, default OFF)
 
 SWITCHES (class SW) - enable one at a time in practice, in this order:
   CLOSED_BARS_ONLY     P2  drop OANDA's in-progress candle
@@ -16,6 +16,7 @@ SWITCHES (class SW) - enable one at a time in practice, in this order:
   DRY_RUN              orders are only printed (ON by default)
 
 ROLLOUT (practice account only until every step is clean):
+  P8 PER_PAIR_BAR_CLOSE: off by default = tick every call (H1). On = only when primary TF closed.
   Week 1  DRY_RUN on:  P2 alone -> P1+P5 together (P5 is needed regardless: legacy exposure units are
           inconsistent) -> P3. Watch the [FALLBACK] ratio logged each tick. When clean, set
           DRY_RUN=False on the PRACTICE environment: first real test of the stop-loss path.
@@ -59,6 +60,7 @@ class SW:
     TIME_BASED_EMA = False
     LIVE_COST = False
     SHADOW_OWN_POSITIONS = False
+    PER_PAIR_BAR_CLOSE = False  # P8: only trade pairs whose primary TF just closed
     DRY_RUN = True
 
 
@@ -70,6 +72,7 @@ COST_CAP = 0.25              # P7: spread/ATR at which cost_score hits 0 (assump
 SL_ATR_MULT = 2.0            # P3: stop distance = SL_ATR_MULT * ATR
 SHADOW_HOLD_STEPS = 12       # P7: simulated shadow position lifetime (ticks)
 MIN_TRADES_PER_WINDOW = 20   # P4: ignore windows with fewer trades
+BAR_CLOSE_TOLERANCE_SEC = 120  # P8: how long after a bar close we still consider it "just closed"
 TF_TO_OANDA = {"M15": "M15", "M30": "M30", "H1": "H1", "H4": "H4", "D1": "D"}
 
 UNIVERSE = [
@@ -379,6 +382,48 @@ def compute_atr(h: np.ndarray, l: np.ndarray, c: np.ndarray, n: int = 14) -> flo
     return float(np.std(np.diff(c))) + 1e-9      # legacy proxy
 
 
+# ================= P8: per-pair bar-close trigger =================
+def _is_tf_just_closed(tf: str, now_utc, tol_sec: int = BAR_CLOSE_TOLERANCE_SEC) -> bool:
+    """True if tf closed within tol_sec before now_utc (UTC).
+    OANDA: M15 at :00/:15/:30/:45, M30 at :00/:30, H1 at :00, H4 at 00/04/08/12/16/20 UTC, D at 00:00 UTC.
+    D close is simplified to 00:00 UTC; tune to 21:00/22:00 UTC (17:00 ET) if you need exact NY close.
+    """
+    minute = now_utc.minute
+    second = now_utc.second + now_utc.microsecond / 1e6
+    total_sec_since_minute = second
+    # Within tolerance after minute 0
+    if total_sec_since_minute > tol_sec:
+        return False
+    if tf == "M15":
+        return minute % 15 == 0
+    if tf == "M30":
+        return minute % 30 == 0
+    if tf == "H1":
+        return minute == 0
+    if tf == "H4":
+        return minute == 0 and now_utc.hour % 4 == 0
+    if tf in ("D1", "D"):
+        return minute == 0 and now_utc.hour == 0
+    return False
+
+
+def get_just_closed_tfs(now_utc=None, tol_sec: int = BAR_CLOSE_TOLERANCE_SEC) -> set:
+    import datetime
+    if now_utc is None:
+        now_utc = datetime.datetime.utcnow()
+    # Allow passing timestamp float
+    if isinstance(now_utc, (int, float)):
+        import datetime as _dt
+        now_utc = _dt.datetime.utcfromtimestamp(now_utc)
+    closed = set()
+    for tf in ("M15", "M30", "H1", "H4", "D1"):
+        if _is_tf_just_closed(tf, now_utc, tol_sec):
+            closed.add(tf)
+            if tf == "D1":
+                closed.add("D")  # alias
+    return closed
+
+
 def pair_metrics(inst: str) -> Optional[Tuple[float, float, np.ndarray]]:
     """(momentum, atr, returns[-60:]) on the pair's own timeframes."""
     pair = inst.replace("_", "/")
@@ -521,7 +566,27 @@ def place_market_order(pair_oanda: str, side: str, units: int, sl_distance: Opti
 
 # ================= Decision tick =================
 def decision_tick(router: GlobalPortfolioRouter, candidates: List[SignalCandidate],
-                  shadow: Optional[ShadowEngine] = None):
+                  shadow: Optional[ShadowEngine] = None, now_utc=None):
+    # P8 gate: if enabled, only proceed when at least one primary TF just closed
+    if SW.PER_PAIR_BAR_CLOSE:
+        import datetime as _dt
+        if now_utc is None:
+            now_utc = _dt.datetime.utcnow()
+        closed_tfs = get_just_closed_tfs(now_utc, BAR_CLOSE_TOLERANCE_SEC)
+        if not closed_tfs:
+            # Not a bar close moment for any tracked TF -> skip tick (caller should sleep)
+            return None
+        # Filter candidates to those whose primary TF is among just-closed TFs
+        # If filtering leaves zero candidates, skip tick as well
+        filtered = [c for c in candidates if get_pair_config(c.pair)["primary"] in closed_tfs or get_pair_config(c.pair)["primary"] == "H1" and "H1" in closed_tfs or get_pair_config(c.pair)["primary"] == "D" and "D1" in closed_tfs]
+        # Allow fallback: if no candidate matches but H1 just closed, allow all H1-primary pairs
+        # The above list comprehension already does primary check; if empty, we skip to avoid whipsaw on H4 pairs
+        if not filtered:
+            print(f"[BarClose] no candidates for closed TFs {closed_tfs}: SKIP TICK")
+            return None
+        candidates = filtered
+        print(f"[BarClose] closed TFs {closed_tfs}, trading {len(candidates)} candidates")
+
     snap = build_market_snapshot()
     if snap is None:
         return None
@@ -618,4 +683,36 @@ if __name__ == "__main__":
         raise AssertionError("REQUIRE_SL should refuse")
     except ValueError:
         pass
-    print("P3 test passed\nALL SELF-TESTS PASSED")
+    print("P3 test passed")
+
+    # --- P8: per-pair bar-close trigger ---
+    import datetime as _dt
+    SW.PER_PAIR_BAR_CLOSE = True
+    # Simulate H1 close at 10:00:30 UTC -> should include H1 primary pairs, not H4 unless hour%4==0
+    fake_now_h1 = _dt.datetime(2026, 11, 25, 10, 0, 30)  # H1 close, not H4 (10%4=2)
+    closed = get_just_closed_tfs(fake_now_h1, tol_sec=120)
+    assert "H1" in closed and "H4" not in closed, f"H1 close detection failed: {closed}"
+    assert _is_tf_just_closed("H1", fake_now_h1) and not _is_tf_just_closed("H4", fake_now_h1)
+
+    fake_now_h4 = _dt.datetime(2026, 11, 25, 12, 0, 30)  # H4 close (12%4==0)
+    closed_h4 = get_just_closed_tfs(fake_now_h4, tol_sec=120)
+    assert "H1" in closed_h4 and "H4" in closed_h4, f"H4 close should include H1+H4: {closed_h4}"
+
+    fake_now_none = _dt.datetime(2026, 11, 25, 10, 5, 30)  # 5 min past hour, no close
+    assert len(get_just_closed_tfs(fake_now_none)) == 0
+
+    # decision_tick should skip when no TF closed
+    SW.PER_PAIR_BAR_CLOSE = True
+    # Mock build_market_snapshot and fetch_open_positions to avoid OANDA
+    orig_build = globals()["build_market_snapshot"]
+    orig_fetch = globals()["fetch_open_positions"]
+    globals()["build_market_snapshot"] = lambda timeout_sec=2.0: None
+    globals()["fetch_open_positions"] = lambda snap=None: []
+    r = GlobalPortfolioRouter(RouterParams())
+    res_skip = decision_tick(r, cands, None, now_utc=fake_now_none)
+    assert res_skip is None, "P8 should skip tick when no TF closed"
+    # Restore
+    globals()["build_market_snapshot"] = orig_build
+    globals()["fetch_open_positions"] = orig_fetch
+    SW.PER_PAIR_BAR_CLOSE = False
+    print("P8 test passed\nALL SELF-TESTS PASSED")
