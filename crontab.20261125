@@ -1,0 +1,38 @@
+# PF-A — Trend
+*/15 * * * 1-5 cd $HOME/projects/ai_training_cnn && FX_BOT_MODEL_STEM=models_fcv2/trade_model_xgb OPT_USE_FEATURE_CONTRACT_V2=1 OPT_USE_PROB_SIZING=1 /usr/local/bin/jitter-run.sh -m 1 -- /home/ubuntu/miniconda3/envs/ai-sprint/bin/python fx_trade_bot_v685.py -p 1 >> logs/bot_fcv2_p1.log 2>&1
+*/15 * * * 1-5 cd $HOME/projects/ai_training_cnn && FX_BOT_MODEL_STEM=models_fcv2/trade_model_xgb OPT_USE_FEATURE_CONTRACT_V2=1 OPT_USE_PROB_SIZING=1 /usr/local/bin/jitter-run.sh -m 1 -- /home/ubuntu/miniconda3/envs/ai-sprint/bin/python fx_trade_bot_v685.py --live -p 1 --lots 8 >> logs/bot_fcv2_p1.log 2>&1
+
+# PF-B — Balanced
+*/15 * * * 1-5 cd $HOME/projects/ai_training_cnn && FX_BOT_MODEL_STEM=models_fcv2/trade_model_xgb OPT_USE_FEATURE_CONTRACT_V2=1 OPT_USE_PROB_SIZING=1 /usr/local/bin/jitter-run.sh -m 2 -- /home/ubuntu/miniconda3/envs/ai-sprint/bin/python fx_trade_bot_v685.py -p 2 >> logs/bot_fcv2_p2.log 2>&1
+*/15 * * * 1-5 cd $HOME/projects/ai_training_cnn && FX_BOT_MODEL_STEM=models_fcv2/trade_model_xgb OPT_USE_FEATURE_CONTRACT_V2=1 OPT_USE_PROB_SIZING=1 /usr/local/bin/jitter-run.sh -m 2 -- /home/ubuntu/miniconda3/envs/ai-sprint/bin/python fx_trade_bot_v685.py --live -p 2 --lots 8 -a 3 >> logs/bot_fcv2_p2_live.log 2>&1
+
+# PF-C — Conservative
+*/15 * * * 1-5 cd $HOME/projects/ai_training_cnn && FX_BOT_MODEL_STEM=models_fcv2/trade_model_xgb OPT_USE_FEATURE_CONTRACT_V2=1 OPT_USE_PROB_SIZING=1 /usr/local/bin/jitter-run.sh -m 3 -- /home/ubuntu/miniconda3/envs/ai-sprint/bin/python fx_trade_bot_v685.py -p 3 >> logs/bot_fcv2_p3.log 2>&1
+
+# PF-D — Structure
+*/15 * * * 1-5 cd $HOME/projects/ai_training_cnn && FX_BOT_MODEL_STEM=models_fcv2/trade_model_xgb OPT_USE_FEATURE_CONTRACT_V2=1 OPT_USE_PROB_SIZING=1 /usr/local/bin/jitter-run.sh -m 4 -- /home/ubuntu/miniconda3/envs/ai-sprint/bin/python fx_trade_bot_v685.py -p 4 >> logs/bot_fcv2_p4.log 2>&1
+#*/15 * * * 1-5 cd $HOME/projects/ai_training_cnn && FX_BOT_MODEL_STEM=models_fcv2/trade_model_xgb OPT_USE_FEATURE_CONTRACT_V2=1 OPT_USE_PROB_SIZING=1 /usr/local/bin/jitter-run.sh -m 4 -- /home/ubuntu/miniconda3/envs/ai-sprint/bin/python fx_trade_bot_v685.py -p 4 --live --lots 1  >> logs/bot_fcv2_p4_live.log 2>&1
+
+# ═══════════════════════════════════════════════════════════════
+# Attribution V2 — Analysis & Dashboard
+# ═══════════════════════════════════════════════════════════════
+#0 * * * * /usr/local/bin/jitter-run.sh -m 10 -- $HOME/projects/ai_training_cnn/refresh_dashboard.sh
+
+# ─── Maintenance ─────────────────────────────────────────────────
+0 0 * * 0 cd $HOME/projects/ai_training_cnn && mv logs/bot_h4.log logs/bot_h4_$(date +\%Y\%m\%d).log && touch logs/bot_h4.log
+0 3 * * 1-5 find $HOME/projects/ai_training_cnn/daily_results -name "*.json" -mtime +7 -delete
+5 0 * * 1-5 cd $HOME/projects/ai_training_cnn && /home/ubuntu/miniconda3/envs/ai-sprint/bin/python retrain_model.py >> logs/bot_cron.log 2>&1
+20 0 * * 1-5 cd $HOME/projects/ai_training_cnn && RETRAIN_PROFILE=2 RETRAIN_BARS=5000 FX_MODEL_STEM=models_fcv2/trade_model_xgb OPT_USE_FEATURE_CONTRACT_V2=1 /home/ubuntu/miniconda3/envs/ai-sprint/bin/python retrain_model.py >> logs/retrain_fcv2.log 2>&1
+
+0,5,10 * * * * cd "$HOME/projects/fx_monte_carlo" && ./run_fx_mc.sh >> mc_cron.log 2>&1
+
+0 */6 * * * cd /home/ubuntu/projects/forex_oanda_v7 && python lifecycle_shadow_eval.py >> reports/shadow_eval.log 2>&1
+
+0 3 * * * find /home/ubuntu/projects/forex_oanda_v7/logs -name "*.log" -mtime +7 -delete
+30 7 * * * cd /home/ubuntu/projects/ai_training_cnn/attribution_v2/logs && find . -name "*.jsonl" -mtime +1 -exec /usr/bin/zstd -q --rm {} \; && find . -name "*.zst" -mtime +14 -delete
+
+# ─── Exit Risk 影子分析（2026-11-18 新增；只读分析，失败不影响交易循环）───
+# 每日 P0 对账（UTC 01:00）
+0 1 * * * PROJECT_ROOT=/home/ubuntu/projects/ai_training_cnn PYTHON_BIN=/home/ubuntu/miniconda3/envs/ai-sprint/bin/python /home/ubuntu/projects/ai_training_cnn/scripts/daily_exit_audit.sh >> /home/ubuntu/projects/ai_training_cnn/logs/cron_daily.log 2>&1
+# 每周影子报告（UTC 周一 02:00）
+0 2 * * 1 PROJECT_ROOT=/home/ubuntu/projects/ai_training_cnn PYTHON_BIN=/home/ubuntu/miniconda3/envs/ai-sprint/bin/python /home/ubuntu/projects/ai_training_cnn/scripts/weekly_shadow_review.sh >> /home/ubuntu/projects/ai_training_cnn/logs/cron_weekly.log 2>&1
