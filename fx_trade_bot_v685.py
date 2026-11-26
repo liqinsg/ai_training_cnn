@@ -94,7 +94,9 @@ from utils.risk_parity_sizing import (
 from utils.wide_range_sizing import (
     compute_atr_ratio,
     compute_d_skew,
+    dynamic_max_open,
     log_wide_range_shadow,
+    portfolio_volatility_tier,
     update_trade_id,
 )
 from utils.mc_boundary_watch import (
@@ -1373,6 +1375,18 @@ log.info(
     )
 )
 
+# ─── 动态 MAX_OPEN（波动率档驱动 · 仅 Profile 2）──────────────────────────────
+# 按全组合 ATR_pct 中位数的波动率档收紧**并发持仓上限**这一个旋钮：
+#   wide / extreme → base − 2（地板 MIN_OPEN=1）；narrow / normal / unknown → base。
+# 只改 MAX_OPEN，不动任何下单/仓位/信号逻辑；数据缺失一律回退 base。
+#   默认：Profile 2 = ON，其余 profile = OFF。
+#   可逆：OPT_MAX_OPEN_DYNAMIC=0/1 覆盖。
+MAX_OPEN_DYNAMIC = _opt("MAX_OPEN_DYNAMIC", PROFILE_ID == 2)
+log.info(
+    f"📐 MAX_OPEN DYNAMIC: {'ON' if MAX_OPEN_DYNAMIC else 'OFF'} "
+    f"(profile={PROFILE_ID}, base={MAX_OPEN})"
+)
+
 MULTI_TF_CONFLUENCE = cfg_bot("MULTI_TF_CONFLUENCE", False)
 CONFLUENCE_REQUIRED_TFS = cfg_bot("CONFLUENCE_REQUIRED_TFS", 2)
 TP_RAISE_THRESHOLD_PIPS = cfg_bot("TP_RAISE_THRESHOLD_PIPS", 15)
@@ -2222,6 +2236,8 @@ def calc_weighted_score(
 
 # ─── MAIN TRADING FLOW ───────────────────────────────────────────────────────
 def main():
+    # Dynamic MAX_OPEN may reassign the concurrency cap below (Profile 2 only).
+    global MAX_OPEN, MAX_OPEN_POSITIONS, MAX_SIMULTANEOUS_TRADES
     log.info(
         f"\n🤖 RUN v{VERSION} {PROFILE_LABEL} — {ACCOUNT_NAME} | TREND+TP+TOP-N | "
         f"{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')} | "
@@ -2308,6 +2324,22 @@ def main():
         # model is pushed to the operator instead of silently degrading to
         # synthetic-X neutral votes.  Position management still runs below.
         report_ml_init_result(PROFILE_LABEL, ml_init)
+
+    # ── Dynamic MAX_OPEN (volatility-tier driven · Profile 2 only) ─────────────
+    #    Adjust ONLY the concurrency cap; no order / size / signal logic touched.
+    #    wide/extreme → base−2 (floor MIN_OPEN=1); narrow/normal/unknown → base (fail-closed).
+    if MAX_OPEN_DYNAMIC:
+        _pv = portfolio_volatility_tier(
+            [YAHOO_TO_OANDA[p] for p in ALL_PAIRS if YAHOO_TO_OANDA.get(p)]
+        )
+        _dyn_max_open = dynamic_max_open(MAX_OPEN, _pv["tier"])
+        log.info(
+            f"📐 MAX_OPEN DYNAMIC: base={MAX_OPEN} tier={_pv['tier']} "
+            f"atr_pct={_pv['atr_pct']} n={_pv['n_instruments']} → {_dyn_max_open}"
+        )
+        MAX_OPEN = _dyn_max_open
+        MAX_OPEN_POSITIONS = _dyn_max_open
+        MAX_SIMULTANEOUS_TRADES = _dyn_max_open
 
     # ── MAX_OPEN EARLY-GATE: quick pre-scan of owned positions BEFORE running
     #    Strength Matrix, D-Gate, MC bundle, scoring, or Step-7 candidate eval.

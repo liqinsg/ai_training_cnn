@@ -196,6 +196,51 @@ def compute_atr_ratio(
     return compute_atr_ratio_from_candles(candles, atr_period, lookback_days)
 
 
+def portfolio_volatility_tier(
+    instruments: List[str], min_instruments: int = 3
+) -> Dict[str, Any]:
+    """取一组品种 ATR_pct 的中位数并归入波动率档（只读 · fail-closed）。
+
+    返回 ``{"tier", "atr_pct", "n_instruments"}``。品种数不足 ``min_instruments``
+    或全部取数失败 → ``tier="unknown"``（调用方据此回退 base，不做任何收紧）。
+    """
+    values: List[float] = []
+    for inst in instruments or []:
+        try:
+            rec = compute_atr_ratio(inst)
+        except Exception as exc:  # pragma: no cover - 只读降级
+            logger.warning("wide_range: portfolio ATR(%s) failed (%s)", inst, exc)
+            rec = None
+        value = _num(rec.get("atr_pct")) if isinstance(rec, dict) else None
+        if value is not None:
+            values.append(value)
+    if len(values) < int(min_instruments):
+        return {"tier": "unknown", "atr_pct": None, "n_instruments": len(values)}
+    median = statistics.median(values)
+    return {
+        "tier": classify_tier(median),
+        "atr_pct": round(float(median), 4),
+        "n_instruments": len(values),
+    }
+
+
+def dynamic_max_open(
+    base_max_open: Any, tier: Any, wide_delta: int = 2, min_open: int = 1
+) -> int:
+    """按波动率档调整同时持仓上限（MAX_OPEN）。
+
+    规则（Owner 2026-11-26 拍板）：
+        wide / extreme  → base − wide_delta，且不低于 ``min_open``（MIN_OPEN=1）
+        narrow / normal / unknown → base（数据缺失一律回退 base，不擅自收紧）
+    仅调整**并发上限**这一个旋钮；不改任何下单/仓位/信号逻辑。
+    """
+    base = _num(base_max_open)
+    base_int = max(int(min_open), int(base)) if base is not None else int(min_open)
+    if tier in ("wide", "extreme"):
+        return max(int(min_open), base_int - int(wide_delta))
+    return base_int
+
+
 def log_wide_range_shadow(
     record: Dict[str, Any], logs_dir: Optional[Path] = None
 ) -> Optional[str]:
