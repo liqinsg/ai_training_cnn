@@ -76,6 +76,7 @@ from utils.prob_zone_sizing import (
     apply_strong_momentum_bonus,
     below_min_prob_factor,
     compute_prob_plan,
+    d_regime_for_decision,
     format_prob_audit,
     is_strong_momentum_regime,
     load_prob_index,
@@ -1073,7 +1074,8 @@ def _fuse_sync_derived_blocks(d_blend, fused_p_up, fused_p_down, d_range, fused_
 
     # ── belief：以融合 p_up/p_down 重锚先验 → 后验（似然均匀）→ edge/verdict ─
     spread = abs(fused_p_up - fused_p_down) / 100.0
-    w_range = _fuse_w_range(d_blend.get("regime", ""))
+    d_regime = d_blend.get("regime_D", "")
+    w_range = _fuse_w_range(d_regime)
     prior = _fuse_normalize({
         "UP": fused_p_up / 100.0,
         "DOWN": fused_p_down / 100.0,
@@ -1085,7 +1087,7 @@ def _fuse_sync_derived_blocks(d_blend, fused_p_up, fused_p_down, d_range, fused_
     belief["likelihood"] = dict(likelihood)
     belief["evidence"] = [{
         "name": "regime",
-        "value": d_blend.get("regime", ""),
+        "value": d_regime,
         "spread": round(spread, 4),
         "likelihood": dict(likelihood),
     }]
@@ -1151,7 +1153,6 @@ MAX_W_WEIGHT = float(cfg_bot("MAX_W_WEIGHT", 0.70))       # W 上限：避免单
 MIN_W_WEIGHT = float(cfg_bot("MIN_W_WEIGHT", 0.40))       # W 下限：分歧极大时略偏 D
 DECAY_RATE = float(cfg_bot("DECAY_RATE", 0.30))           # 分歧→权重衰减（10%分歧 → −3%）
 CONFIDENCE_DECAY = float(cfg_bot("CONFIDENCE_DECAY", 0.50))  # 分歧→信心衰减（10%分歧 → −5%）
-
 
 # ─── INIT FOLDERS & LOGGING ──────────────────────────────────────────────────
 RESULTS_DIR.mkdir(exist_ok=True)
@@ -2644,7 +2645,7 @@ def main():
                 d_regime = d.get("regime", "?")
                 w_regime = w.get("regime", "?")
                 # 原始标签（末词）：MOMENTUM / RANGE / NEUTRAL（+ OVERBOUGHT/OVERSOLD）
-                # 规则只读 regime_D / regime_W；regime_fused 仅用于日志/展示。
+                # D regime 保留用于决策；W regime 仅保留为观察字段。
                 d_label = str(d_regime).split()[-1] if str(d_regime).strip() else "?"
                 w_label = str(w_regime).split()[-1] if str(w_regime).strip() else "?"
                 d_blend = dict(d)
@@ -2665,14 +2666,12 @@ def main():
                 d_blend["expected_price"] = d.get(
                     "expected_price", d.get("current_price", 0)
                 )
-                # 三字段拆分：规则读 regime_D / regime_W（原始标签）；
-                # regime_fused 仅用于日志/展示，不再作为规则输入。
+                # 保存 D/W 原始标签；交易逻辑只消费 D，复合标签仅用于展示。
                 regime_fused = f"🧬 FUSED | D:{d_label} W:{w_label}"
                 d_blend["regime_D"] = d_label
                 d_blend["regime_W"] = w_label
                 d_blend["regime_fused"] = regime_fused
-                # DEPRECATED: 顶层 regime 保留 = regime_fused（兼容外部读取）；
-                # 规则请读 regime_D / regime_W，勿再对 regime 做子串判断。
+                # 顶层 regime 保留复合串供旧展示路径兼容，禁止用于交易判断。
                 d_blend["regime"] = regime_fused
                 d_blend["blend_source"] = {
                     "D": d_name,
@@ -3252,7 +3251,7 @@ def main():
             )
 
         _df_closes = pair_data[pair]["df"]["Close"].dropna().reset_index(drop=True)
-        _regime_str = mc_cache.get(pair, {}).get("regime", "")
+        _regime_str = d_regime_for_decision(mc_cache.get(pair, {}))
         direction, w = calc_weighted_score(
             pair,
             gap,
@@ -3474,7 +3473,8 @@ def main():
         _rm = plan.get("regime_mult")
         if (_rec_d or _rec_w) and isinstance(_rm, (int, float)):
             log.info(
-                f"ℹ️ REGIME {pair} D={_rec_d or '-'} W={_rec_w or '-'} → mult={_rm:.2f}"
+                f"ℹ️ REGIME {pair} D={_rec_d or '-'} (sizing) | "
+                f"W={_rec_w or '-'} (observation only) | D_mult={_rm:.2f}"
             )
         if plan["skip"]:
             log.info(
@@ -3501,7 +3501,11 @@ def main():
         )
         if 0.0 < _blend_scale < 1.0:
             _units_pre_blend = int(size_units)
-            size_units = int(size_units * _blend_scale)
+            # L5：融合缩量后不得跌破 MIN_LOT（否则后续被判 below-min 直接 SKIP）
+            size_units = max(
+                int(PROB_ZONE_CFG.get("MIN_LOT", 1)),
+                int(size_units * _blend_scale),
+            )
             log.info(
                 f"🧬 BLEND-SIZE {pair} {direction} | "
                 f"{_units_pre_blend} × {_blend_scale:.2f} → {size_units}"
@@ -3606,15 +3610,14 @@ def main():
                 f"(factors={PROB_FACTORS}, min_units={_min_lot_norm})"
             )
 
-        # Bonus is applied only after existing skip/risk/ladder decisions.
-        # The configured full lot bounds this feature to at most 2x that lot;
-        # retain the active overlay's minimum if it is higher.
+        # Bonus is applied only after existing skip/risk/ladder decisions and
+        # reads the D regime only; W/M regimes are not trade inputs.
         _regime_sources = [_regime_str]
         for _record in (mc_cache.get(pair), _sizing_regime_record):
             if isinstance(_record, dict):
-                _regime_sources.extend(
-                    _record.get(_key) for _key in ("regime", "regime_D", "regime_W")
-                )
+                _d_label = d_regime_for_decision(_record)
+                if _d_label:
+                    _regime_sources.append(_d_label)
         _strong_momentum = any(
             is_strong_momentum_regime(_value) for _value in _regime_sources
         )
@@ -3632,6 +3635,12 @@ def main():
                 f"✅ STRONG_MOMENTUM — TIER {_tier}/4 — base={_base_units} "
                 f"boosted={size_units} (+1 tier) | {pair} {direction}"
             )
+
+        # ─── L5 · MIN_LOT 终端兜底（整数 + 地板，链路末端权威边界）────────────
+        # 职责：① 信号不顺但策略仍有边时"退回最小仓"；② LIVE 不允许小数手
+        # （0.6 → 1 向上取整）。无论前面怎么乘/减半，末端不得低于 MIN_LOT。
+        # 常规路径上游已保证 → 此处为显式兜底（对其它 profile 为 no-op）。
+        size_units = max(int(size_units + 0.5), _min_lot_norm)
 
         # ─── §3 · 宽幅震荡影子（wide-range shadow）────────────────────────────
         # ATR_pct = 当日 ATR / 近 20 日 ATR 的 rolling 中位 → narrow/normal/wide。

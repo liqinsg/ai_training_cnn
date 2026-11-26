@@ -70,10 +70,8 @@ PROB_ZONE_DEFAULTS: Dict = {
     # 开仓门控：MC 对齐概率低于该值 → skip
     "REQUIRE_ALIGNED": True,
     "MC_MIN_ALIGNED_PCT": 50.0,
-    # regime 定仓：consolidation/range/neutral → 最低仓
+    # D regime 定仓：consolidation/range/neutral → 最低仓；W/M regime 不参与
     "REGIME_MIN_MULT": 0.25,
-    # W 侧无边（RANGE/NEUTRAL/…）保守倍率：融合时取 min(D,W)，W 提示谨慎 → 至少降 20%
-    "REGIME_W_CALM_MULT": 0.8,
     # TP：目标分位带留余量 + 上限倍数（2.0 = 最多放大到 base_tp 的 2 倍）
     "TP_BAND_MARGIN": 0.20,
     "TP_MAX_MULT": 2.0,

@@ -18,8 +18,8 @@
 本仓库补充的三条 Owner 裁定（超出 §14 原文）
 --------------------------------------------
   * 开仓门控    ：对齐概率 < MC_MIN_ALIGNED_PCT → skip（"MC 概率质量控制：开仓与否"）
-  * regime 定仓 ：MOMENTUM/OVERBOUGHT/OVERSOLD → ×1.0（标准仓）
-                  CONSOLIDATION/RANGE/NEUTRAL  → ×REGIME_MIN_MULT（最低仓）
+  * regime 定仓 ：仅 D regime；MOMENTUM/OVERBOUGHT/OVERSOLD → ×1.0（标准仓）
+                  CONSOLIDATION/RANGE/NEUTRAL → ×REGIME_MIN_MULT（最低仓）
   * TP 口径     ：目标分位带留余量（BUY→q95 / SELL→q05，按 TP_BAND_MARGIN 回撤留余）
 
 verdict 门控（§14.6 · VERDICT_MODE）
@@ -63,8 +63,6 @@ _CFG_FALLBACK: Dict[str, Any] = {
     "REQUIRE_ALIGNED": True,
     "MC_MIN_ALIGNED_PCT": 50.0,
     "REGIME_MIN_MULT": 0.25,
-    # W 侧无边（RANGE/NEUTRAL/…）保守倍率：融合时 W 提示谨慎 → 至少降 20%
-    "REGIME_W_CALM_MULT": 0.8,
     "TP_BAND_MARGIN": 0.20,
     "TP_MAX_MULT": 2.0,
     "VERDICT_MODE": "soft",
@@ -317,6 +315,31 @@ def is_strong_momentum_regime(regime: Any) -> bool:
     return text == "MOMENTUM" or text.endswith("STRONG MOMENTUM")
 
 
+def d_regime_for_decision(record: Any, fallback: Any = None) -> str:
+    """Return only the D-side regime; never infer a decision label from W/fused text."""
+    fallback_text = fallback if isinstance(fallback, str) else ""
+    if not isinstance(record, dict):
+        return fallback_text
+
+    d_regime = record.get("regime_D")
+    if isinstance(d_regime, str) and d_regime.strip():
+        return d_regime
+
+    is_fused = any(
+        key in record for key in ("regime_fused", "blend_source", "blend_complete")
+    )
+    raw_regime = record.get("regime")
+    if is_fused or (
+        isinstance(raw_regime, str)
+        and "FUSED" in raw_regime.upper()
+        and ("D:" in raw_regime.upper() or "W:" in raw_regime.upper())
+    ):
+        return ""
+    if isinstance(raw_regime, str) and raw_regime.strip():
+        return raw_regime
+    return fallback_text
+
+
 def apply_strong_momentum_bonus(
     base_units: Any,
     *,
@@ -334,21 +357,9 @@ def apply_strong_momentum_bonus(
     return min(max(units * 2, minimum), maximum)
 
 
-def _regime_mult(
-    regime_d: Any, regime_w: Any, d_min_mult: float, w_calm_mult: float
-) -> float:
-    """W+D 两侧 regime 独立判读 → 取保守值 ``min()``（只降不升）。
-
-    只读原始标签 ``regime_D`` / ``regime_W``，不读复合串 ``regime_fused``
-    （后者含 "MOMENTUM"/"NEUTRAL" 等多词，子串判断会互相"或"掉风险提示）。
-    任一侧提示无边（RANGE/NEUTRAL/…）→ 整体降仓：D 侧用 d_min_mult，
-    W 侧用 w_calm_mult（W 中/区间略保守）
-
-    非融合记录两侧同源（regime_D == regime_W == 原始串）→ 结果与修复前一致。
-    """
-    d_mult = _regime_mult_side(regime_d, 1.0, _clamp(d_min_mult, 0.0, 1.0))
-    w_mult = _regime_mult_side(regime_w, 1.0, _clamp(w_calm_mult, 0.0, 1.0))
-    return min(d_mult, w_mult)
+def _regime_mult(regime_d: Any, d_min_mult: float) -> float:
+    """Scale sizing from the D regime only; W/M regimes are not trade inputs."""
+    return _regime_mult_side(regime_d, 1.0, _clamp(d_min_mult, 0.0, 1.0))
 
 
 def _verdict_mult(verdict: Any, soft_mult: float) -> float:
@@ -653,25 +664,13 @@ def compute_prob_plan(
             else 1.0
         )
 
-        # 融合记录：分别读两侧原始标签 regime_D / regime_W（不回退到复合串）；
-        # 非融合记录两者缺省 → 同源为单一文本，行为与修复前一致。
-        regime_text = regime if regime else record.get("regime")
-        regime_d = record.get("regime_D") or regime_text
-        regime_w = record.get("regime_W") or regime_text
+        # 融合记录只读 D 侧原始标签；W/M regimes 不参与仓位判定。
+        regime_d = d_regime_for_decision(record, fallback=regime)
         regime_mult = _regime_mult(
             regime_d,
-            regime_w,
             _as_float(
                 _cfg_get(cfg_dict, "REGIME_MIN_MULT", _CFG_FALLBACK["REGIME_MIN_MULT"]),
                 0.25,
-            ),
-            _as_float(
-                _cfg_get(
-                    cfg_dict,
-                    "REGIME_W_CALM_MULT",
-                    _CFG_FALLBACK["REGIME_W_CALM_MULT"],
-                ),
-                0.8,
             ),
         )
 
