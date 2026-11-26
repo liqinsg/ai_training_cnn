@@ -14,7 +14,7 @@ real stops.
 
 Part 1 unit-tests the functions with a FakeAPI that records every endpoint,
 so any write attempt fails the assertion instead of reaching the network.
-Part 2 checks the shipped fx_trade_bot_v683.py wiring via AST (same style as
+Part 2 checks the shipped fx_trade_bot_v685.py wiring via AST (same style as
 tests/test_scoring_log_guard.py): the gate flag must reach every call site.
 
 Run:  python -m pytest tests/test_dry_run_gate.py -q
@@ -30,7 +30,7 @@ from fx_trade_bot_utils import (
 )
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-BOT = BASE_DIR / "fx_trade_bot_v683.py"
+BOT = BASE_DIR / "fx_trade_bot_v685.py"
 
 OPEN_POSITION = {"position": {"long": {"units": "1000"}, "short": {"units": "0"}}}
 EMPTY_POSITION = {"position": {"long": {"units": "0"}, "short": {"units": "0"}}}

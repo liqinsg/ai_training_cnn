@@ -1,5 +1,5 @@
 """
-Proof and regression guard for the RSI scoring term (R) in fx_trade_bot_v683.py.
+Proof and regression guard for the RSI scoring term (R) in fx_trade_bot_v685.py.
 
 Old form, per direction:
     BUY : R = max(0, min(100, (50 - rsi) * 2))
@@ -25,7 +25,7 @@ import sys
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-BOT = BASE_DIR / "fx_trade_bot_v683.py"
+BOT = BASE_DIR / "fx_trade_bot_v685.py"
 
 
 def old_R(rsi, direction):

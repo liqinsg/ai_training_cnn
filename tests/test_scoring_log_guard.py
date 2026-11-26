@@ -1,5 +1,5 @@
 """
-Regression guard for the scoring log block in fx_trade_bot_v683.py.
+Regression guard for the scoring log block in fx_trade_bot_v685.py.
 
 calc_weighted_score() returns (None, None) when there is no direction
 consensus (see the `NO CONSENSUS → SKIP` path). The score-breakdown log was
@@ -21,7 +21,7 @@ import sys
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-BOT = BASE_DIR / "fx_trade_bot_v683.py"
+BOT = BASE_DIR / "fx_trade_bot_v685.py"
 
 
 def _tree():

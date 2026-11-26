@@ -223,8 +223,8 @@ def test_to_float_never_raises():
 # ── 7) 业务接入点行为（AST 抽取，与 tests_offline 同套路，避免 import 整个 bot） ──
 
 def _extract_bot_functions(*names):
-    """从 fx_trade_bot_v683.py 抽取指定函数，用最小桩执行。"""
-    bot = Path(__file__).resolve().parent.parent / "fx_trade_bot_v683.py"
+    """从 fx_trade_bot_v685.py 抽取指定函数，用最小桩执行。"""
+    bot = Path(__file__).resolve().parent.parent / "fx_trade_bot_v685.py"
     tree = ast.parse(bot.read_text(encoding="utf-8"))
     mod = ast.Module(
         body=[
@@ -296,7 +296,7 @@ def test_evaluate_trend_and_tp_returns_gracefully_on_thin_data():
 
 def test_bot_wires_data_guard():
     from pathlib import Path
-    bot = Path(__file__).resolve().parent.parent / "fx_trade_bot_v683.py"
+    bot = Path(__file__).resolve().parent.parent / "fx_trade_bot_v685.py"
     src = bot.read_text(encoding="utf-8")
     assert "from data_guard import" in src
     assert "MIN_REQUIRED_BARS" in src

@@ -4,7 +4,7 @@ Offline proof for the config-resolution fixes in the v6.8.3.3 bot.
 Covers:
   1. WEIGHT_XGB is the canonical weight key (validate_config must read the key
      the scoring code actually reads, not the legacy WEIGHT_XGBOOST spelling).
-  2. The TOP-N resolution chain in fx_trade_bot_v683.py resolves to the
+  2. The TOP-N resolution chain in fx_trade_bot_v685.py resolves to the
      authoritative utils/strategy_config values instead of the legacy
      config_bot AUTO-RANKING block.
 
@@ -27,7 +27,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
-BOT = BASE_DIR / "fx_trade_bot_v683.py"
+BOT = BASE_DIR / "fx_trade_bot_v685.py"
 
 # Legacy values in config_bot.py that must NOT win over strategy_config.
 LEGACY_CONFIG_BOT_VALUES = {

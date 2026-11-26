@@ -9,7 +9,7 @@ import pytest
 from utils.prob_zone_sizing import to_mc_key
 
 
-SCRIPT = Path(__file__).resolve().parent.parent / "fx_monte_carlo.py"
+SCRIPT = Path(__file__).resolve().parent.parent / "fx_h4_monte_carlo.py"
 
 
 class FakeYahooFinance:

@@ -1,5 +1,5 @@
 """
-Tests for the min_slope tightening ladder in fx_trade_bot_v683.py.
+Tests for the min_slope tightening ladder in fx_trade_bot_v685.py.
 
 The ladder lets an operator advance the EMA-slope threshold by editing one
 config value only:
@@ -25,7 +25,7 @@ from pathlib import Path
 import pytest
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-BOT = BASE_DIR / "fx_trade_bot_v683.py"
+BOT = BASE_DIR / "fx_trade_bot_v685.py"
 
 
 def _tree():
@@ -57,7 +57,7 @@ def _load():
     assert fn is not None, "resolve_min_slope not found in the bot source"
 
     ns = {
-        "logger": logging.getLogger("ladder-test"),
+        "log": logging.getLogger("ladder-test"),
         # resolve_min_slope() reads this module-level constant.
         "MIN_SLOPE_LADDER": _module_literal(tree, "MIN_SLOPE_LADDER"),
     }

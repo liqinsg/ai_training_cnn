@@ -4,7 +4,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 
-from utils.oanda_execution import forex_market_closed
+from utils.trading_core import forex_market_closed
 
 
 def test_market_close_bool():
