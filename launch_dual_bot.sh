@@ -24,9 +24,9 @@ launch_dual_bot.sh — 同时启动同一个 profile 的 DEMO 与 LIVE 两条腿
   PROFILE   profile 号 1/2/3/4               (默认 3)
   LOTS      live 腿手数                       (默认 1)
 
-两条腿（参数原样透传给 fx_trade_bot_v685.py，脚本不拼造 bot 不认识的参数）:
-  demo : fx_trade_bot_v685.py -p <PROFILE>
-  live : fx_trade_bot_v685.py -p <PROFILE> --live --lots <LOTS>
+两条腿（参数原样透传给 fx_trade_bot_v685.py）:
+  demo : holiday filter → fx_trade_bot_v685.py -p <PROFILE>
+  live : holiday filter → fx_trade_bot_v685.py -p <PROFILE> --live --lots <LOTS>
 
 运行方式与输出（重要）:
   · 两条腿都在后台运行；脚本会一直等待它们结束才返回。
@@ -109,13 +109,13 @@ pids=()
 launch_leg() {  # usage: launch_leg <name> <logfile> <bot args...>
   local name=$1 log=$2; shift 2
   if [ "$DRY_RUN" = 1 ]; then
-    echo "[dry-run] $name: $PY $BOT $*  >> $log"; return
+    echo "[dry-run] $name: $PY scripts/oanda_holiday_launcher.py -- $PY $BOT $*  >> $log"; return
   fi
   (
     # per-leg lock: skip if previous run is still going (prevents double orders)
     flock -n 9 || { echo "$(date -Is) [$name] previous run still active, skipped" >> "$log"; exit 0; }
     echo "$(date -Is) [$name] start: $PY $BOT $*" >> "$log"
-    exec "$PY" "$BOT" "$@"
+    exec "$PY" scripts/oanda_holiday_launcher.py -- "$PY" "$BOT" "$@"
   ) 9>"locks/$name.lock" >> "$log" 2>&1 &
   pids+=($!)
 }
