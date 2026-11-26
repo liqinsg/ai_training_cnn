@@ -97,6 +97,10 @@ from utils.wide_range_sizing import (
     log_wide_range_shadow,
     update_trade_id,
 )
+from utils.mc_boundary_watch import (
+    bars_from_dataframe,
+    watch_mc_boundaries,
+)
 from utils.mc_error_reporting import report_mc_refresh_error
 from config_oanda import (
     # api,
@@ -1348,6 +1352,23 @@ log.info(
     + (
         "ON (shadow only → logs/wide_range_shadow_*.jsonl)"
         if WIDE_RANGE_SHADOW
+        else "OFF"
+    )
+)
+
+# ─── MC 概率带边界观察（只观察 · 不改仓位）────────────────────────────────────
+# 监控当前生效 prob_bands.bands[] 的四条内部边界（Q20/Q40/Q60/Q80），用已完成
+# M15 的 high/low + 前一根 close 判定 touch / cross；不读取静态 prob_bands.current，
+# 不改变任何下单/仓位决策。落盘 logs/mc_boundary_watch_*.jsonl。
+#   True （默认）= 开启观察
+#   False        = 完全跳过（不落盘）
+# 可逆：OPT_MC_BOUNDARY_WATCH=0。
+MC_BOUNDARY_WATCH = _opt("MC_BOUNDARY_WATCH", True)
+log.info(
+    "🎯 MC-BOUNDARY WATCH: "
+    + (
+        "ON (observe only → logs/mc_boundary_watch_*.jsonl)"
+        if MC_BOUNDARY_WATCH
         else "OFF"
     )
 )
@@ -3144,6 +3165,35 @@ def main():
         base, quote = pair_parts[pair]
         gap = strength_scores.get(base, 0) - strength_scores.get(quote, 0)
         mc_pct_up_now = mc_cache.get(pair, {}).get("p_up", 50.0)
+
+        # ─── MC 概率带边界观察（只观察 · 不改仓位）────────────────────────────
+        # 读「实际生效」记录：PROB_USE_FUSED 时 prob_index 复用的即 mc_cache 融合记录。
+        # 用已完成 M15 的 high/low + 前一根 close 判 Q20/Q40/Q60/Q80 触及/穿越；
+        # 位置由 bands[] 区间包含得出，不使用静态 prob_bands.current。
+        if MC_BOUNDARY_WATCH:
+            _eff_rec = prob_index.get(to_mc_key(pair)) if prob_index else None
+            if not isinstance(_eff_rec, dict):
+                _eff_rec = (
+                    mc_cache.get(pair) if isinstance(mc_cache.get(pair), dict) else {}
+                )
+            _watch = watch_mc_boundaries(
+                pair,
+                _eff_rec.get("prob_bands"),
+                bars_from_dataframe(pair_data[pair]["df"]),
+                _eff_rec.get("generated_utc") or "unknown",
+                current=current,
+            )
+            log.info(
+                f"🎯 MC-BAND {pair} | band={_watch['current_band']} "
+                f"| price={current:.5f} | new_touch={_watch['n_new']}"
+            )
+            for _ev in _watch["new_events"]:
+                log.info(
+                    f"   └─ {_ev['boundary']}@{_ev['boundary_price']} "
+                    f"{_ev['kind']}({_ev['direction']}) "
+                    f"open={_ev['open_time']} "
+                    f"H={_ev['high']} L={_ev['low']} C={_ev['close']}"
+                )
 
         # ─── QUICK-FLIP + REVISE SL/TP for OWNED positions ───
         if owned_trade:
